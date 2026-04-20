@@ -43,7 +43,13 @@ impl TaskStore {
         self.tasks.iter().find(|t| t.id == id)
     }
 
-    fn update(&mut self, id: &str, status: Option<&str>, subject: Option<&str>, desc: Option<&str>) -> Option<Task> {
+    fn update(
+        &mut self,
+        id: &str,
+        status: Option<&str>,
+        subject: Option<&str>,
+        desc: Option<&str>,
+    ) -> Option<Task> {
         let task = self.tasks.iter_mut().find(|t| t.id == id)?;
         if let Some(s) = status {
             task.status = s.to_string();
@@ -63,7 +69,10 @@ impl TaskStore {
 }
 
 fn format_task(t: &Task) -> String {
-    format!("#{} [{}] {}\n  {}", t.id, t.status, t.subject, t.description)
+    format!(
+        "#{} [{}] {}\n  {}",
+        t.id, t.status, t.subject, t.description
+    )
 }
 
 pub type SharedTaskStore = Arc<Mutex<TaskStore>>;
@@ -85,7 +94,9 @@ pub struct TaskCreateTool(SharedTaskStore);
 
 #[async_trait]
 impl Tool for TaskCreateTool {
-    fn name(&self) -> &'static str { "TaskCreate" }
+    fn name(&self) -> &'static str {
+        "TaskCreate"
+    }
     fn description(&self) -> &'static str {
         "Create a new task/todo item. Returns the created task with its id."
     }
@@ -113,7 +124,9 @@ pub struct TaskUpdateTool(SharedTaskStore);
 
 #[async_trait]
 impl Tool for TaskUpdateTool {
-    fn name(&self) -> &'static str { "TaskUpdate" }
+    fn name(&self) -> &'static str {
+        "TaskUpdate"
+    }
     fn description(&self) -> &'static str {
         "Update a task's status, subject, or description. Status values: pending, in_progress, completed."
     }
@@ -147,7 +160,9 @@ pub struct TaskGetTool(SharedTaskStore);
 
 #[async_trait]
 impl Tool for TaskGetTool {
-    fn name(&self) -> &'static str { "TaskGet" }
+    fn name(&self) -> &'static str {
+        "TaskGet"
+    }
     fn description(&self) -> &'static str {
         "Get a task by id. Returns subject, description, and status."
     }
@@ -176,7 +191,9 @@ pub struct TaskListTool(SharedTaskStore);
 
 #[async_trait]
 impl Tool for TaskListTool {
-    fn name(&self) -> &'static str { "TaskList" }
+    fn name(&self) -> &'static str {
+        "TaskList"
+    }
     fn description(&self) -> &'static str {
         "List all tasks with their id, status, subject, and description."
     }
@@ -189,7 +206,11 @@ impl Tool for TaskListTool {
         if tasks.is_empty() {
             return Ok("No tasks.".into());
         }
-        Ok(tasks.iter().map(format_task).collect::<Vec<_>>().join("\n\n"))
+        Ok(tasks
+            .iter()
+            .map(format_task)
+            .collect::<Vec<_>>()
+            .join("\n\n"))
     }
 }
 
@@ -207,8 +228,14 @@ mod tests {
         let create = TaskCreateTool(store.clone());
         let list = TaskListTool(store.clone());
 
-        create.call(json!({"subject": "Fix bug", "description": "segfault on exit"})).await.unwrap();
-        create.call(json!({"subject": "Add tests", "description": "cover edge cases"})).await.unwrap();
+        create
+            .call(json!({"subject": "Fix bug", "description": "segfault on exit"}))
+            .await
+            .unwrap();
+        create
+            .call(json!({"subject": "Add tests", "description": "cover edge cases"}))
+            .await
+            .unwrap();
 
         let out = list.call(json!({})).await.unwrap();
         assert!(out.contains("#1"));
@@ -223,7 +250,10 @@ mod tests {
         let create = TaskCreateTool(store.clone());
         let get = TaskGetTool(store.clone());
 
-        create.call(json!({"subject": "Task A", "description": "desc"})).await.unwrap();
+        create
+            .call(json!({"subject": "Task A", "description": "desc"}))
+            .await
+            .unwrap();
         let out = get.call(json!({"id": "1"})).await.unwrap();
         assert!(out.contains("Task A"));
         assert!(out.contains("pending"));
@@ -236,8 +266,14 @@ mod tests {
         let update = TaskUpdateTool(store.clone());
         let get = TaskGetTool(store.clone());
 
-        create.call(json!({"subject": "Do it", "description": "now"})).await.unwrap();
-        update.call(json!({"id": "1", "status": "completed"})).await.unwrap();
+        create
+            .call(json!({"subject": "Do it", "description": "now"}))
+            .await
+            .unwrap();
+        update
+            .call(json!({"id": "1", "status": "completed"}))
+            .await
+            .unwrap();
 
         let out = get.call(json!({"id": "1"})).await.unwrap();
         assert!(out.contains("completed"));

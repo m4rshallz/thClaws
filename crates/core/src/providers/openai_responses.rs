@@ -151,9 +151,7 @@ impl OpenAIResponsesProvider {
 #[async_trait]
 impl Provider for OpenAIResponsesProvider {
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        let models_url = self
-            .base_url
-            .replace("/responses", "/models");
+        let models_url = self.base_url.replace("/responses", "/models");
 
         let resp = self
             .client
@@ -303,7 +301,11 @@ fn parse_response_event(
     }
 
     // Capture response ID for server-side history.
-    if let Some(id) = v.get("response").and_then(|r| r.get("id")).and_then(Value::as_str) {
+    if let Some(id) = v
+        .get("response")
+        .and_then(|r| r.get("id"))
+        .and_then(Value::as_str)
+    {
         if let Ok(mut slot) = response_id_slot.lock() {
             *slot = Some(id.to_string());
         }
@@ -363,14 +365,9 @@ fn parse_response_event(
                 .get("response")
                 .and_then(|r| r.get("usage"))
                 .map(|u| Usage {
-                    input_tokens: u
-                        .get("input_tokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as u32,
-                    output_tokens: u
-                        .get("output_tokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as u32,
+                    input_tokens: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
+                    output_tokens: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0)
+                        as u32,
                     cache_creation_input_tokens: None,
                     cache_read_input_tokens: None,
                 });

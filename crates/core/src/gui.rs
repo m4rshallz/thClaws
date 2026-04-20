@@ -9,7 +9,6 @@
 
 #![cfg(feature = "gui")]
 
-use base64::Engine;
 use crate::agent::{Agent, AgentEvent};
 use crate::config::AppConfig;
 use crate::context::ProjectContext;
@@ -17,11 +16,12 @@ use crate::memory::MemoryStore;
 use crate::repl::build_provider;
 use crate::session::SessionStore;
 use crate::tools::ToolRegistry;
+use base64::Engine;
 use futures::StreamExt;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
@@ -112,8 +112,7 @@ impl PtyBridge {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let encoded =
-                            base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                         let _ = proxy.send_event(UserEvent::PtyData(encoded));
                     }
                     Err(_) => break,
@@ -150,13 +149,19 @@ fn recent_dirs_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_recent_dirs() -> Vec<String> {
-    let Some(path) = recent_dirs_path() else { return vec![] };
-    let Ok(contents) = std::fs::read_to_string(path) else { return vec![] };
+    let Some(path) = recent_dirs_path() else {
+        return vec![];
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
     serde_json::from_str::<Vec<String>>(&contents).unwrap_or_default()
 }
 
 fn save_recent_dir(dir: &str) {
-    let Some(path) = recent_dirs_path() else { return };
+    let Some(path) = recent_dirs_path() else {
+        return;
+    };
     let mut dirs = load_recent_dirs();
     // Remove duplicate if present, then prepend.
     dirs.retain(|d| d != dir);
@@ -165,7 +170,10 @@ fn save_recent_dir(dir: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, serde_json::to_string_pretty(&dirs).unwrap_or_default());
+    let _ = std::fs::write(
+        path,
+        serde_json::to_string_pretty(&dirs).unwrap_or_default(),
+    );
 }
 
 /// Open a native OS directory picker dialog. Returns the selected path or
@@ -183,22 +191,37 @@ fn pick_directory_native(start_dir: &str) -> Option<String> {
             .args(["-e", &script])
             .output()
             .ok()?;
-        if !out.status.success() { return None; }
+        if !out.status.success() {
+            return None;
+        }
         let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let path = path.trim_end_matches('/').to_string();
-        if path.is_empty() { None } else { Some(path) }
+        if path.is_empty() {
+            None
+        } else {
+            Some(path)
+        }
     }
     #[cfg(target_os = "linux")]
     {
         let out = std::process::Command::new("zenity")
-            .args(["--file-selection", "--directory",
-                   "--title=Select working directory",
-                   &format!("--filename={}/", start_dir)])
+            .args([
+                "--file-selection",
+                "--directory",
+                "--title=Select working directory",
+                &format!("--filename={}/", start_dir),
+            ])
             .output()
             .ok()?;
-        if !out.status.success() { return None; }
+        if !out.status.success() {
+            return None;
+        }
         let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if path.is_empty() { None } else { Some(path) }
+        if path.is_empty() {
+            None
+        } else {
+            Some(path)
+        }
     }
     #[cfg(target_os = "windows")]
     {
@@ -212,12 +235,20 @@ fn pick_directory_native(start_dir: &str) -> Option<String> {
                  if ($d.ShowDialog() -eq 'OK') {{ $d.SelectedPath }} else {{ '' }}")])
             .output()
             .ok()?;
-        if !out.status.success() { return None; }
+        if !out.status.success() {
+            return None;
+        }
         let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if path.is_empty() { None } else { Some(path) }
+        if path.is_empty() {
+            None
+        } else {
+            Some(path)
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { None }
+    {
+        None
+    }
 }
 
 fn child_command() -> String {
@@ -226,7 +257,6 @@ fn child_command() -> String {
         .unwrap_or_else(|_| "thclaws".to_string())
 }
 
-
 fn build_session_list(store: &Option<SessionStore>) -> String {
     let sessions: Vec<serde_json::Value> = store
         .as_ref()
@@ -234,12 +264,14 @@ fn build_session_list(store: &Option<SessionStore>) -> String {
         .unwrap_or_default()
         .into_iter()
         .take(20)
-        .map(|s| serde_json::json!({
-            "id": s.id,
-            "model": s.model,
-            "messages": s.message_count,
-            "title": s.title,
-        }))
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "model": s.model,
+                "messages": s.message_count,
+                "title": s.title,
+            })
+        })
         .collect();
     serde_json::json!({"type": "sessions_list", "sessions": sessions}).to_string()
 }
@@ -323,11 +355,13 @@ fn build_kms_update_payload() -> serde_json::Value {
         .collect();
     let kmss: Vec<serde_json::Value> = crate::kms::list_all()
         .into_iter()
-        .map(|k| serde_json::json!({
-            "name": k.name,
-            "scope": k.scope.as_str(),
-            "active": active.contains(&k.name),
-        }))
+        .map(|k| {
+            serde_json::json!({
+                "name": k.name,
+                "scope": k.scope.as_str(),
+                "active": active.contains(&k.name),
+            })
+        })
         .collect();
     serde_json::json!({
         "type": "kms_update",
@@ -347,7 +381,12 @@ pub fn run_gui() {
     let proxy = event_loop.create_proxy();
 
     let (win_w, win_h) = crate::config::ProjectConfig::load()
-        .map(|c| (c.window_width.unwrap_or(1760.0), c.window_height.unwrap_or(962.0)))
+        .map(|c| {
+            (
+                c.window_width.unwrap_or(1760.0),
+                c.window_height.unwrap_or(962.0),
+            )
+        })
         .unwrap_or((1760.0, 962.0));
     let window = WindowBuilder::new()
         .with_title("thClaws")
@@ -376,55 +415,54 @@ pub fn run_gui() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
             rt.block_on(async move {
-            let config = AppConfig::load().unwrap_or_default();
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let ctx = ProjectContext::discover(&cwd).unwrap_or(ProjectContext {
-                cwd: cwd.clone(),
-                git: None,
-                project_instructions: None,
-            });
-            let system_fallback = if config.system_prompt.is_empty() {
-                crate::prompts::defaults::SYSTEM
-            } else {
-                config.system_prompt.as_str()
-            };
-            let base_prompt = crate::prompts::load("system", system_fallback);
-            let mut system = ctx.build_system_prompt(&base_prompt);
-            if let Some(store) = MemoryStore::default_path().map(MemoryStore::new) {
-                if let Some(mem) = store.system_prompt_section() {
-                    system.push_str("\n\n# Memory\n");
-                    system.push_str(&mem);
+                let config = AppConfig::load().unwrap_or_default();
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let ctx = ProjectContext::discover(&cwd).unwrap_or(ProjectContext {
+                    cwd: cwd.clone(),
+                    git: None,
+                    project_instructions: None,
+                });
+                let system_fallback = if config.system_prompt.is_empty() {
+                    crate::prompts::defaults::SYSTEM
+                } else {
+                    config.system_prompt.as_str()
+                };
+                let base_prompt = crate::prompts::load("system", system_fallback);
+                let mut system = ctx.build_system_prompt(&base_prompt);
+                if let Some(store) = MemoryStore::default_path().map(MemoryStore::new) {
+                    if let Some(mem) = store.system_prompt_section() {
+                        system.push_str("\n\n# Memory\n");
+                        system.push_str(&mem);
+                    }
                 }
-            }
-            let kms_section = crate::kms::system_prompt_section(&config.kms_active);
-            if !kms_section.is_empty() {
-                system.push_str("\n\n");
-                system.push_str(&kms_section);
-            }
-
-            let provider = match build_provider(&config) {
-                Ok(p) => p,
-                Err(e) => {
-                    let _ = proxy_for_chat.send_event(UserEvent::ChatTextDelta(
-                        format!("Provider error: {e}"),
-                    ));
-                    let _ = proxy_for_chat.send_event(UserEvent::ChatDone);
-                    return;
+                let kms_section = crate::kms::system_prompt_section(&config.kms_active);
+                if !kms_section.is_empty() {
+                    system.push_str("\n\n");
+                    system.push_str(&kms_section);
                 }
-            };
 
-            let mut tools = ToolRegistry::with_builtins();
-            if !config.kms_active.is_empty() {
-                tools.register(std::sync::Arc::new(crate::tools::KmsReadTool));
-                tools.register(std::sync::Arc::new(crate::tools::KmsSearchTool));
-            }
-            // Register skills + surface them in the system prompt so the Chat
-            // tab agent knows what's available (same as the Terminal REPL).
-            let skill_store = crate::skills::SkillStore::discover();
-            if !skill_store.skills.is_empty() {
-                system.push_str("\n\n# Available skills (MANDATORY usage)\n");
-                system.push_str(
-                    "The `Skill` tool loads expert instructions for a bundled workflow. \
+                let provider = match build_provider(&config) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = proxy_for_chat
+                            .send_event(UserEvent::ChatTextDelta(format!("Provider error: {e}")));
+                        let _ = proxy_for_chat.send_event(UserEvent::ChatDone);
+                        return;
+                    }
+                };
+
+                let mut tools = ToolRegistry::with_builtins();
+                if !config.kms_active.is_empty() {
+                    tools.register(std::sync::Arc::new(crate::tools::KmsReadTool));
+                    tools.register(std::sync::Arc::new(crate::tools::KmsSearchTool));
+                }
+                // Register skills + surface them in the system prompt so the Chat
+                // tab agent knows what's available (same as the Terminal REPL).
+                let skill_store = crate::skills::SkillStore::discover();
+                if !skill_store.skills.is_empty() {
+                    system.push_str("\n\n# Available skills (MANDATORY usage)\n");
+                    system.push_str(
+                        "The `Skill` tool loads expert instructions for a bundled workflow. \
                      If a user request matches the trigger criteria of any skill below, \
                      you MUST:\n\
                      1. Call `Skill(name: \"<skill-name>\")` FIRST — before any Bash, \
@@ -435,140 +473,161 @@ pub fn run_gui() {
                         \"Using the `pdf` skill to …\".\n\
                      Do NOT implement the task yourself when a matching skill exists — \
                      the skill encodes conventions and scripts you don't have built in.\n\n",
-                );
-                let mut entries: Vec<&crate::skills::SkillDef> =
-                    skill_store.skills.values().collect();
-                entries.sort_by(|a, b| a.name.cmp(&b.name));
-                for skill in entries {
-                    system.push_str(&format!("- **{}** — {}", skill.name, skill.description));
-                    if !skill.when_to_use.is_empty() {
-                        system.push_str(&format!("\n  Trigger: {}", skill.when_to_use));
+                    );
+                    let mut entries: Vec<&crate::skills::SkillDef> =
+                        skill_store.skills.values().collect();
+                    entries.sort_by(|a, b| a.name.cmp(&b.name));
+                    for skill in entries {
+                        system.push_str(&format!("- **{}** — {}", skill.name, skill.description));
+                        if !skill.when_to_use.is_empty() {
+                            system.push_str(&format!("\n  Trigger: {}", skill.when_to_use));
+                        }
+                        system.push('\n');
                     }
-                    system.push('\n');
+                    tools.register(std::sync::Arc::new(crate::skills::SkillTool::new(
+                        skill_store,
+                    )));
                 }
-                tools.register(std::sync::Arc::new(
-                    crate::skills::SkillTool::new(skill_store),
-                ));
-            }
-            let agent = Agent::new(provider, tools, &config.model, &system);
+                let agent = Agent::new(provider, tools, &config.model, &system);
 
-            let session_store = crate::session::SessionStore::default_path()
-                .map(crate::session::SessionStore::new);
-            let mut current_session = crate::session::Session::new(&config.model, cwd.to_string_lossy());
+                let session_store = crate::session::SessionStore::default_path()
+                    .map(crate::session::SessionStore::new);
+                let mut current_session =
+                    crate::session::Session::new(&config.model, cwd.to_string_lossy());
 
-            while let Ok(cmd) = chat_rx.recv() {
-                let prompt = match cmd {
-                    ChatCommand::Prompt(p) => p,
-                    ChatCommand::LoadHistory(msgs) => {
-                        agent.set_history(msgs);
-                        continue;
-                    }
-                    ChatCommand::NewSession => {
-                        let history = agent.history_snapshot();
-                        if !history.is_empty() {
-                            current_session.sync(history);
-                            if let Some(ref store) = session_store {
-                                let _ = store.save(&mut current_session);
-                            }
+                while let Ok(cmd) = chat_rx.recv() {
+                    let prompt = match cmd {
+                        ChatCommand::Prompt(p) => p,
+                        ChatCommand::LoadHistory(msgs) => {
+                            agent.set_history(msgs);
+                            continue;
                         }
-                        agent.clear_history();
-                        current_session = crate::session::Session::new(&config.model, cwd.to_string_lossy());
-                        // Broadcast updated session list.
-                        let list = build_session_list(&session_store);
-                        let _ = proxy_for_chat.send_event(UserEvent::SessionListRefresh(list));
-                        continue;
-                    }
-                    ChatCommand::SaveAndQuit => {
-                        let history = agent.history_snapshot();
-                        if !history.is_empty() {
-                            current_session.sync(history);
-                            if let Some(ref store) = session_store {
-                                let _ = store.save(&mut current_session);
-                            }
-                        }
-                        break;
-                    }
-                };
-                let mut stream = Box::pin(agent.run_turn(prompt));
-                while let Some(ev) = stream.next().await {
-                    match ev {
-                        Ok(AgentEvent::Text(s)) => {
-                            let _ = proxy_for_chat.send_event(UserEvent::ChatTextDelta(s));
-                        }
-                        Ok(AgentEvent::ToolCallStart { name, input, .. }) => {
-                            // Annotate the tool name with a short detail for a
-                            // few high-signal tools so the user can see which
-                            // skill / sub-agent / path is being used — not
-                            // just "Skill".
-                            let detail = match name.as_str() {
-                                "Skill" => input.get("name").and_then(|v| v.as_str())
-                                    .map(|n| format!("({n})")),
-                                "Task" => input.get("agent").and_then(|v| v.as_str())
-                                    .map(|a| format!("(agent={a})")),
-                                "Bash" => input.get("command").and_then(|v| v.as_str())
-                                    .map(|c| {
-                                        let first: String = c.chars().take(40).collect();
-                                        format!("({first}{})",
-                                            if c.chars().count() > 40 { "…" } else { "" })
-                                    }),
-                                "Read" | "Write" | "Edit" => input.get("path").and_then(|v| v.as_str())
-                                    .map(|p| format!("({p})")),
-                                "Grep" | "Glob" => input.get("pattern").and_then(|v| v.as_str())
-                                    .map(|p| format!("({p})")),
-                                "WebFetch" => input.get("url").and_then(|v| v.as_str())
-                                    .map(|u| format!("({})", u.chars().take(60).collect::<String>())),
-                                "WebSearch" => input.get("query").and_then(|v| v.as_str())
-                                    .map(|q| format!("({q})")),
-                                _ => None,
-                            }.unwrap_or_default();
-                            let label = if detail.is_empty() {
-                                name
-                            } else {
-                                format!("{name} {detail}")
-                            };
-                            let _ = proxy_for_chat.send_event(UserEvent::ChatToolCall(label));
-                        }
-                        Ok(AgentEvent::ToolCallResult { name, output, .. }) => {
-                            let out = output.unwrap_or_else(|e| e);
-                            let _ = proxy_for_chat
-                                .send_event(UserEvent::ChatToolResult(name, out));
-                        }
-                        Ok(AgentEvent::Done { .. }) => {
-                            // Auto-save session after each turn.
+                        ChatCommand::NewSession => {
                             let history = agent.history_snapshot();
                             if !history.is_empty() {
                                 current_session.sync(history);
                                 if let Some(ref store) = session_store {
                                     let _ = store.save(&mut current_session);
                                 }
-                                // Broadcast updated session list.
-                                let list = build_session_list(&session_store);
-                                let _ = proxy_for_chat.send_event(
-                                    UserEvent::SessionListRefresh(list),
-                                );
                             }
-                            let _ = proxy_for_chat.send_event(UserEvent::ChatDone);
+                            agent.clear_history();
+                            current_session =
+                                crate::session::Session::new(&config.model, cwd.to_string_lossy());
+                            // Broadcast updated session list.
+                            let list = build_session_list(&session_store);
+                            let _ = proxy_for_chat.send_event(UserEvent::SessionListRefresh(list));
+                            continue;
                         }
-                        Err(e) => {
-                            let _ = proxy_for_chat.send_event(UserEvent::ChatTextDelta(
-                                format!("\nError: {e}"),
-                            ));
-                            let _ = proxy_for_chat.send_event(UserEvent::ChatDone);
+                        ChatCommand::SaveAndQuit => {
+                            let history = agent.history_snapshot();
+                            if !history.is_empty() {
+                                current_session.sync(history);
+                                if let Some(ref store) = session_store {
+                                    let _ = store.save(&mut current_session);
+                                }
+                            }
+                            break;
                         }
-                        _ => {}
+                    };
+                    let mut stream = Box::pin(agent.run_turn(prompt));
+                    while let Some(ev) = stream.next().await {
+                        match ev {
+                            Ok(AgentEvent::Text(s)) => {
+                                let _ = proxy_for_chat.send_event(UserEvent::ChatTextDelta(s));
+                            }
+                            Ok(AgentEvent::ToolCallStart { name, input, .. }) => {
+                                // Annotate the tool name with a short detail for a
+                                // few high-signal tools so the user can see which
+                                // skill / sub-agent / path is being used — not
+                                // just "Skill".
+                                let detail = match name.as_str() {
+                                    "Skill" => input
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .map(|n| format!("({n})")),
+                                    "Task" => input
+                                        .get("agent")
+                                        .and_then(|v| v.as_str())
+                                        .map(|a| format!("(agent={a})")),
+                                    "Bash" => {
+                                        input.get("command").and_then(|v| v.as_str()).map(|c| {
+                                            let first: String = c.chars().take(40).collect();
+                                            format!(
+                                                "({first}{})",
+                                                if c.chars().count() > 40 { "…" } else { "" }
+                                            )
+                                        })
+                                    }
+                                    "Read" | "Write" | "Edit" => input
+                                        .get("path")
+                                        .and_then(|v| v.as_str())
+                                        .map(|p| format!("({p})")),
+                                    "Grep" | "Glob" => input
+                                        .get("pattern")
+                                        .and_then(|v| v.as_str())
+                                        .map(|p| format!("({p})")),
+                                    "WebFetch" => {
+                                        input.get("url").and_then(|v| v.as_str()).map(|u| {
+                                            format!("({})", u.chars().take(60).collect::<String>())
+                                        })
+                                    }
+                                    "WebSearch" => input
+                                        .get("query")
+                                        .and_then(|v| v.as_str())
+                                        .map(|q| format!("({q})")),
+                                    _ => None,
+                                }
+                                .unwrap_or_default();
+                                let label = if detail.is_empty() {
+                                    name
+                                } else {
+                                    format!("{name} {detail}")
+                                };
+                                let _ = proxy_for_chat.send_event(UserEvent::ChatToolCall(label));
+                            }
+                            Ok(AgentEvent::ToolCallResult { name, output, .. }) => {
+                                let out = output.unwrap_or_else(|e| e);
+                                let _ =
+                                    proxy_for_chat.send_event(UserEvent::ChatToolResult(name, out));
+                            }
+                            Ok(AgentEvent::Done { .. }) => {
+                                // Auto-save session after each turn.
+                                let history = agent.history_snapshot();
+                                if !history.is_empty() {
+                                    current_session.sync(history);
+                                    if let Some(ref store) = session_store {
+                                        let _ = store.save(&mut current_session);
+                                    }
+                                    // Broadcast updated session list.
+                                    let list = build_session_list(&session_store);
+                                    let _ = proxy_for_chat
+                                        .send_event(UserEvent::SessionListRefresh(list));
+                                }
+                                let _ = proxy_for_chat.send_event(UserEvent::ChatDone);
+                            }
+                            Err(e) => {
+                                let _ = proxy_for_chat
+                                    .send_event(UserEvent::ChatTextDelta(format!("\nError: {e}")));
+                                let _ = proxy_for_chat.send_event(UserEvent::ChatDone);
+                            }
+                            _ => {}
+                        }
                     }
                 }
-            }
-        });
+            });
         }));
         if let Err(panic) = result {
-            let msg = if let Some(s) = panic.downcast_ref::<&str>() { (*s).to_string() }
-                      else if let Some(s) = panic.downcast_ref::<String>() { s.clone() }
-                      else { "agent thread panicked".to_string() };
+            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "agent thread panicked".to_string()
+            };
             eprintln!("\x1b[31m[chat agent panicked: {msg}]\x1b[0m");
-            let _ = proxy_panic.send_event(UserEvent::ChatTextDelta(
-                format!("\n\n⚠ chat agent crashed: {msg}\nrestart the app to recover."),
-            ));
+            let _ = proxy_panic.send_event(UserEvent::ChatTextDelta(format!(
+                "\n\n⚠ chat agent crashed: {msg}\nrestart the app to recover."
+            )));
             let _ = proxy_panic.send_event(UserEvent::ChatDone);
         }
     });

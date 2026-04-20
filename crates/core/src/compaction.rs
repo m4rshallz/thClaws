@@ -123,11 +123,7 @@ pub async fn compact_with_summary(
 
     match provider.stream(req).await {
         Ok(stream) => {
-            
-            let result = crate::providers::collect_turn(
-                crate::providers::assemble(stream),
-            )
-            .await;
+            let result = crate::providers::collect_turn(crate::providers::assemble(stream)).await;
             match result {
                 Ok(turn) if !turn.text.is_empty() => {
                     let mut out = Vec::with_capacity(1 + recent.len());
@@ -168,7 +164,9 @@ fn render_for_summary(messages: &[Message]) -> String {
                 ContentBlock::ToolUse { name, input, .. } => {
                     Some(format!("[Called tool: {name} with {}]", input))
                 }
-                ContentBlock::ToolResult { content, is_error, .. } => {
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
                     let prefix = if *is_error { "Error" } else { "Result" };
                     let preview: String = content.chars().take(500).collect();
                     Some(format!("[{prefix}: {preview}]"))
@@ -226,7 +224,10 @@ mod tests {
 
     #[test]
     fn under_budget_is_unchanged() {
-        let msgs = vec![text_msg(Role::User, "hi"), text_msg(Role::Assistant, "hello")];
+        let msgs = vec![
+            text_msg(Role::User, "hi"),
+            text_msg(Role::Assistant, "hello"),
+        ];
         let out = compact(&msgs, 10_000);
         assert_eq!(out, msgs);
     }
@@ -268,10 +269,7 @@ mod tests {
             text_msg(Role::Assistant, "four"),
             text_msg(Role::User, "five"),
         ];
-        let out = compact(
-            &msgs,
-            estimate_messages_tokens(&msgs[3..]),
-        );
+        let out = compact(&msgs, estimate_messages_tokens(&msgs[3..]));
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], msgs[3]);
         assert_eq!(out[1], msgs[4]);
@@ -285,7 +283,10 @@ mod tests {
         let out = compact(&msgs, 50);
         let after = estimate_messages_tokens(&out);
         assert!(after <= 50, "after={after} > 50");
-        assert!(after < before, "did not reduce: before={before} after={after}");
+        assert!(
+            after < before,
+            "did not reduce: before={before} after={after}"
+        );
     }
 
     #[test]

@@ -60,7 +60,9 @@ pub struct McpServerConfig {
     pub headers: HashMap<String, String>,
 }
 
-fn default_transport() -> String { "stdio".into() }
+fn default_transport() -> String {
+    "stdio".into()
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpToolInfo {
@@ -187,7 +189,8 @@ impl McpClient {
     async fn connect_http(config: McpServerConfig) -> Result<Arc<Self>> {
         if config.url.is_empty() {
             return Err(Error::Provider(format!(
-                "mcp http server '{}': missing 'url' field", config.name
+                "mcp http server '{}': missing 'url' field",
+                config.name
             )));
         }
         // Create an in-memory duplex. We'll use our write-half to send
@@ -218,9 +221,8 @@ impl McpClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
-        let resolved_token = resolve_token_upfront(
-            &http_probe, &url, &config.name, &config.headers,
-        ).await;
+        let resolved_token =
+            resolve_token_upfront(&http_probe, &url, &config.name, &config.headers).await;
 
         let token: std::sync::Arc<tokio::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(resolved_token));
@@ -251,7 +253,9 @@ impl McpClient {
                     Err(_) => break,
                 }
                 let trimmed = line.trim();
-                if trimmed.is_empty() { continue; }
+                if trimmed.is_empty() {
+                    continue;
+                }
 
                 let build_post = |bearer: Option<&str>, sid: Option<&str>, body: &str| {
                     let mut req = http_client
@@ -274,7 +278,10 @@ impl McpClient {
                 let current_session = session.lock().await.clone();
                 eprintln!(
                     "\x1b[2m[mcp-http] bridge POST: token={}, session={}, body_len={}\x1b[0m",
-                    current_token.as_ref().map(|t| format!("{}…", &t[..t.len().min(12)])).unwrap_or("None".into()),
+                    current_token
+                        .as_ref()
+                        .map(|t| format!("{}…", &t[..t.len().min(12)]))
+                        .unwrap_or("None".into()),
                     current_session.as_deref().unwrap_or("None"),
                     trimmed.len(),
                 );
@@ -282,7 +289,9 @@ impl McpClient {
                     current_token.as_deref(),
                     current_session.as_deref(),
                     trimmed,
-                ).send().await;
+                )
+                .send()
+                .await;
 
                 match resp {
                     Ok(r) if r.status().as_u16() == 401 => {
@@ -301,9 +310,8 @@ impl McpClient {
                             store.remove(&url_for_oauth);
                         }
                         *token.lock().await = None;
-                        let new_token = resolve_oauth_token(
-                            &http_client, &url_for_oauth, &name_for_task
-                        ).await;
+                        let new_token =
+                            resolve_oauth_token(&http_client, &url_for_oauth, &name_for_task).await;
                         match new_token {
                             Some(t) => {
                                 *token.lock().await = Some(t.clone());
@@ -312,11 +320,17 @@ impl McpClient {
                                     Ok(r2) => {
                                         let sid = session.lock().await.clone();
                                         write_response_lines(
-                                            &mut writer, r2, &session,
-                                            &http_client, Some(&t), trimmed,
-                                            &url_for_oauth, &extra_headers,
+                                            &mut writer,
+                                            r2,
+                                            &session,
+                                            &http_client,
+                                            Some(&t),
+                                            trimmed,
+                                            &url_for_oauth,
+                                            &extra_headers,
                                             sid.as_deref(),
-                                        ).await;
+                                        )
+                                        .await;
                                     }
                                     Err(e) => {
                                         eprintln!(
@@ -343,21 +357,32 @@ impl McpClient {
                         // error responses. If confirmed, clear the session
                         // and retry. For success responses, pass straight
                         // through to write_response_lines.
-                        if resp_status.as_u16() == 400 || resp_status == reqwest::StatusCode::NOT_FOUND {
+                        if resp_status.as_u16() == 400
+                            || resp_status == reqwest::StatusCode::NOT_FOUND
+                        {
                             let body = r.text().await.unwrap_or_default();
                             if body.contains("Session not found") {
                                 eprintln!(
                                     "\x1b[33m[mcp-http] session expired, retrying without session ID\x1b[0m"
                                 );
                                 *session.lock().await = None;
-                                match build_post(current_token.as_deref(), None, trimmed).send().await {
+                                match build_post(current_token.as_deref(), None, trimmed)
+                                    .send()
+                                    .await
+                                {
                                     Ok(r2) => {
                                         write_response_lines(
-                                            &mut writer, r2, &session,
-                                            &http_client, current_token.as_deref(), trimmed,
-                                            &url_for_oauth, &extra_headers,
+                                            &mut writer,
+                                            r2,
+                                            &session,
+                                            &http_client,
+                                            current_token.as_deref(),
+                                            trimmed,
+                                            &url_for_oauth,
+                                            &extra_headers,
                                             None,
-                                        ).await;
+                                        )
+                                        .await;
                                     }
                                     Err(e) => {
                                         eprintln!(
@@ -372,11 +397,17 @@ impl McpClient {
                             }
                         } else {
                             write_response_lines(
-                                &mut writer, r, &session,
-                                &http_client, curr_tok, trimmed,
-                                &url_for_oauth, &extra_headers,
+                                &mut writer,
+                                r,
+                                &session,
+                                &http_client,
+                                curr_tok,
+                                trimmed,
+                                &url_for_oauth,
+                                &extra_headers,
                                 curr_sid,
-                            ).await;
+                            )
+                            .await;
                         }
                     }
                     Err(e) => {
@@ -417,9 +448,7 @@ impl McpClient {
             Ok(Err(_)) => Err(Error::Provider("mcp response channel dropped".into())),
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
-                Err(Error::Provider(format!(
-                    "mcp request timed out: {method}"
-                )))
+                Err(Error::Provider(format!("mcp request timed out: {method}")))
             }
         }
     }
@@ -633,7 +662,9 @@ async fn write_body_to_pipe(writer: &mut tokio::io::DuplexStream, body: &str, co
     if content_type.contains("text/event-stream") {
         for line in body.lines() {
             if let Some(data) = line.trim().strip_prefix("data:").map(str::trim) {
-                if data.is_empty() { continue; }
+                if data.is_empty() {
+                    continue;
+                }
                 let _ = writer.write_all(data.as_bytes()).await;
                 let _ = writer.write_all(b"\n").await;
                 let _ = writer.flush().await;
@@ -642,7 +673,9 @@ async fn write_body_to_pipe(writer: &mut tokio::io::DuplexStream, body: &str, co
     } else {
         for line in body.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             let _ = writer.write_all(line.as_bytes()).await;
             let _ = writer.write_all(b"\n").await;
             let _ = writer.flush().await;
@@ -679,7 +712,8 @@ async fn write_response_lines(
                 loc.to_string()
             };
             eprintln!("\x1b[2m[mcp-http] following redirect → {fixed}\x1b[0m");
-            let mut req = client.post(&fixed)
+            let mut req = client
+                .post(&fixed)
                 .header("content-type", "application/json")
                 .header("accept", "application/json, text/event-stream");
             if let Some(t) = bearer {
@@ -694,11 +728,19 @@ async fn write_response_lines(
             match req.body(body_sent.to_string()).send().await {
                 Ok(redirected) => {
                     let rstatus = redirected.status();
-                    if let Some(sid) = redirected.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
+                    if let Some(sid) = redirected
+                        .headers()
+                        .get("mcp-session-id")
+                        .and_then(|v| v.to_str().ok())
+                    {
                         *session_id.lock().await = Some(sid.to_string());
                     }
-                    let ct = redirected.headers().get("content-type")
-                        .and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                    let ct = redirected
+                        .headers()
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
                     eprintln!(
                         "\x1b[2m[mcp-http] redirected response: status={rstatus}, content-type={ct}\x1b[0m"
                     );
@@ -714,7 +756,9 @@ async fn write_response_lines(
                             write_body_to_pipe(writer, &rbody, &ct).await;
                         }
                         Err(e) => {
-                            eprintln!("\x1b[31m[mcp-http] failed to read redirected body: {e}\x1b[0m");
+                            eprintln!(
+                                "\x1b[31m[mcp-http] failed to read redirected body: {e}\x1b[0m"
+                            );
                         }
                     }
                 }
@@ -727,7 +771,11 @@ async fn write_response_lines(
     }
 
     // Capture Mcp-Session-Id header from the response.
-    if let Some(sid) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
+    if let Some(sid) = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+    {
         *session_id.lock().await = Some(sid.to_string());
     }
 
@@ -787,7 +835,8 @@ async fn resolve_token_upfront(
     // Auth probe: send a `ping` (valid JSON-RPC but no side effects, no
     // session creation). This ensures the server actually validates auth
     // on the request.
-    let mut req = client.post(mcp_url)
+    let mut req = client
+        .post(mcp_url)
         .header("content-type", "application/json")
         .header("accept", "application/json, text/event-stream")
         .body(r#"{"jsonrpc":"2.0","id":0,"method":"ping"}"#);
@@ -813,9 +862,7 @@ async fn resolve_token_upfront(
         }
         Ok(r) => {
             let status = r.status();
-            eprintln!(
-                "\x1b[2m[mcp-http] {server_name}: probe → {status} (auth OK)\x1b[0m"
-            );
+            eprintln!("\x1b[2m[mcp-http] {server_name}: probe → {status} (auth OK)\x1b[0m");
             return candidate;
         }
         Err(e) => {
@@ -1055,7 +1102,10 @@ mod tests {
                 let id = msg.get("id").and_then(Value::as_u64)?;
                 match method {
                     "tools/call" => {
-                        let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));
+                        let args = msg
+                            .pointer("/params/arguments")
+                            .cloned()
+                            .unwrap_or(json!({}));
                         let text = args
                             .get("text")
                             .and_then(Value::as_str)

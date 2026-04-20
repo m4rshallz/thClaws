@@ -121,10 +121,7 @@ impl Session {
         }
 
         let file_exists = path.exists();
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
 
         // Write header if this is a new file.
         if !file_exists {
@@ -183,45 +180,60 @@ impl Session {
                 continue;
             }
 
-            let val: serde_json::Value = serde_json::from_str(line)
-                .map_err(|e| Error::Config(format!(
-                    "session parse ({}:{}): {e}", path.display(), line_num + 1
-                )))?;
+            let val: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+                Error::Config(format!(
+                    "session parse ({}:{}): {e}",
+                    path.display(),
+                    line_num + 1
+                ))
+            })?;
 
             let kind = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
             if kind == "header" {
-                let h: SessionHeader = serde_json::from_value(val)
-                    .map_err(|e| Error::Config(format!(
-                        "session header parse ({}): {e}", path.display()
-                    )))?;
+                let h: SessionHeader = serde_json::from_value(val).map_err(|e| {
+                    Error::Config(format!("session header parse ({}): {e}", path.display()))
+                })?;
                 header = Some(h);
             } else if kind == "rename" {
                 // Latest rename wins.
-                let ev: RenameEvent = serde_json::from_value(val)
-                    .map_err(|e| Error::Config(format!(
-                        "session rename parse ({}:{}): {e}", path.display(), line_num + 1
-                    )))?;
+                let ev: RenameEvent = serde_json::from_value(val).map_err(|e| {
+                    Error::Config(format!(
+                        "session rename parse ({}:{}): {e}",
+                        path.display(),
+                        line_num + 1
+                    ))
+                })?;
                 if ev.timestamp > last_timestamp {
                     last_timestamp = ev.timestamp;
                 }
                 let trimmed = ev.title.trim();
-                title = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                title = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
             } else {
                 // Message event line
-                let event: MessageEvent = serde_json::from_value(val)
-                    .map_err(|e| Error::Config(format!(
-                        "session event parse ({}:{}): {e}", path.display(), line_num + 1
-                    )))?;
+                let event: MessageEvent = serde_json::from_value(val).map_err(|e| {
+                    Error::Config(format!(
+                        "session event parse ({}:{}): {e}",
+                        path.display(),
+                        line_num + 1
+                    ))
+                })?;
 
                 let role = match event.kind.as_str() {
                     "user" => crate::types::Role::User,
                     "assistant" => crate::types::Role::Assistant,
                     "system" => crate::types::Role::System,
-                    other => return Err(Error::Config(format!(
-                        "session parse ({}:{}): unknown message type '{other}'",
-                        path.display(), line_num + 1
-                    ))),
+                    other => {
+                        return Err(Error::Config(format!(
+                            "session parse ({}:{}): unknown message type '{other}'",
+                            path.display(),
+                            line_num + 1
+                        )))
+                    }
                 };
 
                 if event.timestamp > last_timestamp {
@@ -235,15 +247,22 @@ impl Session {
             }
         }
 
-        let h = header.ok_or_else(|| Error::Config(format!(
-            "session parse ({}): missing header line", path.display()
-        )))?;
+        let h = header.ok_or_else(|| {
+            Error::Config(format!(
+                "session parse ({}): missing header line",
+                path.display()
+            ))
+        })?;
 
         let msg_count = messages.len();
         Ok(Session {
             id: h.id,
             created_at: h.created_at,
-            updated_at: if last_timestamp > 0 { last_timestamp } else { h.created_at },
+            updated_at: if last_timestamp > 0 {
+                last_timestamp
+            } else {
+                h.created_at
+            },
             model: h.model,
             cwd: h.cwd,
             messages,
@@ -267,7 +286,11 @@ impl Session {
         };
         let line = serde_json::to_string(&event)?;
         writeln!(file, "{}", line)?;
-        self.title = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+        self.title = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
         self.updated_at = event.timestamp;
         Ok(())
     }
@@ -330,10 +353,8 @@ impl SessionStore {
         // 2. Id prefix match (covers cases where the user copies a
         // truncated id from the sidebar).
         if trimmed.starts_with("sess-") {
-            let by_prefix: Vec<&SessionMeta> = metas
-                .iter()
-                .filter(|m| m.id.starts_with(trimmed))
-                .collect();
+            let by_prefix: Vec<&SessionMeta> =
+                metas.iter().filter(|m| m.id.starts_with(trimmed)).collect();
             match by_prefix.len() {
                 1 => return Ok(by_prefix[0].id.clone()),
                 n if n > 1 => {
@@ -378,9 +399,7 @@ impl SessionStore {
 
         match partial.len() {
             1 => Ok(partial[0].id.clone()),
-            0 => Err(Error::Config(format!(
-                "no session matching '{trimmed}'"
-            ))),
+            0 => Err(Error::Config(format!("no session matching '{trimmed}'"))),
             n => Err(Error::Config(format!(
                 "session name '{trimmed}' matches {n} sessions — be more specific or use the id",
             ))),
@@ -620,16 +639,24 @@ mod tests {
         std::fs::create_dir_all(dir.path()).unwrap();
 
         let path_a = store.path_for("sess-a");
-        std::fs::write(&path_a, format!(
-            "{}\n{}\n",
-            r#"{"type":"header","id":"sess-a","model":"m1","cwd":"/tmp","created_at":50}"#,
-            r#"{"type":"user","content":[{"type":"text","text":"hi"}],"timestamp":50}"#,
-        )).unwrap();
+        std::fs::write(
+            &path_a,
+            format!(
+                "{}\n{}\n",
+                r#"{"type":"header","id":"sess-a","model":"m1","cwd":"/tmp","created_at":50}"#,
+                r#"{"type":"user","content":[{"type":"text","text":"hi"}],"timestamp":50}"#,
+            ),
+        )
+        .unwrap();
 
         let path_b = store.path_for("sess-b");
-        std::fs::write(&path_b,
-            r#"{"type":"header","id":"sess-b","model":"m2","cwd":"/tmp","created_at":999}"#.to_string() + "\n"
-        ).unwrap();
+        std::fs::write(
+            &path_b,
+            r#"{"type":"header","id":"sess-b","model":"m2","cwd":"/tmp","created_at":999}"#
+                .to_string()
+                + "\n",
+        )
+        .unwrap();
 
         let latest = store.latest().unwrap().unwrap();
         assert_eq!(latest.id, "sess-b");

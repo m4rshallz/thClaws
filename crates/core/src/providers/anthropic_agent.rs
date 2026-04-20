@@ -90,10 +90,7 @@ impl AnthropicAgentProvider {
         });
 
         let resp = self
-            .apply_headers(
-                self.client
-                    .post(format!("{}/v1/agents", self.base_url)),
-            )
+            .apply_headers(self.client.post(format!("{}/v1/agents", self.base_url)))
             .json(&body)
             .send()
             .await
@@ -104,7 +101,10 @@ impl AnthropicAgentProvider {
             return Err(Error::Provider(format!("create agent failed: {text}")));
         }
 
-        let v: Value = resp.json().await.map_err(|e| Error::Provider(format!("agent json: {e}")))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Provider(format!("agent json: {e}")))?;
         let id = v["id"]
             .as_str()
             .ok_or_else(|| Error::Provider("agent response missing id".into()))?
@@ -128,10 +128,7 @@ impl AnthropicAgentProvider {
         });
 
         let resp = self
-            .apply_headers(
-                self.client
-                    .post(format!("{}/v1/sessions", self.base_url)),
-            )
+            .apply_headers(self.client.post(format!("{}/v1/sessions", self.base_url)))
             .json(&body)
             .send()
             .await
@@ -142,7 +139,10 @@ impl AnthropicAgentProvider {
             return Err(Error::Provider(format!("create session failed: {text}")));
         }
 
-        let v: Value = resp.json().await.map_err(|e| Error::Provider(format!("session json: {e}")))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Provider(format!("session json: {e}")))?;
         let id = v["id"]
             .as_str()
             .ok_or_else(|| Error::Provider("session response missing id".into()))?
@@ -162,12 +162,10 @@ impl AnthropicAgentProvider {
         });
 
         let resp = self
-            .apply_headers(
-                self.client.post(format!(
-                    "{}/v1/sessions/{}/events",
-                    self.base_url, session_id
-                )),
-            )
+            .apply_headers(self.client.post(format!(
+                "{}/v1/sessions/{}/events",
+                self.base_url, session_id
+            )))
             .json(&body)
             .send()
             .await
@@ -201,12 +199,10 @@ impl Provider for AnthropicAgentProvider {
 
         // Open SSE stream first, then send the message.
         let stream_resp = self
-            .apply_headers(
-                self.client.get(format!(
-                    "{}/v1/sessions/{}/stream",
-                    self.base_url, session_id
-                )),
-            )
+            .apply_headers(self.client.get(format!(
+                "{}/v1/sessions/{}/stream",
+                self.base_url, session_id
+            )))
             .send()
             .await
             .map_err(|e| Error::Provider(format!("stream connect: {e}")))?;

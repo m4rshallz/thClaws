@@ -158,9 +158,8 @@ impl PluginRegistry {
         if contents.trim().is_empty() {
             return Ok(Self::default());
         }
-        serde_json::from_str(&contents).map_err(|e| {
-            Error::Config(format!("parse {}: {e}", path.display()))
-        })
+        serde_json::from_str(&contents)
+            .map_err(|e| Error::Config(format!("parse {}: {e}", path.display())))
     }
 
     pub fn save(&self, user: bool) -> Result<PathBuf> {
@@ -194,8 +193,7 @@ impl PluginRegistry {
 
 fn registry_path(user: bool) -> Result<PathBuf> {
     if user {
-        let home = std::env::var("HOME")
-            .map_err(|_| Error::Config("HOME is not set".into()))?;
+        let home = std::env::var("HOME").map_err(|_| Error::Config("HOME is not set".into()))?;
         Ok(PathBuf::from(home).join(".config/thclaws/plugins.json"))
     } else {
         let cwd = std::env::current_dir()?;
@@ -205,8 +203,7 @@ fn registry_path(user: bool) -> Result<PathBuf> {
 
 fn plugins_dir(user: bool) -> Result<PathBuf> {
     if user {
-        let home = std::env::var("HOME")
-            .map_err(|_| Error::Config("HOME is not set".into()))?;
+        let home = std::env::var("HOME").map_err(|_| Error::Config("HOME is not set".into()))?;
         Ok(PathBuf::from(home).join(".config/thclaws/plugins"))
     } else {
         let cwd = std::env::current_dir()?;
@@ -241,10 +238,7 @@ pub async fn install(url: &str, user: bool) -> Result<Plugin> {
 
     // Stage under a temp dir inside the target so the rename at the end
     // is same-volume. Using `uuid` avoids leaking PID-based names.
-    let staging = dest_parent.join(format!(
-        ".install-{}",
-        uuid::Uuid::new_v4().simple()
-    ));
+    let staging = dest_parent.join(format!(".install-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&staging)?;
 
     let fetch_result = fetch_into(url, &staging).await;
@@ -276,8 +270,13 @@ pub async fn install(url: &str, user: bool) -> Result<Plugin> {
             final_dir.display()
         )));
     }
-    std::fs::rename(&plugin_root, &final_dir)
-        .map_err(|e| Error::Config(format!("move {} → {}: {e}", plugin_root.display(), final_dir.display())))?;
+    std::fs::rename(&plugin_root, &final_dir).map_err(|e| {
+        Error::Config(format!(
+            "move {} → {}: {e}",
+            plugin_root.display(),
+            final_dir.display()
+        ))
+    })?;
     // If plugin_root was inside staging (wrapper case), the outer staging
     // may still hold metadata. Drop it either way.
     let _ = std::fs::remove_dir_all(&staging);
@@ -334,9 +333,8 @@ pub fn remove(name: &str, user: bool) -> Result<bool> {
         return Ok(false);
     };
     if plugin.path.exists() {
-        std::fs::remove_dir_all(&plugin.path).map_err(|e| {
-            Error::Config(format!("delete {}: {e}", plugin.path.display()))
-        })?;
+        std::fs::remove_dir_all(&plugin.path)
+            .map_err(|e| Error::Config(format!("delete {}: {e}", plugin.path.display())))?;
     }
     registry.save(user)?;
     Ok(true)
@@ -376,7 +374,9 @@ pub fn all_plugins_all_scopes() -> Vec<Plugin> {
 pub fn plugin_skill_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for plugin in installed_plugins_all_scopes() {
-        let Ok(manifest) = plugin.manifest() else { continue };
+        let Ok(manifest) = plugin.manifest() else {
+            continue;
+        };
         for rel in &manifest.skills {
             dirs.push(plugin.path.join(rel));
         }
@@ -388,7 +388,9 @@ pub fn plugin_skill_dirs() -> Vec<PathBuf> {
 pub fn plugin_command_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for plugin in installed_plugins_all_scopes() {
-        let Ok(manifest) = plugin.manifest() else { continue };
+        let Ok(manifest) = plugin.manifest() else {
+            continue;
+        };
         for rel in &manifest.commands {
             dirs.push(plugin.path.join(rel));
         }
@@ -402,7 +404,9 @@ pub fn plugin_command_dirs() -> Vec<PathBuf> {
 pub fn plugin_agent_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for plugin in installed_plugins_all_scopes() {
-        let Ok(manifest) = plugin.manifest() else { continue };
+        let Ok(manifest) = plugin.manifest() else {
+            continue;
+        };
         for rel in &manifest.agents {
             dirs.push(plugin.path.join(rel));
         }
@@ -416,7 +420,9 @@ pub fn plugin_agent_dirs() -> Vec<PathBuf> {
 pub fn plugin_mcp_servers() -> Vec<McpServerConfig> {
     let mut out = Vec::new();
     for plugin in installed_plugins_all_scopes() {
-        let Ok(manifest) = plugin.manifest() else { continue };
+        let Ok(manifest) = plugin.manifest() else {
+            continue;
+        };
         for (name, entry) in &manifest.mcp_servers {
             out.push(entry.to_config(name));
         }
@@ -479,8 +485,8 @@ async fn download_zip(url: &str) -> Result<Vec<u8>> {
 
 fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
     let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| Error::Config(format!("open zip: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| Error::Config(format!("open zip: {e}")))?;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -504,10 +510,8 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Some(mode) = entry.unix_mode() {
-                    let _ = std::fs::set_permissions(
-                        &out_path,
-                        std::fs::Permissions::from_mode(mode),
-                    );
+                    let _ =
+                        std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode));
                 }
             }
         }

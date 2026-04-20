@@ -151,7 +151,10 @@ mod tests {
     #[tokio::test]
     async fn registry_unknown_tool_errors() {
         let reg = ToolRegistry::with_builtins();
-        let err = reg.call("NopeTool", serde_json::json!({})).await.unwrap_err();
+        let err = reg
+            .call("NopeTool", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(format!("{err}").contains("unknown tool"));
     }
 
@@ -163,8 +166,19 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "AskUserQuestion", "Bash", "Edit", "EnterPlanMode", "ExitPlanMode",
-                "Glob", "Grep", "Ls", "Read", "TodoWrite", "WebFetch", "WebSearch", "Write"
+                "AskUserQuestion",
+                "Bash",
+                "Edit",
+                "EnterPlanMode",
+                "ExitPlanMode",
+                "Glob",
+                "Grep",
+                "Ls",
+                "Read",
+                "TodoWrite",
+                "WebFetch",
+                "WebSearch",
+                "Write"
             ]
         );
         for def in &defs {

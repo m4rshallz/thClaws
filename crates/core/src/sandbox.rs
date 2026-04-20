@@ -160,7 +160,10 @@ mod tests {
         with_sandbox(|root| {
             let err = Sandbox::validate_against(root, "../../etc/passwd").unwrap_err();
             let msg = format!("{err}");
-            assert!(msg.contains("access denied") || msg.contains("not accessible"), "got: {msg}");
+            assert!(
+                msg.contains("access denied") || msg.contains("not accessible"),
+                "got: {msg}"
+            );
         });
     }
 
@@ -186,7 +189,10 @@ mod tests {
         with_sandbox(|root| {
             let outside = format!("{}/../outside.txt", root.display());
             let err = Sandbox::validate_against(root, &outside).unwrap_err();
-            assert!(format!("{err}").contains("access denied") || format!("{err}").contains("not accessible"));
+            assert!(
+                format!("{err}").contains("access denied")
+                    || format!("{err}").contains("not accessible")
+            );
         });
     }
 

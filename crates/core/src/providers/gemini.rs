@@ -34,22 +34,35 @@ pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 /// so the streaming loop can append raw chunks to it.
 fn open_debug_log(body: &Value, model: &str) -> Option<std::fs::File> {
     let setting = std::env::var("THCLAWS_DEBUG_GEMINI").ok()?;
-    if setting.is_empty() || setting == "0" { return None; }
+    if setting.is_empty() || setting == "0" {
+        return None;
+    }
     let path = if setting == "1" || setting.eq_ignore_ascii_case("true") {
-        std::env::current_dir().ok()?.join(".thclaws/logs/gemini-raw.log")
+        std::env::current_dir()
+            .ok()?
+            .join(".thclaws/logs/gemini-raw.log")
     } else {
         std::path::PathBuf::from(setting)
     };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
     use std::io::Write;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let _ = writeln!(f, "\n===== {now} model={model} =====");
-    let _ = writeln!(f, "REQUEST: {}", serde_json::to_string(body).unwrap_or_default());
+    let _ = writeln!(
+        f,
+        "REQUEST: {}",
+        serde_json::to_string(body).unwrap_or_default()
+    );
     let _ = writeln!(f, "RAW STREAM:");
     let _ = f.flush();
     eprintln!(
@@ -210,10 +223,7 @@ impl GeminiProvider {
 #[async_trait]
 impl Provider for GeminiProvider {
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        let url = format!(
-            "{}/v1beta/models",
-            self.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/v1beta/models", self.base_url.trim_end_matches('/'));
         let resp = self
             .client
             .get(&url)
@@ -456,7 +466,12 @@ struct ThinkFilter {
 }
 
 impl ThinkFilter {
-    fn new() -> Self { Self { inside: false, pending: String::new() } }
+    fn new() -> Self {
+        Self {
+            inside: false,
+            pending: String::new(),
+        }
+    }
 
     /// Feed a chunk of raw text from the model. Returns the transformed text
     /// (may include ANSI escapes; may be empty if everything is buffered).
@@ -484,7 +499,11 @@ impl ThinkFilter {
                 // Emit the text before the tag with the appropriate styling.
                 let before = &input[idx..idx + rel];
                 if !before.is_empty() {
-                    let style = if self.inside { STYLE_THINK } else { STYLE_ANSWER };
+                    let style = if self.inside {
+                        STYLE_THINK
+                    } else {
+                        STYLE_ANSWER
+                    };
                     out.push_str(style);
                     out.push_str(before);
                     out.push_str(RESET);
@@ -499,7 +518,9 @@ impl ThinkFilter {
                     let after = &input[idx..];
                     if let Some(s) = after.strip_prefix('\n') {
                         idx += 1;
-                        if s.starts_with('\n') { idx += 1; }
+                        if s.starts_with('\n') {
+                            idx += 1;
+                        }
                     }
                     out.push('\n');
                 }
@@ -519,7 +540,9 @@ impl ThinkFilter {
                 let mut keepback = 0;
                 for n in 1..=limit {
                     let start = tail.len() - n;
-                    if !tail.is_char_boundary(start) { continue; }
+                    if !tail.is_char_boundary(start) {
+                        continue;
+                    }
                     if needle.starts_with(&tail[start..]) {
                         keepback = n;
                     }
@@ -528,7 +551,11 @@ impl ThinkFilter {
                 debug_assert!(tail.is_char_boundary(split_at));
                 let emit = &tail[..split_at];
                 if !emit.is_empty() {
-                    let style = if self.inside { STYLE_THINK } else { STYLE_ANSWER };
+                    let style = if self.inside {
+                        STYLE_THINK
+                    } else {
+                        STYLE_ANSWER
+                    };
                     out.push_str(style);
                     out.push_str(emit);
                     out.push_str(RESET);
@@ -546,7 +573,11 @@ impl ThinkFilter {
         if pending.is_empty() {
             return String::new();
         }
-        let style = if self.inside { "\x1b[2;37m" } else { "\x1b[1;32m" };
+        let style = if self.inside {
+            "\x1b[2;37m"
+        } else {
+            "\x1b[1;32m"
+        };
         format!("{style}{pending}\x1b[0m")
     }
 }
@@ -734,10 +765,7 @@ mod tests {
         // Sorted + prefix stripped.
         let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["gemini-1.5-pro", "gemini-2.0-flash"]);
-        assert_eq!(
-            models[1].display_name.as_deref(),
-            Some("Gemini 2.0 Flash")
-        );
+        assert_eq!(models[1].display_name.as_deref(), Some("Gemini 2.0 Flash"));
     }
 
     #[tokio::test]
@@ -751,7 +779,9 @@ mod tests {
             "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"there\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2}}\n\n",
         );
         Mock::given(method("POST"))
-            .and(path("/v1beta/models/gemini-2.0-flash:streamGenerateContent"))
+            .and(path(
+                "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+            ))
             .and(header("x-goog-api-key", "test-key"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -785,7 +815,9 @@ mod tests {
         let server = MockServer::start().await;
         let sse_body = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"Read\",\"args\":{\"path\":\"/tmp/x\"}}}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini-2.0-flash\"}\n\n";
         Mock::given(method("POST"))
-            .and(path("/v1beta/models/gemini-2.0-flash:streamGenerateContent"))
+            .and(path(
+                "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+            ))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
@@ -820,7 +852,10 @@ mod tests {
         let out = f.push("hello <thinking>plan stuff</thinking>world");
         // Newline after </thinking> so the user-facing answer starts on its
         // own line under the reasoning.
-        assert_eq!(out, "\x1b[1;32mhello \x1b[0m\x1b[2;37mplan stuff\x1b[0m\n\x1b[1;32mworld\x1b[0m");
+        assert_eq!(
+            out,
+            "\x1b[1;32mhello \x1b[0m\x1b[2;37mplan stuff\x1b[0m\n\x1b[1;32mworld\x1b[0m"
+        );
         assert_eq!(f.flush(), "");
         assert!(!f.inside);
     }
@@ -831,10 +866,7 @@ mod tests {
         // Model already emits "</thinking>\n\nanswer" — we should NOT end up
         // with three newlines before "answer".
         let out = f.push("<thinking>plan</thinking>\n\nanswer");
-        assert_eq!(
-            out,
-            "\x1b[2;37mplan\x1b[0m\n\x1b[1;32manswer\x1b[0m"
-        );
+        assert_eq!(out, "\x1b[2;37mplan\x1b[0m\n\x1b[1;32manswer\x1b[0m");
     }
 
     #[test]

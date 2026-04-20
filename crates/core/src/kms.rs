@@ -87,8 +87,7 @@ impl KmsRef {
         let candidate = self.pages_dir().join(&name);
         // Reject anything that escapes pages_dir via `..` or absolute path.
         let pages_dir = self.pages_dir();
-        let canon_parent = std::fs::canonicalize(&pages_dir)
-            .unwrap_or_else(|_| pages_dir.clone());
+        let canon_parent = std::fs::canonicalize(&pages_dir).unwrap_or_else(|_| pages_dir.clone());
         // canonicalize fails on non-existent files, so compare logically too.
         if name.contains("..") || Path::new(&name).is_absolute() {
             return Err(Error::Tool(format!(

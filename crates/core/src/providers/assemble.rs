@@ -129,9 +129,7 @@ mod tests {
     #[tokio::test]
     async fn text_only_turn() {
         let r = collected(vec![
-            ProviderEvent::MessageStart {
-                model: "m".into(),
-            },
+            ProviderEvent::MessageStart { model: "m".into() },
             ProviderEvent::TextDelta("Hello".into()),
             ProviderEvent::TextDelta(", world".into()),
             ProviderEvent::ContentBlockStop,

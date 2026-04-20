@@ -106,12 +106,8 @@ pub async fn discover(client: &Client, mcp_url: &str) -> Result<OAuthMetadata> {
             .map(|(base, _)| base.to_string())
             .unwrap_or_else(|| mcp_url.trim_end_matches('/').to_string()),
     };
-    let resource_meta_url = format!(
-        "{origin}/.well-known/oauth-protected-resource"
-    );
-    eprintln!(
-        "\x1b[2m[oauth] fetching {resource_meta_url}\x1b[0m"
-    );
+    let resource_meta_url = format!("{origin}/.well-known/oauth-protected-resource");
+    eprintln!("\x1b[2m[oauth] fetching {resource_meta_url}\x1b[0m");
 
     let resource_resp = client
         .get(&resource_meta_url)
@@ -128,9 +124,9 @@ pub async fn discover(client: &Client, mcp_url: &str) -> Result<OAuthMetadata> {
         .and_then(|a| a.as_array())
         .and_then(|arr| arr.first())
         .and_then(|v| v.as_str())
-        .ok_or_else(|| Error::Provider(
-            "oauth: no authorization_servers in resource metadata".into()
-        ))?
+        .ok_or_else(|| {
+            Error::Provider("oauth: no authorization_servers in resource metadata".into())
+        })?
         .to_string();
 
     // Step 2: fetch the auth server's RFC 8414 metadata.
@@ -165,7 +161,11 @@ pub async fn discover(client: &Client, mcp_url: &str) -> Result<OAuthMetadata> {
     let scopes_supported: Vec<String> = meta
         .get("scopes_supported")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     Ok(OAuthMetadata {
@@ -220,7 +220,8 @@ pub async fn authorize(
 
     // Find a free local port for the callback server.
     let listener = find_listener().await?;
-    let port = listener.local_addr()
+    let port = listener
+        .local_addr()
         .map_err(|e| Error::Provider(format!("callback addr: {e}")))?
         .port();
     let redirect_uri = format!("http://localhost:{port}/callback");
@@ -242,9 +243,7 @@ pub async fn authorize(
         urlencoding::encode(&code_challenge),
     );
 
-    eprintln!(
-        "\x1b[36m[oauth] opening browser for authorization…\x1b[0m"
-    );
+    eprintln!("\x1b[36m[oauth] opening browser for authorization…\x1b[0m");
     open_browser(&auth_url);
 
     // Wait for the callback.
@@ -285,7 +284,10 @@ pub async fn authorize(
         .get("refresh_token")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let expires_in = tv.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(3600);
+    let expires_in = tv
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3600);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -308,7 +310,9 @@ pub async fn authorize(
 
 /// Try to refresh an expired token. Returns a new TokenEntry on success.
 pub async fn refresh(client: &Client, entry: &TokenEntry) -> Result<TokenEntry> {
-    let refresh_token = entry.refresh_token.as_ref()
+    let refresh_token = entry
+        .refresh_token
+        .as_ref()
         .ok_or_else(|| Error::Provider("no refresh_token available".into()))?;
 
     let resp = client
@@ -342,7 +346,10 @@ pub async fn refresh(client: &Client, entry: &TokenEntry) -> Result<TokenEntry> 
         .and_then(|v| v.as_str())
         .map(String::from)
         .or_else(|| entry.refresh_token.clone());
-    let expires_in = tv.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(3600);
+    let expires_in = tv
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3600);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -358,7 +365,9 @@ pub async fn refresh(client: &Client, entry: &TokenEntry) -> Result<TokenEntry> 
 
 /// Check whether a token entry is still valid (with a 60 s margin).
 pub fn is_valid(entry: &TokenEntry) -> bool {
-    if entry.access_token.is_empty() { return false; }
+    if entry.access_token.is_empty() {
+        return false;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -385,13 +394,13 @@ async fn wait_for_callback(
 ) -> Result<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let (mut stream, _addr) = tokio::time::timeout(
-        std::time::Duration::from_secs(300),
-        listener.accept(),
-    )
-    .await
-    .map_err(|_| Error::Provider("oauth: timed out waiting for browser callback (5 min)".into()))?
-    .map_err(|e| Error::Provider(format!("oauth accept: {e}")))?;
+    let (mut stream, _addr) =
+        tokio::time::timeout(std::time::Duration::from_secs(300), listener.accept())
+            .await
+            .map_err(|_| {
+                Error::Provider("oauth: timed out waiting for browser callback (5 min)".into())
+            })?
+            .map_err(|e| Error::Provider(format!("oauth accept: {e}")))?;
 
     let mut buf = vec![0u8; 4096];
     let n = stream
@@ -444,11 +453,19 @@ async fn wait_for_callback(
 
 fn open_browser(url: &str) {
     #[cfg(target_os = "macos")]
-    { let _ = std::process::Command::new("open").arg(url).spawn(); }
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
     #[cfg(target_os = "linux")]
-    { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
     #[cfg(target_os = "windows")]
-    { let _ = std::process::Command::new("cmd").args(["/c", "start", url]).spawn(); }
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", url])
+            .spawn();
+    }
 }
 
 fn rand_u64() -> u64 {

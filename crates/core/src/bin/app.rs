@@ -4,12 +4,12 @@
 //! `--cli`: interactive REPL in the terminal (same as thclaws-cli).
 //! `--print`: non-interactive single-prompt mode (implies --cli).
 
+use clap::Parser;
 use thclaws_core::config::AppConfig;
 use thclaws_core::dotenv::load_dotenv;
-use thclaws_core::{endpoints, secrets};
 use thclaws_core::repl::{run_print_mode, run_repl};
 use thclaws_core::sandbox::Sandbox;
-use clap::Parser;
+use thclaws_core::{endpoints, secrets};
 
 #[derive(Parser)]
 #[command(

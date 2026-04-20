@@ -140,17 +140,19 @@ impl AgentDefsConfig {
     fn agent_dirs() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         if let Ok(home) = std::env::var("HOME") {
-            dirs.push(PathBuf::from(&home).join(".claude/agents"));       // user Claude Code
+            dirs.push(PathBuf::from(&home).join(".claude/agents")); // user Claude Code
             dirs.push(PathBuf::from(&home).join(".config/thclaws/agents")); // user thClaws
         }
-        dirs.push(PathBuf::from(".claude/agents"));   // project Claude Code
-        dirs.push(PathBuf::from(".thclaws/agents"));  // project thClaws (highest priority)
+        dirs.push(PathBuf::from(".claude/agents")); // project Claude Code
+        dirs.push(PathBuf::from(".thclaws/agents")); // project thClaws (highest priority)
         dirs
     }
 
     /// Load agent definitions from a directory of .md files.
     fn load_md_dir(&mut self, dir: &Path) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -171,7 +173,9 @@ impl AgentDefsConfig {
     /// collision. Used for plugin-contributed dirs so a plugin can't
     /// shadow the user's own agent defs.
     fn load_md_dir_no_clobber(&mut self, dir: &Path) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -201,7 +205,8 @@ impl AgentDefsConfig {
         let description = frontmatter.get("description").cloned().unwrap_or_default();
         let model = frontmatter.get("model").cloned();
         let color = frontmatter.get("color").cloned();
-        let permission_mode = frontmatter.get("permissionMode")
+        let permission_mode = frontmatter
+            .get("permissionMode")
             .or_else(|| frontmatter.get("permission_mode"))
             .cloned();
         let isolation = frontmatter.get("isolation").cloned();
@@ -214,13 +219,23 @@ impl AgentDefsConfig {
 
         let tools = frontmatter
             .get("tools")
-            .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+            .map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
 
         let disallowed_tools = frontmatter
             .get("disallowedTools")
             .or_else(|| frontmatter.get("disallowed_tools"))
-            .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+            .map(|s| {
+                s.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
 
         Some(AgentDef {
@@ -284,7 +299,10 @@ mod tests {
         let config = AgentDefsConfig::load_from_path(&path);
         assert_eq!(config.agents.len(), 2);
         assert_eq!(config.get("researcher").unwrap().max_iterations, 5);
-        assert_eq!(config.get("coder").unwrap().tools, vec!["Read", "Write", "Edit"]);
+        assert_eq!(
+            config.get("coder").unwrap().tools,
+            vec!["Read", "Write", "Edit"]
+        );
         assert!(config.get("nonexistent").is_none());
     }
 
@@ -298,8 +316,14 @@ mod tests {
     fn names_lists_all() {
         let config = AgentDefsConfig {
             agents: vec![
-                AgentDef { name: "a".into(), ..Default::default() },
-                AgentDef { name: "b".into(), ..Default::default() },
+                AgentDef {
+                    name: "a".into(),
+                    ..Default::default()
+                },
+                AgentDef {
+                    name: "b".into(),
+                    ..Default::default()
+                },
             ],
         };
         assert_eq!(config.names(), vec!["a", "b"]);
@@ -309,7 +333,9 @@ mod tests {
     fn parse_agent_md_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("researcher.md");
-        std::fs::write(&path, "\
+        std::fs::write(
+            &path,
+            "\
 ---
 name: researcher
 description: Researches topics
@@ -319,7 +345,9 @@ maxTurns: 20
 color: blue
 ---
 You are a research agent. Search thoroughly and report findings.
-").unwrap();
+",
+        )
+        .unwrap();
 
         let agent = AgentDefsConfig::parse_agent_md(&path).unwrap();
         assert_eq!(agent.name, "researcher");
@@ -335,12 +363,16 @@ You are a research agent. Search thoroughly and report findings.
     fn parse_agent_md_name_from_filename() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("backend.md");
-        std::fs::write(&path, "\
+        std::fs::write(
+            &path,
+            "\
 ---
 description: Backend developer
 ---
 Build REST APIs.
-").unwrap();
+",
+        )
+        .unwrap();
 
         let agent = AgentDefsConfig::parse_agent_md(&path).unwrap();
         assert_eq!(agent.name, "backend");
@@ -363,18 +395,26 @@ Build REST APIs.
         // A plugin dir with an agent of the same name PLUS a new one.
         let plugin_dir = dir.path().join("plugin-agents");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        std::fs::write(plugin_dir.join("coder.md"), "\
+        std::fs::write(
+            plugin_dir.join("coder.md"),
+            "\
 ---
 name: coder
 ---
 plugin version (should NOT win)
-").unwrap();
-        std::fs::write(plugin_dir.join("reviewer.md"), "\
+",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_dir.join("reviewer.md"),
+            "\
 ---
 name: reviewer
 ---
 plugin-only reviewer
-").unwrap();
+",
+        )
+        .unwrap();
 
         config.load_md_dir_no_clobber(&plugin_dir);
         assert_eq!(config.get("coder").unwrap().instructions, "project version");
@@ -400,14 +440,21 @@ plugin-only reviewer
         // MD agent with same name overrides.
         let md_dir = dir.path().join("agents");
         std::fs::create_dir_all(&md_dir).unwrap();
-        std::fs::write(md_dir.join("coder.md"), "\
+        std::fs::write(
+            md_dir.join("coder.md"),
+            "\
 ---
 name: coder
 ---
 new instructions
-").unwrap();
+",
+        )
+        .unwrap();
 
         config.load_md_dir(&md_dir);
-        assert_eq!(config.get("coder").unwrap().instructions, "new instructions");
+        assert_eq!(
+            config.get("coder").unwrap().instructions,
+            "new instructions"
+        );
     }
 }

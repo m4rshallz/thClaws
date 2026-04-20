@@ -136,7 +136,11 @@ pub struct TeamMessage {
 
 impl TeamMessage {
     pub fn new(from: &str, text: &str) -> Self {
-        let summary = text.split_whitespace().take(8).collect::<Vec<_>>().join(" ");
+        let summary = text
+            .split_whitespace()
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(" ");
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             from: from.into(),
@@ -263,7 +267,12 @@ impl TaskQueue {
         })
     }
 
-    pub fn create(&self, subject: &str, description: &str, blocked_by: &[String]) -> Result<TeamTask> {
+    pub fn create(
+        &self,
+        subject: &str,
+        description: &str,
+        blocked_by: &[String],
+    ) -> Result<TeamTask> {
         let id = self.next_id()?;
         let now = now_secs();
         let task = TeamTask {
@@ -295,14 +304,16 @@ impl TaskQueue {
     pub fn claim(&self, task_id: &str, agent_id: &str) -> Result<TeamTask> {
         // Busy check: agent can't claim if they already own an in_progress task.
         let existing = self.list(Some(TaskStatus::InProgress))?;
-        let busy_tasks: Vec<String> = existing.iter()
+        let busy_tasks: Vec<String> = existing
+            .iter()
             .filter(|t| t.owner.as_deref() == Some(agent_id))
             .map(|t| t.id.clone())
             .collect();
         if !busy_tasks.is_empty() {
             return Err(Error::Tool(format!(
                 "agent '{}' is busy with task(s): {}. Complete them first.",
-                agent_id, busy_tasks.join(", ")
+                agent_id,
+                busy_tasks.join(", ")
             )));
         }
 
@@ -355,9 +366,7 @@ impl TaskQueue {
             if task.owner.as_deref() != Some(agent_id) {
                 return Err(Error::Tool(format!(
                     "task {} owned by {:?}, not {}",
-                    task_id,
-                    task.owner,
-                    agent_id
+                    task_id, task.owner, agent_id
                 )));
             }
             task.status = TaskStatus::Completed;
@@ -639,7 +648,9 @@ pub struct SendMessageTool {
 
 #[async_trait]
 impl Tool for SendMessageTool {
-    fn name(&self) -> &'static str { "SendMessage" }
+    fn name(&self) -> &'static str {
+        "SendMessage"
+    }
     fn description(&self) -> &'static str {
         "Send a message to another agent in the team. Use `to: \"<name>\"` for \
          a specific teammate, or `to: \"*\"` to broadcast to all teammates. \
@@ -660,7 +671,9 @@ impl Tool for SendMessageTool {
     }
     async fn call(&self, input: Value) -> Result<String> {
         let to = crate::tools::req_str(&input, "to")?;
-        let text = input.get("text").and_then(Value::as_str)
+        let text = input
+            .get("text")
+            .and_then(Value::as_str)
             .or_else(|| input.get("content").and_then(Value::as_str))
             .ok_or_else(|| Error::Tool("missing 'text' field".into()))?;
 
@@ -714,7 +727,9 @@ pub struct CheckInboxTool {
 
 #[async_trait]
 impl Tool for CheckInboxTool {
-    fn name(&self) -> &'static str { "CheckInbox" }
+    fn name(&self) -> &'static str {
+        "CheckInbox"
+    }
     fn description(&self) -> &'static str {
         "Check your inbox for unread messages from other agents. Returns all \
          unread messages and marks them as read."
@@ -745,7 +760,9 @@ pub struct TeamStatusTool {
 
 #[async_trait]
 impl Tool for TeamStatusTool {
-    fn name(&self) -> &'static str { "TeamStatus" }
+    fn name(&self) -> &'static str {
+        "TeamStatus"
+    }
     fn description(&self) -> &'static str {
         "Check the status of all agents and the task queue."
     }
@@ -771,12 +788,24 @@ impl Tool for TeamStatusTool {
         let tq = self.mailbox.task_queue();
         let tasks = tq.list(None)?;
         if !tasks.is_empty() {
-            let pending = tasks.iter().filter(|t| t.status == TaskStatus::Pending).count();
-            let in_progress = tasks.iter().filter(|t| t.status == TaskStatus::InProgress).count();
-            let completed = tasks.iter().filter(|t| t.status == TaskStatus::Completed).count();
+            let pending = tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::Pending)
+                .count();
+            let in_progress = tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::InProgress)
+                .count();
+            let completed = tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::Completed)
+                .count();
             parts.push(format!(
                 "\n## Tasks ({} total: {} pending, {} in progress, {} completed)",
-                tasks.len(), pending, in_progress, completed
+                tasks.len(),
+                pending,
+                in_progress,
+                completed
             ));
             for t in &tasks {
                 let owner = t.owner.as_deref().unwrap_or("-");
@@ -799,7 +828,9 @@ pub struct TeamCreateTool {
 
 #[async_trait]
 impl Tool for TeamCreateTool {
-    fn name(&self) -> &'static str { "TeamCreate" }
+    fn name(&self) -> &'static str {
+        "TeamCreate"
+    }
     fn description(&self) -> &'static str {
         "Create an agent team for parallel work. Define agent names and roles. \
          After creating, use SpawnTeammate to start each agent. Use \
@@ -827,22 +858,32 @@ impl Tool for TeamCreateTool {
             "required": ["name", "agents"]
         })
     }
-    fn requires_approval(&self, _: &Value) -> bool { true }
+    fn requires_approval(&self, _: &Value) -> bool {
+        true
+    }
     async fn call(&self, input: Value) -> Result<String> {
         let name = crate::tools::req_str(&input, "name")?;
         let description = input.get("description").and_then(Value::as_str);
-        let agents = input.get("agents").and_then(Value::as_array)
+        let agents = input
+            .get("agents")
+            .and_then(Value::as_array)
             .ok_or_else(|| Error::Tool("missing agents".into()))?;
 
         let mut members = Vec::new();
         for a in agents {
-            let agent_name = a.get("name").and_then(Value::as_str)
+            let agent_name = a
+                .get("name")
+                .and_then(Value::as_str)
                 .ok_or_else(|| Error::Tool("agent missing name".into()))?;
             self.mailbox.init_agent(agent_name)?;
             members.push(TeamMember {
                 name: agent_name.into(),
-                prompt: a.get("prompt").or(a.get("instructions"))
-                    .and_then(Value::as_str).unwrap_or("").into(),
+                prompt: a
+                    .get("prompt")
+                    .or(a.get("instructions"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .into(),
                 role: a.get("role").and_then(Value::as_str).unwrap_or("").into(),
                 color: None,
                 cwd: None,
@@ -873,7 +914,8 @@ impl Tool for TeamCreateTool {
              - Use TeamTaskCreate to queue work, SendMessage to assign and coordinate.\n\
              - Use Read/Glob/Grep only for review and verification.\n\
              - If something fails, message the responsible teammate to fix it.",
-            name, names.join(", ")
+            name,
+            names.join(", ")
         ))
     }
 }
@@ -887,7 +929,9 @@ pub struct SpawnTeammateTool {
 
 #[async_trait]
 impl Tool for SpawnTeammateTool {
-    fn name(&self) -> &'static str { "SpawnTeammate" }
+    fn name(&self) -> &'static str {
+        "SpawnTeammate"
+    }
     fn description(&self) -> &'static str {
         "Spawn a teammate agent process. The teammate runs autonomously, \
          polls its inbox for messages, and can claim tasks from the task queue. \
@@ -904,7 +948,9 @@ impl Tool for SpawnTeammateTool {
             "required": ["name", "prompt"]
         })
     }
-    fn requires_approval(&self, _: &Value) -> bool { true }
+    fn requires_approval(&self, _: &Value) -> bool {
+        true
+    }
     async fn call(&self, input: Value) -> Result<String> {
         let name = crate::tools::req_str(&input, "name")?;
         let prompt = crate::tools::req_str(&input, "prompt")?;
@@ -941,7 +987,9 @@ impl Tool for SpawnTeammateTool {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "thclaws".to_string());
         // Use absolute path so teammates with different cwd still find the team dir.
-        let team_dir = self.mailbox.team_dir
+        let team_dir = self
+            .mailbox
+            .team_dir
             .canonicalize()
             .unwrap_or_else(|_| {
                 std::env::current_dir()
@@ -973,10 +1021,7 @@ impl Tool for SpawnTeammateTool {
 
         // Git worktree isolation: if agent def has `isolation: worktree`,
         // create a git worktree for this teammate on branch `team/{name}`.
-        let worktree_path = if agent_def
-            .and_then(|d| d.isolation.as_deref())
-            == Some("worktree")
-        {
+        let worktree_path = if agent_def.and_then(|d| d.isolation.as_deref()) == Some("worktree") {
             let project_root = std::env::current_dir().unwrap_or_default();
             let wt_dir = project_root.join(format!(".thclaws/worktrees/{name}"));
             let branch = format!("team/{name}");
@@ -1007,10 +1052,15 @@ impl Tool for SpawnTeammateTool {
                     // Need an initial commit so worktrees can branch off HEAD.
                     let _ = std::process::Command::new("git")
                         .args([
-                            "-c", "user.name=thclaws",
-                            "-c", "user.email=thclaws@local",
-                            "commit", "--allow-empty", "-q",
-                            "-m", "init",
+                            "-c",
+                            "user.name=thclaws",
+                            "-c",
+                            "user.email=thclaws@local",
+                            "commit",
+                            "--allow-empty",
+                            "-q",
+                            "-m",
+                            "init",
                         ])
                         .current_dir(&project_root)
                         .output();
@@ -1025,18 +1075,16 @@ impl Tool for SpawnTeammateTool {
                     .output();
                 // Create worktree.
                 let result = std::process::Command::new("git")
-                    .args([
-                        "worktree", "add",
-                        &wt_dir.to_string_lossy(),
-                        &branch,
-                    ])
+                    .args(["worktree", "add", &wt_dir.to_string_lossy(), &branch])
                     .current_dir(&project_root)
                     .output();
                 match result {
                     Ok(out) if out.status.success() => {
                         eprintln!(
                             "\x1b[33m[team] created worktree for '{}' at {} (branch: {})\x1b[0m",
-                            name, wt_dir.display(), branch
+                            name,
+                            wt_dir.display(),
+                            branch
                         );
                     }
                     Ok(out) => {
@@ -1068,14 +1116,16 @@ impl Tool for SpawnTeammateTool {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let effective_cwd = worktree_path.clone()
+        let effective_cwd = worktree_path
+            .clone()
             .or_else(|| cwd.map(String::from))
             .or_else(|| member.and_then(|m| m.cwd.clone()));
         // Expose the original project root so teammates in worktrees know where to
         // write shared docs / artifacts that other teammates should see.
         agent_cmd = format!(
             "THCLAWS_PROJECT_ROOT='{}' {}",
-            project_root_str.replace('\'', "'\\''"), agent_cmd
+            project_root_str.replace('\'', "'\\''"),
+            agent_cmd
         );
         if worktree_path.is_some() {
             agent_cmd = format!("THCLAWS_IN_WORKTREE=1 {}", agent_cmd);
@@ -1102,7 +1152,9 @@ impl Tool for SpawnTeammateTool {
                 let _ = std::process::Command::new("tmux")
                     .args(["select-layout", "tiled"])
                     .status();
-                Ok(format!("Teammate '{name}' spawned in tmux pane (current session)."))
+                Ok(format!(
+                    "Teammate '{name}' spawned in tmux pane (current session)."
+                ))
             } else {
                 let session = "thclaws-team";
                 let exists = std::process::Command::new("tmux")
@@ -1126,7 +1178,9 @@ impl Tool for SpawnTeammateTool {
                         .status()
                         .map_err(|e| Error::Tool(format!("tmux new: {e}")))?;
                 }
-                Ok(format!("Teammate '{name}' spawned in tmux session '{session}'."))
+                Ok(format!(
+                    "Teammate '{name}' spawned in tmux session '{session}'."
+                ))
             }
         } else {
             // No tmux — redirect stdout/stderr to the output log so the GUI
@@ -1137,10 +1191,12 @@ impl Tool for SpawnTeammateTool {
             }
             let log_file = std::fs::File::create(&log_path)
                 .map_err(|e| Error::Tool(format!("create log: {e}")))?;
-            let log_err = log_file.try_clone()
+            let log_err = log_file
+                .try_clone()
                 .map_err(|e| Error::Tool(format!("clone log: {e}")))?;
             std::process::Command::new("/bin/sh")
-                .arg("-c").arg(&agent_cmd)
+                .arg("-c")
+                .arg(&agent_cmd)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::from(log_file))
                 .stderr(std::process::Stdio::from(log_err))
@@ -1159,7 +1215,9 @@ pub struct TeamTaskCreateTool {
 
 #[async_trait]
 impl Tool for TeamTaskCreateTool {
-    fn name(&self) -> &'static str { "TeamTaskCreate" }
+    fn name(&self) -> &'static str {
+        "TeamTaskCreate"
+    }
     fn description(&self) -> &'static str {
         "Add a task to the team's task queue. Teammates can claim pending tasks. \
          Use blocked_by to specify dependencies."
@@ -1181,9 +1239,14 @@ impl Tool for TeamTaskCreateTool {
     async fn call(&self, input: Value) -> Result<String> {
         let subject = crate::tools::req_str(&input, "subject")?;
         let description = crate::tools::req_str(&input, "description")?;
-        let blocked_by: Vec<String> = input.get("blocked_by")
+        let blocked_by: Vec<String> = input
+            .get("blocked_by")
             .and_then(Value::as_array)
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let tq = self.mailbox.task_queue();
@@ -1200,7 +1263,9 @@ pub struct TeamTaskListTool {
 
 #[async_trait]
 impl Tool for TeamTaskListTool {
-    fn name(&self) -> &'static str { "TeamTaskList" }
+    fn name(&self) -> &'static str {
+        "TeamTaskList"
+    }
     fn description(&self) -> &'static str {
         "List tasks in the team's task queue. Optionally filter by status."
     }
@@ -1213,21 +1278,30 @@ impl Tool for TeamTaskListTool {
         })
     }
     async fn call(&self, input: Value) -> Result<String> {
-        let filter = input.get("status").and_then(Value::as_str).and_then(|s| match s {
-            "pending" => Some(TaskStatus::Pending),
-            "in_progress" => Some(TaskStatus::InProgress),
-            "completed" => Some(TaskStatus::Completed),
-            _ => None,
-        });
+        let filter = input
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(|s| match s {
+                "pending" => Some(TaskStatus::Pending),
+                "in_progress" => Some(TaskStatus::InProgress),
+                "completed" => Some(TaskStatus::Completed),
+                _ => None,
+            });
         let tq = self.mailbox.task_queue();
         let tasks = tq.list(filter)?;
         if tasks.is_empty() {
             return Ok("No tasks.".into());
         }
-        let lines: Vec<String> = tasks.iter().map(|t| {
-            let owner = t.owner.as_deref().unwrap_or("-");
-            format!("[{}] {:?} — {} (owner: {})", t.id, t.status, t.subject, owner)
-        }).collect();
+        let lines: Vec<String> = tasks
+            .iter()
+            .map(|t| {
+                let owner = t.owner.as_deref().unwrap_or("-");
+                format!(
+                    "[{}] {:?} — {} (owner: {})",
+                    t.id, t.status, t.subject, owner
+                )
+            })
+            .collect();
         Ok(lines.join("\n"))
     }
 }
@@ -1241,7 +1315,9 @@ pub struct TeamTaskClaimTool {
 
 #[async_trait]
 impl Tool for TeamTaskClaimTool {
-    fn name(&self) -> &'static str { "TeamTaskClaim" }
+    fn name(&self) -> &'static str {
+        "TeamTaskClaim"
+    }
     fn description(&self) -> &'static str {
         "Claim a pending task from the task queue. Only unclaimed, unblocked tasks \
          can be claimed. Use TeamTaskList to see available tasks."
@@ -1259,7 +1335,10 @@ impl Tool for TeamTaskClaimTool {
         let task_id = crate::tools::req_str(&input, "task_id")?;
         let tq = self.mailbox.task_queue();
         let task = tq.claim(task_id, &self.my_name)?;
-        Ok(format!("Claimed task #{}: {}\n\n{}", task.id, task.subject, task.description))
+        Ok(format!(
+            "Claimed task #{}: {}\n\n{}",
+            task.id, task.subject, task.description
+        ))
     }
 }
 
@@ -1272,7 +1351,9 @@ pub struct TeamTaskCompleteTool {
 
 #[async_trait]
 impl Tool for TeamTaskCompleteTool {
-    fn name(&self) -> &'static str { "TeamTaskComplete" }
+    fn name(&self) -> &'static str {
+        "TeamTaskComplete"
+    }
     fn description(&self) -> &'static str {
         "Mark a task as completed. Sends an idle notification to the lead so \
          more work can be assigned."
@@ -1294,12 +1375,8 @@ impl Tool for TeamTaskCompleteTool {
         let task = tq.complete(task_id, &self.my_name)?;
 
         // Send idle notification to lead.
-        let idle_msg = make_idle_notification(
-            &self.my_name,
-            Some(&task.id),
-            Some("completed"),
-            summary,
-        );
+        let idle_msg =
+            make_idle_notification(&self.my_name, Some(&task.id), Some("completed"), summary);
         let notification = TeamMessage::new(&self.my_name, &idle_msg);
         self.mailbox.write_to_mailbox("lead", notification)?;
 
@@ -1316,7 +1393,9 @@ pub struct TeamMergeTool {
 
 #[async_trait]
 impl Tool for TeamMergeTool {
-    fn name(&self) -> &'static str { "TeamMerge" }
+    fn name(&self) -> &'static str {
+        "TeamMerge"
+    }
     fn description(&self) -> &'static str {
         "Lead-only. Merge teammate worktree branches (`team/<name>`) into a target branch. \
          Reports commit counts, conflicts, and optionally cleans up merged worktrees + branches. \
@@ -1347,11 +1426,12 @@ impl Tool for TeamMergeTool {
             }
         })
     }
-    fn requires_approval(&self, _input: &Value) -> bool { true }
+    fn requires_approval(&self, _input: &Value) -> bool {
+        true
+    }
 
     async fn call(&self, input: Value) -> Result<String> {
-        let project_root = std::env::current_dir()
-            .map_err(|e| Error::Tool(format!("cwd: {e}")))?;
+        let project_root = std::env::current_dir().map_err(|e| Error::Tool(format!("cwd: {e}")))?;
 
         // Resolve target branch.
         let into = if let Some(b) = input.get("into").and_then(Value::as_str) {
@@ -1368,15 +1448,28 @@ impl Tool for TeamMergeTool {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
-        let only_filter: Option<Vec<String>> = input.get("only")
-            .and_then(Value::as_array)
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
-        let cleanup = input.get("cleanup").and_then(Value::as_bool).unwrap_or(false);
-        let dry_run = input.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+        let only_filter: Option<Vec<String>> =
+            input.get("only").and_then(Value::as_array).map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
+        let cleanup = input
+            .get("cleanup")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let dry_run = input
+            .get("dry_run")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         // List team/* branches.
         let branches_out = std::process::Command::new("git")
-            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/team/"])
+            .args([
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/team/",
+            ])
             .current_dir(&project_root)
             .output()
             .map_err(|e| Error::Tool(format!("git for-each-ref: {e}")))?;
@@ -1409,25 +1502,37 @@ impl Tool for TeamMergeTool {
                 .current_dir(&project_root)
                 .output();
             let ahead: u32 = match ahead_out {
-                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0),
+                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse()
+                    .unwrap_or(0),
                 _ => 0,
             };
             if ahead == 0 {
                 report.push(format!("  {name} ({branch}): 0 commits ahead — skipped"));
                 if cleanup && !dry_run {
                     let _ = std::process::Command::new("git")
-                        .args(["worktree", "remove", "--force", &format!(".thclaws/worktrees/{name}")])
-                        .current_dir(&project_root).output();
+                        .args([
+                            "worktree",
+                            "remove",
+                            "--force",
+                            &format!(".thclaws/worktrees/{name}"),
+                        ])
+                        .current_dir(&project_root)
+                        .output();
                     let _ = std::process::Command::new("git")
                         .args(["branch", "-D", branch])
-                        .current_dir(&project_root).output();
+                        .current_dir(&project_root)
+                        .output();
                     report.push(format!("    cleaned up worktree + branch"));
                 }
                 continue;
             }
 
             if dry_run {
-                report.push(format!("  {name} ({branch}): {ahead} commit(s) ahead — would merge"));
+                report.push(format!(
+                    "  {name} ({branch}): {ahead} commit(s) ahead — would merge"
+                ));
                 continue;
             }
 
@@ -1440,13 +1545,26 @@ impl Tool for TeamMergeTool {
                 report.push(format!("  {name} ({branch}): merged {ahead} commit(s) ✓"));
                 if cleanup {
                     let wt_remove = std::process::Command::new("git")
-                        .args(["worktree", "remove", "--force", &format!(".thclaws/worktrees/{name}")])
-                        .current_dir(&project_root).output();
+                        .args([
+                            "worktree",
+                            "remove",
+                            "--force",
+                            &format!(".thclaws/worktrees/{name}"),
+                        ])
+                        .current_dir(&project_root)
+                        .output();
                     let br_delete = std::process::Command::new("git")
                         .args(["branch", "-d", branch])
-                        .current_dir(&project_root).output();
-                    let wt_ok = wt_remove.as_ref().map(|o| o.status.success()).unwrap_or(false);
-                    let br_ok = br_delete.as_ref().map(|o| o.status.success()).unwrap_or(false);
+                        .current_dir(&project_root)
+                        .output();
+                    let wt_ok = wt_remove
+                        .as_ref()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                    let br_ok = br_delete
+                        .as_ref()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
                     report.push(format!(
                         "    cleanup: worktree {} branch {}",
                         if wt_ok { "removed" } else { "kept" },
@@ -1458,13 +1576,20 @@ impl Tool for TeamMergeTool {
                 // Collect conflicted files before aborting.
                 let diff_out = std::process::Command::new("git")
                     .args(["diff", "--name-only", "--diff-filter=U"])
-                    .current_dir(&project_root).output();
+                    .current_dir(&project_root)
+                    .output();
                 let conflicts = diff_out
-                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect::<Vec<_>>())
+                    .map(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .map(String::from)
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_default();
                 let _ = std::process::Command::new("git")
                     .args(["merge", "--abort"])
-                    .current_dir(&project_root).output();
+                    .current_dir(&project_root)
+                    .output();
                 report.push(format!(
                     "  {name} ({branch}): merge FAILED, aborted. stderr: {}",
                     stderr.trim()
@@ -1487,10 +1612,7 @@ impl Tool for TeamMergeTool {
 
 // ── Register all team tools ─────────────────────────────────────────
 
-pub fn register_team_tools(
-    registry: &mut ToolRegistry,
-    my_name: &str,
-) -> Arc<Mailbox> {
+pub fn register_team_tools(registry: &mut ToolRegistry, my_name: &str) -> Arc<Mailbox> {
     // Honour THCLAWS_TEAM_DIR so teammates running in a git worktree write
     // inbox/task/status files back to the shared project team dir instead of
     // a stray `.thclaws/team/` inside their worktree cwd.
@@ -1500,18 +1622,43 @@ pub fn register_team_tools(
     let mailbox = Arc::new(Mailbox::new(team_dir));
     let name = my_name.to_string();
 
-    registry.register(Arc::new(TeamCreateTool { mailbox: mailbox.clone() }));
-    registry.register(Arc::new(SpawnTeammateTool { mailbox: mailbox.clone(), my_name: name.clone() }));
-    registry.register(Arc::new(SendMessageTool { mailbox: mailbox.clone(), my_name: name.clone() }));
-    registry.register(Arc::new(CheckInboxTool { mailbox: mailbox.clone(), my_name: name.clone() }));
-    registry.register(Arc::new(TeamStatusTool { mailbox: mailbox.clone() }));
-    registry.register(Arc::new(TeamTaskCreateTool { mailbox: mailbox.clone() }));
-    registry.register(Arc::new(TeamTaskListTool { mailbox: mailbox.clone() }));
-    registry.register(Arc::new(TeamTaskClaimTool { mailbox: mailbox.clone(), my_name: name.clone() }));
-    registry.register(Arc::new(TeamTaskCompleteTool { mailbox: mailbox.clone(), my_name: name.clone() }));
+    registry.register(Arc::new(TeamCreateTool {
+        mailbox: mailbox.clone(),
+    }));
+    registry.register(Arc::new(SpawnTeammateTool {
+        mailbox: mailbox.clone(),
+        my_name: name.clone(),
+    }));
+    registry.register(Arc::new(SendMessageTool {
+        mailbox: mailbox.clone(),
+        my_name: name.clone(),
+    }));
+    registry.register(Arc::new(CheckInboxTool {
+        mailbox: mailbox.clone(),
+        my_name: name.clone(),
+    }));
+    registry.register(Arc::new(TeamStatusTool {
+        mailbox: mailbox.clone(),
+    }));
+    registry.register(Arc::new(TeamTaskCreateTool {
+        mailbox: mailbox.clone(),
+    }));
+    registry.register(Arc::new(TeamTaskListTool {
+        mailbox: mailbox.clone(),
+    }));
+    registry.register(Arc::new(TeamTaskClaimTool {
+        mailbox: mailbox.clone(),
+        my_name: name.clone(),
+    }));
+    registry.register(Arc::new(TeamTaskCompleteTool {
+        mailbox: mailbox.clone(),
+        my_name: name.clone(),
+    }));
     // TeamMerge is lead-only: teammates should never merge each other's branches.
     if name == "lead" {
-        registry.register(Arc::new(TeamMergeTool { mailbox: mailbox.clone() }));
+        registry.register(Arc::new(TeamMergeTool {
+            mailbox: mailbox.clone(),
+        }));
     }
     mailbox
 }
@@ -1545,8 +1692,10 @@ mod tests {
         let mb = Mailbox::new(dir.path().to_path_buf());
         mb.init_agent("alice").unwrap();
 
-        mb.write_to_mailbox("alice", TeamMessage::new("bob", "msg1")).unwrap();
-        mb.write_to_mailbox("alice", TeamMessage::new("bob", "msg2")).unwrap();
+        mb.write_to_mailbox("alice", TeamMessage::new("bob", "msg1"))
+            .unwrap();
+        mb.write_to_mailbox("alice", TeamMessage::new("bob", "msg2"))
+            .unwrap();
 
         let unread = mb.read_unread("alice").unwrap();
         assert_eq!(unread.len(), 2);
@@ -1567,11 +1716,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let tq = TaskQueue::new(dir.path().join("tasks"));
 
-        let t1 = tq.create("build API", "Create REST endpoints", &[]).unwrap();
+        let t1 = tq
+            .create("build API", "Create REST endpoints", &[])
+            .unwrap();
         assert_eq!(t1.id, "1");
         assert_eq!(t1.status, TaskStatus::Pending);
 
-        let t2 = tq.create("build UI", "Create React app", &[t1.id.clone()]).unwrap();
+        let t2 = tq
+            .create("build UI", "Create React app", &[t1.id.clone()])
+            .unwrap();
         assert_eq!(t2.id, "2");
 
         // Can't claim t2 (blocked by t1).
@@ -1616,10 +1769,15 @@ mod tests {
 
     #[test]
     fn protocol_message_roundtrip() {
-        let json = make_idle_notification("backend", Some("1"), Some("completed"), Some("built API"));
+        let json =
+            make_idle_notification("backend", Some("1"), Some("completed"), Some("built API"));
         let parsed = parse_protocol_message(&json).unwrap();
         match parsed {
-            ProtocolMessage::IdleNotification { from, completed_task_id, .. } => {
+            ProtocolMessage::IdleNotification {
+                from,
+                completed_task_id,
+                ..
+            } => {
                 assert_eq!(from, "backend");
                 assert_eq!(completed_task_id.as_deref(), Some("1"));
             }

@@ -117,13 +117,7 @@ impl Tool for BashTool {
                 setup_cmd.chars().take(80).collect::<String>(),
                 if setup_cmd.len() > 80 { "…" } else { "" }
             );
-            setup_output = run_shell_command(
-                &setup_cmd,
-                &resolved_cwd,
-                timeout_ms,
-                false,
-            )
-            .await?;
+            setup_output = run_shell_command(&setup_cmd, &resolved_cwd, timeout_ms, false).await?;
             // If setup failed, return its output (includes exit code).
             if setup_output.contains("[exit code") {
                 return Ok(setup_output);
@@ -162,7 +156,8 @@ impl Tool for BashTool {
         }
 
         let effective_timeout = if is_server { 5000 } else { timeout_ms };
-        let server_output = run_shell_command(&command, &resolved_cwd, effective_timeout, is_server).await?;
+        let server_output =
+            run_shell_command(&command, &resolved_cwd, effective_timeout, is_server).await?;
 
         // Combine setup output with server output.
         if setup_output.is_empty() {
@@ -230,7 +225,8 @@ async fn run_shell_command(
         Err(_) => {
             let _ = child.kill().await;
             Err(Error::Tool(format!(
-                "timeout after {}ms running: {command}", timeout_ms
+                "timeout after {}ms running: {command}",
+                timeout_ms
             )))
         }
         Ok(Err(e)) => Err(Error::Tool(format!("wait: {e}"))),
@@ -259,7 +255,10 @@ fn split_chained_server_command(cmd: &str) -> (Vec<String>, Option<String>) {
     }
     let last = parts.last().unwrap();
     if is_server_command(last) {
-        let setup: Vec<String> = parts[..parts.len() - 1].iter().map(|s| s.to_string()).collect();
+        let setup: Vec<String> = parts[..parts.len() - 1]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         (setup, Some(last.to_string()))
     } else {
         // No server command at the end — run as one unit.
@@ -299,12 +298,18 @@ fn maybe_wrap_with_venv(cmd: &str, cwd: &std::path::Path) -> String {
 fn needs_venv(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
     // Any python/pip invocation should use the venv.
-    lower.starts_with("python ") || lower.starts_with("python3 ")
-        || lower.contains("pip install") || lower.contains("pip3 install")
-        || lower.contains("uvicorn ") || lower.contains("gunicorn ")
-        || lower.contains("hypercorn ") || lower.contains("flask run")
-        || lower.contains("django") || lower.contains("manage.py")
-        || lower.contains("fastapi") || lower.contains("pytest")
+    lower.starts_with("python ")
+        || lower.starts_with("python3 ")
+        || lower.contains("pip install")
+        || lower.contains("pip3 install")
+        || lower.contains("uvicorn ")
+        || lower.contains("gunicorn ")
+        || lower.contains("hypercorn ")
+        || lower.contains("flask run")
+        || lower.contains("django")
+        || lower.contains("manage.py")
+        || lower.contains("fastapi")
+        || lower.contains("pytest")
         || lower.contains("celery ")
 }
 
@@ -313,14 +318,19 @@ pub fn is_destructive_command(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
 
     let simple_patterns = [
-        "rm -rf", "rm -fr", "rmdir", "rm -r",
+        "rm -rf",
+        "rm -fr",
+        "rmdir",
+        "rm -r",
         "mv ",
         "truncate",
         "> /",
         "dd if=",
         "mkfs",
-        "chmod -R", "chown -R",
-        "kill -9", "killall",
+        "chmod -R",
+        "chown -R",
+        "kill -9",
+        "killall",
         "pkill",
         "sudo ",
         ":(){ :|:& };:",
@@ -331,8 +341,10 @@ pub fn is_destructive_command(cmd: &str) -> bool {
     }
 
     // Detect piping download commands into a shell: curl ... | sh, wget ... | bash
-    if lower.contains("| sh") || lower.contains("|sh")
-        || lower.contains("| bash") || lower.contains("|bash")
+    if lower.contains("| sh")
+        || lower.contains("|sh")
+        || lower.contains("| bash")
+        || lower.contains("|bash")
     {
         if lower.contains("curl") || lower.contains("wget") {
             return true;
@@ -351,22 +363,44 @@ pub fn is_server_command(cmd: &str) -> bool {
     }
 
     let patterns = [
-        "uvicorn ", "gunicorn ", "hypercorn ",
-        "flask run", "django runserver", "manage.py runserver",
-        "npm run dev", "npm start", "npx ", "yarn dev", "pnpm dev",
-        "node server", "node index", "node app",
+        "uvicorn ",
+        "gunicorn ",
+        "hypercorn ",
+        "flask run",
+        "django runserver",
+        "manage.py runserver",
+        "npm run dev",
+        "npm start",
+        "npx ",
+        "yarn dev",
+        "pnpm dev",
+        "node server",
+        "node index",
+        "node app",
         "cargo run", // often a server in web projects
-        "python -m http.server", "python3 -m http.server",
-        "python -m uvicorn", "python3 -m uvicorn",
-        "python -m flask", "python3 -m flask",
-        "php -S ", "php artisan serve",
-        "ruby server", "rails server", "rails s",
+        "python -m http.server",
+        "python3 -m http.server",
+        "python -m uvicorn",
+        "python3 -m uvicorn",
+        "python -m flask",
+        "python3 -m flask",
+        "php -S ",
+        "php artisan serve",
+        "ruby server",
+        "rails server",
+        "rails s",
         "go run ",
-        "docker compose up", "docker-compose up",
+        "docker compose up",
+        "docker-compose up",
         "kubectl port-forward",
-        "ngrok ", "cloudflared tunnel",
-        "serve ", "live-server", "http-server",
-        "next dev", "vite", "webpack serve",
+        "ngrok ",
+        "cloudflared tunnel",
+        "serve ",
+        "live-server",
+        "http-server",
+        "next dev",
+        "vite",
+        "webpack serve",
     ];
     if patterns.iter().any(|p| lower.contains(p)) {
         return true;
@@ -377,8 +411,12 @@ pub fn is_server_command(cmd: &str) -> bool {
     // We match the script name as a standalone word (preceded by space).
     if lower.starts_with("python ") || lower.starts_with("python3 ") {
         let py_scripts = [
-            " app.py", " main.py", " server.py", " run.py",
-            " wsgi.py", " asgi.py",
+            " app.py",
+            " main.py",
+            " server.py",
+            " run.py",
+            " wsgi.py",
+            " asgi.py",
         ];
         if py_scripts.iter().any(|p| lower.contains(p)) {
             return true;
@@ -394,10 +432,7 @@ fn format_output(stdout: &str, stderr: &str, exit_code: i32) -> String {
         parts.push(stdout.trim_end_matches('\n').to_string());
     }
     if !stderr.is_empty() {
-        parts.push(format!(
-            "[stderr]\n{}",
-            stderr.trim_end_matches('\n')
-        ));
+        parts.push(format!("[stderr]\n{}", stderr.trim_end_matches('\n')));
     }
     if exit_code != 0 {
         parts.push(format!("[exit code {exit_code}]"));
@@ -529,7 +564,10 @@ mod tests {
     #[test]
     fn format_output_combines_parts() {
         assert_eq!(format_output("hello\n", "", 0), "hello");
-        assert_eq!(format_output("", "oops\n", 1), "[stderr]\noops\n[exit code 1]");
+        assert_eq!(
+            format_output("", "oops\n", 1),
+            "[stderr]\noops\n[exit code 1]"
+        );
         assert_eq!(format_output("", "", 0), "");
     }
 
@@ -580,7 +618,10 @@ mod tests {
         std::fs::create_dir_all(&venv).unwrap();
         std::fs::write(venv.join("activate"), "").unwrap();
         let wrapped = maybe_wrap_with_venv("pip install fastapi", dir.path());
-        assert!(!wrapped.contains("python3 -m venv"), "should not recreate venv");
+        assert!(
+            !wrapped.contains("python3 -m venv"),
+            "should not recreate venv"
+        );
         assert!(wrapped.contains("source"));
         assert!(wrapped.contains("activate"));
     }

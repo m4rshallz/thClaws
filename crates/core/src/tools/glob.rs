@@ -155,7 +155,11 @@ mod tests {
             .await
             .unwrap();
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 1, "expected gitignore to hide ignored.rs, got: {out}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "expected gitignore to hide ignored.rs, got: {out}"
+        );
         assert!(lines[0].ends_with("visible.rs"));
     }
 }

@@ -63,12 +63,13 @@ pub fn get_backend() -> Option<Backend> {
 /// first `set` / `get` so keychain prompts are skipped for dotenv
 /// users.
 pub fn set_backend(backend: Backend) -> Result<()> {
-    let path = backend_path()
-        .ok_or_else(|| Error::Config("HOME is not set".into()))?;
+    let path = backend_path().ok_or_else(|| Error::Config("HOME is not set".into()))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = BackendFile { backend: Some(backend) };
+    let file = BackendFile {
+        backend: Some(backend),
+    };
     let json = serde_json::to_string_pretty(&file)
         .map_err(|e| Error::Config(format!("serialize: {e}")))?;
     std::fs::write(&path, json)?;
@@ -129,13 +130,11 @@ fn read_bundle() -> std::collections::HashMap<String, String> {
             return map.clone();
         }
     }
-    let mut map: std::collections::HashMap<String, String> = match bundle_entry()
-        .ok()
-        .and_then(|e| e.get_password().ok())
-    {
-        Some(json) => serde_json::from_str(&json).unwrap_or_default(),
-        None => std::collections::HashMap::new(),
-    };
+    let mut map: std::collections::HashMap<String, String> =
+        match bundle_entry().ok().and_then(|e| e.get_password().ok()) {
+            Some(json) => serde_json::from_str(&json).unwrap_or_default(),
+            None => std::collections::HashMap::new(),
+        };
     // Migrate legacy per-provider entries. One-shot per process.
     let mut migrated = false;
     for p in MANAGED {
@@ -156,8 +155,8 @@ fn read_bundle() -> std::collections::HashMap<String, String> {
 }
 
 fn write_bundle(map: &std::collections::HashMap<String, String>) -> Result<()> {
-    let json = serde_json::to_string(map)
-        .map_err(|e| Error::Config(format!("serialize bundle: {e}")))?;
+    let json =
+        serde_json::to_string(map).map_err(|e| Error::Config(format!("serialize bundle: {e}")))?;
     bundle_entry()?
         .set_password(&json)
         .map_err(|e| Error::Config(format!("keychain write failed: {e}")))?;
@@ -185,11 +184,15 @@ pub fn set(provider: &str, key: &str) -> Result<()> {
 /// so N providers = 1 macOS prompt per launch.
 pub fn get(provider: &str) -> Option<String> {
     if std::env::var("THCLAWS_DISABLE_KEYCHAIN").is_ok() {
-        log_trace(&format!("get({provider}) → blocked by THCLAWS_DISABLE_KEYCHAIN"));
+        log_trace(&format!(
+            "get({provider}) → blocked by THCLAWS_DISABLE_KEYCHAIN"
+        ));
         return None;
     }
     if resolved_backend() == Backend::Dotenv {
-        log_trace(&format!("get({provider}) → backend=dotenv, skipping keychain"));
+        log_trace(&format!(
+            "get({provider}) → backend=dotenv, skipping keychain"
+        ));
         return None;
     }
     log_trace(&format!("get({provider}) → bundle lookup"));
@@ -206,9 +209,7 @@ fn log_trace(msg: &str) {
     if std::env::var("THCLAWS_KEYCHAIN_TRACE").is_ok() {
         let pid = std::process::id();
         let loaded = std::env::var("THCLAWS_KEYCHAIN_LOADED").is_ok();
-        eprintln!(
-            "\x1b[35m[keychain pid={pid} loaded_flag={loaded}] {msg}\x1b[0m"
-        );
+        eprintln!("\x1b[35m[keychain pid={pid} loaded_flag={loaded}] {msg}\x1b[0m");
     }
 }
 
@@ -306,7 +307,9 @@ pub fn load_into_env() {
     }
     log_trace("load_into_env() → walking MANAGED providers");
     for p in MANAGED {
-        let Some(env_var) = p.api_key_env() else { continue };
+        let Some(env_var) = p.api_key_env() else {
+            continue;
+        };
         if std::env::var(env_var).is_ok() {
             log_trace(&format!(
                 "load_into_env() → {} already in env, skip",

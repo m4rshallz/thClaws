@@ -551,12 +551,7 @@ mod tests {
             text_script(&["I read: the contents."]),
         ]);
 
-        let agent = Agent::new(
-            provider,
-            ToolRegistry::with_builtins(),
-            "test-model",
-            "",
-        );
+        let agent = Agent::new(provider, ToolRegistry::with_builtins(), "test-model", "");
 
         let outcome = collect_agent_turn(agent.run_turn("read it".into()))
             .await
@@ -571,11 +566,17 @@ mod tests {
         assert_eq!(history.len(), 4);
         assert_eq!(history[0].role, Role::User);
         assert_eq!(history[1].role, Role::Assistant);
-        assert!(matches!(history[1].content[0], ContentBlock::ToolUse { .. }));
+        assert!(matches!(
+            history[1].content[0],
+            ContentBlock::ToolUse { .. }
+        ));
         assert_eq!(history[2].role, Role::User);
         assert!(matches!(
             history[2].content[0],
-            ContentBlock::ToolResult { is_error: false, .. }
+            ContentBlock::ToolResult {
+                is_error: false,
+                ..
+            }
         ));
         assert_eq!(history[3].role, Role::Assistant);
     }
@@ -588,12 +589,7 @@ mod tests {
             tool_script("toolu_1", "Read", r#"{"path":"/nope/does/not/exist"}"#),
             text_script(&["handled the error"]),
         ]);
-        let agent = Agent::new(
-            provider,
-            ToolRegistry::with_builtins(),
-            "test-model",
-            "",
-        );
+        let agent = Agent::new(provider, ToolRegistry::with_builtins(), "test-model", "");
 
         let outcome = collect_agent_turn(agent.run_turn("try it".into()))
             .await
@@ -603,7 +599,10 @@ mod tests {
 
         let history = agent.history_snapshot();
         let tool_result_msg = &history[2];
-        if let ContentBlock::ToolResult { is_error, content, .. } = &tool_result_msg.content[0] {
+        if let ContentBlock::ToolResult {
+            is_error, content, ..
+        } = &tool_result_msg.content[0]
+        {
             assert!(*is_error, "expected is_error=true for failed tool");
             assert!(content.contains("error:"), "got: {content}");
         } else {
@@ -675,9 +674,9 @@ mod tests {
         let history = agent.history_snapshot();
         let tool_result_msg = history.iter().find_map(|m| {
             m.content.iter().find_map(|b| match b {
-                ContentBlock::ToolResult { content, is_error, .. } if *is_error => {
-                    Some(content.clone())
-                }
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } if *is_error => Some(content.clone()),
                 _ => None,
             })
         });
@@ -720,10 +719,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("auto.txt");
-        let args = format!(
-            r#"{{"path":"{}","content":"ok"}}"#,
-            path.to_string_lossy()
-        );
+        let args = format!(r#"{{"path":"{}","content":"ok"}}"#, path.to_string_lossy());
         let provider = ScriptedProvider::new(vec![
             tool_script("toolu_1", "Write", &args),
             text_script(&["done"]),
@@ -750,13 +746,8 @@ mod tests {
             loop_script(),
             loop_script(),
         ]);
-        let agent = Agent::new(
-            provider,
-            ToolRegistry::with_builtins(),
-            "test-model",
-            "",
-        )
-        .with_max_iterations(2);
+        let agent = Agent::new(provider, ToolRegistry::with_builtins(), "test-model", "")
+            .with_max_iterations(2);
 
         let outcome = collect_agent_turn(agent.run_turn("loop".into()))
             .await

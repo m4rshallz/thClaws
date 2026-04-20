@@ -292,14 +292,8 @@ pub fn parse_sse_event(raw: &str) -> Result<Option<ProviderEvent>> {
                 .and_then(Value::as_str)
                 .map(String::from);
             let usage = v.get("usage").map(|u| Usage {
-                input_tokens: u
-                    .get("input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as u32,
-                output_tokens: u
-                    .get("output_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as u32,
+                input_tokens: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
+                output_tokens: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32,
                 cache_creation_input_tokens: u
                     .get("cache_creation_input_tokens")
                     .and_then(Value::as_u64)
@@ -394,7 +388,9 @@ mod tests {
 
     #[test]
     fn parse_ignores_ping_and_message_stop_marker() {
-        assert!(parse_sse_event("data: {\"type\":\"ping\"}").unwrap().is_none());
+        assert!(parse_sse_event("data: {\"type\":\"ping\"}")
+            .unwrap()
+            .is_none());
         assert!(parse_sse_event("data: {\"type\":\"message_stop\"}")
             .unwrap()
             .is_none());

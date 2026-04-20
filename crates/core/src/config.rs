@@ -117,7 +117,11 @@ impl PermissionsConfig {
         match self {
             Self::Mode(s) => s.as_str(),
             Self::Rules { allow, .. } => {
-                if allow.is_empty() { "ask" } else { "auto" }
+                if allow.is_empty() {
+                    "ask"
+                } else {
+                    "auto"
+                }
             }
         }
     }
@@ -128,14 +132,19 @@ impl PermissionsConfig {
             Self::Mode(_) => None,
             Self::Rules { allow, .. } if allow.is_empty() => None,
             Self::Rules { allow, .. } => {
-                Some(allow.iter().map(|s| {
-                    // "Bash(*)" → "Bash", "Read" → "Read"
-                    if let Some(idx) = s.find('(') {
-                        s[..idx].to_string()
-                    } else {
-                        s.clone()
-                    }
-                }).collect())
+                Some(
+                    allow
+                        .iter()
+                        .map(|s| {
+                            // "Bash(*)" → "Bash", "Read" → "Read"
+                            if let Some(idx) = s.find('(') {
+                                s[..idx].to_string()
+                            } else {
+                                s.clone()
+                            }
+                        })
+                        .collect(),
+                )
             }
         }
     }
@@ -145,15 +154,17 @@ impl PermissionsConfig {
         match self {
             Self::Mode(_) => None,
             Self::Rules { deny, .. } if deny.is_empty() => None,
-            Self::Rules { deny, .. } => {
-                Some(deny.iter().map(|s| {
-                    if let Some(idx) = s.find('(') {
-                        s[..idx].to_string()
-                    } else {
-                        s.clone()
-                    }
-                }).collect())
-            }
+            Self::Rules { deny, .. } => Some(
+                deny.iter()
+                    .map(|s| {
+                        if let Some(idx) = s.find('(') {
+                            s[..idx].to_string()
+                        } else {
+                            s.clone()
+                        }
+                    })
+                    .collect(),
+            ),
         }
     }
 }
@@ -315,9 +326,9 @@ impl ProjectConfig {
     pub fn load_mcp_servers() -> Vec<crate::mcp::McpServerConfig> {
         let cwd = std::env::current_dir().unwrap_or_default();
         let paths = [
-            cwd.join(".mcp.json"),              // Claude Code primary
+            cwd.join(".mcp.json"),                // Claude Code primary
             Self::project_dir().join("mcp.json"), // thClaws
-            cwd.join(".claude/mcp.json"),        // Claude Code legacy
+            cwd.join(".claude/mcp.json"),         // Claude Code legacy
         ];
         for path in &paths {
             if let Some(servers) = Self::parse_mcp_json(path) {
@@ -337,7 +348,8 @@ impl ProjectConfig {
             servers
                 .iter()
                 .filter_map(|(name, cfg)| {
-                    let transport = cfg.get("transport")
+                    let transport = cfg
+                        .get("transport")
                         .and_then(|t| t.as_str())
                         .unwrap_or("stdio")
                         .to_string();
@@ -368,7 +380,11 @@ impl ProjectConfig {
                     let args: Vec<String> = cfg
                         .get("args")
                         .and_then(|a| a.as_array())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     let env: std::collections::HashMap<String, String> = cfg
                         .get("env")
@@ -397,10 +413,7 @@ impl ProjectConfig {
 /// Insert or replace an MCP server in the on-disk `mcp.json` file.
 /// `user=true` writes to `~/.config/thclaws/mcp.json`, otherwise
 /// `.thclaws/mcp.json` (project-local). Returns the path written to.
-pub fn save_mcp_server(
-    server: &crate::mcp::McpServerConfig,
-    user: bool,
-) -> Result<PathBuf> {
+pub fn save_mcp_server(server: &crate::mcp::McpServerConfig, user: bool) -> Result<PathBuf> {
     let path = mcp_config_path(user)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -412,7 +425,11 @@ pub fn save_mcp_server(
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({"mcpServers": {}}));
 
-    if !root.get("mcpServers").map(|v| v.is_object()).unwrap_or(false) {
+    if !root
+        .get("mcpServers")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
         root["mcpServers"] = serde_json::json!({});
     }
 
@@ -465,8 +482,7 @@ pub fn remove_mcp_server(name: &str, user: bool) -> Result<(bool, PathBuf)> {
 
 fn mcp_config_path(user: bool) -> Result<PathBuf> {
     if user {
-        let home = std::env::var("HOME")
-            .map_err(|_| Error::Config("HOME is not set".into()))?;
+        let home = std::env::var("HOME").map_err(|_| Error::Config("HOME is not set".into()))?;
         Ok(PathBuf::from(home).join(".config/thclaws/mcp.json"))
     } else {
         let cwd = std::env::current_dir()?;
@@ -524,25 +540,29 @@ impl AppConfig {
             let project_names: std::collections::HashSet<String> =
                 project_mcp.iter().map(|s| s.name.clone()).collect();
             // Remove user-level servers that project overrides.
-            config.mcp_servers.retain(|s| !project_names.contains(&s.name));
+            config
+                .mcp_servers
+                .retain(|s| !project_names.contains(&s.name));
             config.mcp_servers.extend(project_mcp);
         }
 
         Ok(config)
     }
 
-
-
     /// User-level config path: `~/.config/thclaws/settings.json`.
     pub fn user_config_paths() -> Vec<PathBuf> {
-        let Some(home) = std::env::var("HOME").ok() else { return vec![] };
+        let Some(home) = std::env::var("HOME").ok() else {
+            return vec![];
+        };
         vec![PathBuf::from(&home).join(".config/thclaws/settings.json")]
     }
 
     /// Load MCP servers from user-level paths:
     /// `~/.config/thclaws/mcp.json`, then `~/.claude/mcp.json` as fallback.
     fn load_user_mcp_servers() -> Vec<crate::mcp::McpServerConfig> {
-        let Some(home) = std::env::var("HOME").ok() else { return vec![] };
+        let Some(home) = std::env::var("HOME").ok() else {
+            return vec![];
+        };
         let paths = [
             PathBuf::from(&home).join(".config/thclaws/mcp.json"),
             PathBuf::from(&home).join(".claude/mcp.json"),
@@ -568,11 +588,16 @@ impl AppConfig {
         if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
             config.model = crate::providers::ProviderKind::resolve_alias(m);
         }
-        if let Some(mode) = v.get("permissions").and_then(|p| p.get("default_mode")).and_then(|m| m.as_str()) {
+        if let Some(mode) = v
+            .get("permissions")
+            .and_then(|p| p.get("default_mode"))
+            .and_then(|m| m.as_str())
+        {
             config.permissions = match mode {
                 "bypassPermissions" | "acceptEdits" => "auto",
                 _ => "ask",
-            }.to_string();
+            }
+            .to_string();
         }
         Some(config)
     }
@@ -605,7 +630,9 @@ impl AppConfig {
             if std::env::var("THCLAWS_KEYCHAIN_TRACE").is_ok() {
                 eprintln!(
                     "\x1b[35m[keychain pid={}] api_key_from_env({}) → from env {}\x1b[0m",
-                    std::process::id(), kind.name(), var
+                    std::process::id(),
+                    kind.name(),
+                    var
                 );
             }
             return Some(value);
@@ -686,7 +713,9 @@ mod tests {
     fn mcp_servers_loaded_from_json() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("mcp.json");
-        std::fs::write(&path, r#"{
+        std::fs::write(
+            &path,
+            r#"{
             "mcpServers": {
                 "filesystem": {
                     "command": "npx",
@@ -697,7 +726,9 @@ mod tests {
                     "args": []
                 }
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let servers = ProjectConfig::parse_mcp_json(&path).unwrap();
         assert_eq!(servers.len(), 2);

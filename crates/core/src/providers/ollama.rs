@@ -291,7 +291,9 @@ pub fn parse_line(line: &str, state: &mut ParseState) -> Result<Vec<ProviderEven
 
             out.push(ProviderEvent::ToolUseStart { id, name });
             if !args_json.is_empty() {
-                out.push(ProviderEvent::ToolUseDelta { partial_json: args_json });
+                out.push(ProviderEvent::ToolUseDelta {
+                    partial_json: args_json,
+                });
             }
             out.push(ProviderEvent::ContentBlockStop);
         }
@@ -309,10 +311,7 @@ pub fn parse_line(line: &str, state: &mut ParseState) -> Result<Vec<ProviderEven
                     .get("prompt_eval_count")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as u32,
-                output_tokens: v
-                    .get("eval_count")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as u32,
+                output_tokens: v.get("eval_count").and_then(Value::as_u64).unwrap_or(0) as u32,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
             })
@@ -430,7 +429,10 @@ mod tests {
         assert_eq!(msgs[1]["content"], "hi");
         assert_eq!(msgs[2]["role"], "assistant");
         assert_eq!(msgs[2]["tool_calls"][0]["function"]["name"], "Read");
-        assert_eq!(msgs[2]["tool_calls"][0]["function"]["arguments"]["path"], "/x");
+        assert_eq!(
+            msgs[2]["tool_calls"][0]["function"]["arguments"]["path"],
+            "/x"
+        );
         assert_eq!(msgs[3]["role"], "tool");
         assert_eq!(msgs[3]["content"], "file body");
     }
@@ -470,7 +472,10 @@ mod tests {
         let models = provider.list_models().await.expect("list");
         // Names are prefixed with `ollama/` so users can paste them into /model.
         let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["ollama/llama3.2:latest", "ollama/qwen2.5-coder:7b"]);
+        assert_eq!(
+            ids,
+            vec!["ollama/llama3.2:latest", "ollama/qwen2.5-coder:7b"]
+        );
     }
 
     #[tokio::test]

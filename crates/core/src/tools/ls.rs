@@ -39,10 +39,7 @@ impl Tool for LsTool {
         let mut items: Vec<String> = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let is_dir = entry
-                .file_type()
-                .map(|t| t.is_dir())
-                .unwrap_or(false);
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             items.push(if is_dir { format!("{name}/") } else { name });
         }
         items.sort();

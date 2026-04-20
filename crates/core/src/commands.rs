@@ -88,10 +88,14 @@ impl CommandStore {
     }
 
     fn load_dir(&mut self, base: &Path) {
-        let Ok(entries) = std::fs::read_dir(base) else { return };
+        let Ok(entries) = std::fs::read_dir(base) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() { continue; }
+            if !path.is_file() {
+                continue;
+            }
             if path.extension().and_then(|s| s.to_str()) != Some("md") {
                 continue;
             }
@@ -105,15 +109,12 @@ impl CommandStore {
     fn parse(path: &Path) -> Option<CommandDef> {
         let raw = std::fs::read_to_string(path).ok()?;
         let (frontmatter, body) = parse_frontmatter(&raw);
-        let name = frontmatter
-            .get("name")
-            .cloned()
-            .unwrap_or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            });
+        let name = frontmatter.get("name").cloned().unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
         Some(CommandDef {
             name,
             description: frontmatter.get("description").cloned().unwrap_or_default(),
@@ -181,29 +182,23 @@ mod tests {
             source: PathBuf::new(),
         };
         assert_eq!(cmd.render(""), "Please deploy the app.");
-        assert_eq!(
-            cmd.render("to prod"),
-            "Please deploy the app.\n\nto prod"
-        );
+        assert_eq!(cmd.render("to prod"), "Please deploy the app.\n\nto prod");
     }
 
     #[test]
     fn earlier_dir_wins_on_name_collision() {
         let proj = tempdir().unwrap();
         let user = tempdir().unwrap();
-        std::fs::write(
-            proj.path().join("hello.md"),
-            "Project version of hello.",
-        ).unwrap();
-        std::fs::write(
-            user.path().join("hello.md"),
-            "User version of hello.",
-        ).unwrap();
+        std::fs::write(proj.path().join("hello.md"), "Project version of hello.").unwrap();
+        std::fs::write(user.path().join("hello.md"), "User version of hello.").unwrap();
 
         let mut store = CommandStore::default();
         // Earlier dir loads first.
         store.load_dir(proj.path());
         store.load_dir(user.path());
-        assert_eq!(store.get("hello").unwrap().body, "Project version of hello.");
+        assert_eq!(
+            store.get("hello").unwrap().body,
+            "Project version of hello."
+        );
     }
 }

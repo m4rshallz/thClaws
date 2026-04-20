@@ -138,8 +138,7 @@ mod tests {
     fn scoped_home() -> EnvGuard {
         let lock = crate::kms::test_env_lock();
         let prev_home = std::env::var("HOME").ok();
-        let prev_cwd =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let prev_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", dir.path());
         std::env::set_current_dir(dir.path()).unwrap();
@@ -193,11 +192,7 @@ mod tests {
     async fn search_returns_page_line_matches() {
         let _home = scoped_home();
         let k = create("nb", KmsScope::User).unwrap();
-        std::fs::write(
-            k.pages_dir().join("a.md"),
-            "alpha\nbeta\nhello world\n",
-        )
-        .unwrap();
+        std::fs::write(k.pages_dir().join("a.md"), "alpha\nbeta\nhello world\n").unwrap();
         std::fs::write(k.pages_dir().join("b.md"), "nothing here\n").unwrap();
         let out = KmsSearchTool
             .call(json!({"kms": "nb", "pattern": "hello"}))

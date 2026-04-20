@@ -177,9 +177,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let todos = vec![
-            TodoItem { id: "1".into(), content: "Fix bug".into(), status: "completed".into() },
-            TodoItem { id: "2".into(), content: "Add tests".into(), status: "in_progress".into() },
-            TodoItem { id: "3".into(), content: "Deploy".into(), status: "pending".into() },
+            TodoItem {
+                id: "1".into(),
+                content: "Fix bug".into(),
+                status: "completed".into(),
+            },
+            TodoItem {
+                id: "2".into(),
+                content: "Add tests".into(),
+                status: "in_progress".into(),
+            },
+            TodoItem {
+                id: "3".into(),
+                content: "Deploy".into(),
+                status: "pending".into(),
+            },
         ];
 
         let result = TodoWriteTool::write_todos_to(dir.path(), &todos).unwrap();
@@ -211,15 +223,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         // First write
-        let todos1 = vec![
-            TodoItem { id: "1".into(), content: "Old task".into(), status: "pending".into() },
-        ];
+        let todos1 = vec![TodoItem {
+            id: "1".into(),
+            content: "Old task".into(),
+            status: "pending".into(),
+        }];
         TodoWriteTool::write_todos_to(dir.path(), &todos1).unwrap();
 
         // Second write (full replacement)
-        let todos2 = vec![
-            TodoItem { id: "2".into(), content: "New task".into(), status: "completed".into() },
-        ];
+        let todos2 = vec![TodoItem {
+            id: "2".into(),
+            content: "New task".into(),
+            status: "completed".into(),
+        }];
         TodoWriteTool::write_todos_to(dir.path(), &todos2).unwrap();
 
         let contents = std::fs::read_to_string(dir.path().join(".thclaws/todos.md")).unwrap();
@@ -246,13 +262,25 @@ mod tests {
 
     #[test]
     fn todo_item_markdown_rendering() {
-        let completed = TodoItem { id: "1".into(), content: "Done".into(), status: "completed".into() };
+        let completed = TodoItem {
+            id: "1".into(),
+            content: "Done".into(),
+            status: "completed".into(),
+        };
         assert_eq!(completed.to_markdown(), "- [x] Done (id: 1)");
 
-        let in_prog = TodoItem { id: "2".into(), content: "Working".into(), status: "in_progress".into() };
+        let in_prog = TodoItem {
+            id: "2".into(),
+            content: "Working".into(),
+            status: "in_progress".into(),
+        };
         assert_eq!(in_prog.to_markdown(), "- [-] Working (id: 2)");
 
-        let pending = TodoItem { id: "3".into(), content: "Later".into(), status: "pending".into() };
+        let pending = TodoItem {
+            id: "3".into(),
+            content: "Later".into(),
+            status: "pending".into(),
+        };
         assert_eq!(pending.to_markdown(), "- [ ] Later (id: 3)");
     }
 

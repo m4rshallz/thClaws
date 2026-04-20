@@ -74,7 +74,9 @@ impl AgentSdkProvider {
 }
 
 impl Default for AgentSdkProvider {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
@@ -95,12 +97,15 @@ impl Provider for AgentSdkProvider {
 
         // Build the CLI command.
         let mut cmd = Command::new(&self.claude_bin);
-        cmd.arg("--output-format").arg("stream-json")
-            .arg("--input-format").arg("stream-json")
+        cmd.arg("--output-format")
+            .arg("stream-json")
+            .arg("--input-format")
+            .arg("stream-json")
             .arg("--verbose")
             // Don't block on permission prompts — thClaws is the surface the
             // user interacts with; let Claude just run.
-            .arg("--permission-mode").arg("bypassPermissions");
+            .arg("--permission-mode")
+            .arg("bypassPermissions");
 
         // Always set --system-prompt explicitly. Passing an empty string
         // suppresses Claude Code's bundled system prompt so the model sees
@@ -140,9 +145,13 @@ impl Provider for AgentSdkProvider {
             .spawn()
             .map_err(|e| Error::Provider(format!("spawn claude: {e}")))?;
 
-        let mut stdin = child.stdin.take()
+        let mut stdin = child
+            .stdin
+            .take()
             .ok_or_else(|| Error::Provider("no stdin handle".into()))?;
-        let stdout = child.stdout.take()
+        let stdout = child
+            .stdout
+            .take()
             .ok_or_else(|| Error::Provider("no stdout handle".into()))?;
         let stderr = child.stderr.take();
 
@@ -153,7 +162,9 @@ impl Provider for AgentSdkProvider {
                 let mut reader = BufReader::new(stderr);
                 let mut line = String::new();
                 while let Ok(n) = reader.read_line(&mut line).await {
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     eprint!("\x1b[2m[claude] {}\x1b[0m", line);
                     line.clear();
                 }
@@ -169,9 +180,13 @@ impl Provider for AgentSdkProvider {
             "request_id": init_id,
             "request": { "subtype": "initialize", "hooks": null }
         });
-        stdin.write_all(init_req.to_string().as_bytes()).await
+        stdin
+            .write_all(init_req.to_string().as_bytes())
+            .await
             .map_err(|e| Error::Provider(format!("write initialize: {e}")))?;
-        stdin.write_all(b"\n").await
+        stdin
+            .write_all(b"\n")
+            .await
             .map_err(|e| Error::Provider(format!("write initialize: {e}")))?;
 
         // ── 2. Wait for initialize response ──────────────────────────────
@@ -183,19 +198,28 @@ impl Provider for AgentSdkProvider {
             let n = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 reader.read_line(&mut ack_line),
-            ).await
-                .map_err(|_| Error::Provider(
+            )
+            .await
+            .map_err(|_| {
+                Error::Provider(
                     "claude agent SDK: timed out waiting for initialize response. \
-                     Is the claude CLI version current? (`claude --version`)".into()))?
-                .map_err(|e| Error::Provider(format!("read initialize: {e}")))?;
+                     Is the claude CLI version current? (`claude --version`)"
+                        .into(),
+                )
+            })?
+            .map_err(|e| Error::Provider(format!("read initialize: {e}")))?;
             if n == 0 {
                 return Err(Error::Provider(
-                    "claude agent SDK: process exited before initialize response".into()
+                    "claude agent SDK: process exited before initialize response".into(),
                 ));
             }
             let trimmed = ack_line.trim();
-            if trimmed.is_empty() { continue; }
-            let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+                continue;
+            };
             if v.get("type").and_then(Value::as_str) != Some("control_response") {
                 continue;
             }
@@ -211,9 +235,13 @@ impl Provider for AgentSdkProvider {
             "message": { "role": "user", "content": user_text },
             "parent_tool_use_id": null,
         });
-        stdin.write_all(user_msg.to_string().as_bytes()).await
+        stdin
+            .write_all(user_msg.to_string().as_bytes())
+            .await
             .map_err(|e| Error::Provider(format!("write user message: {e}")))?;
-        stdin.write_all(b"\n").await
+        stdin
+            .write_all(b"\n")
+            .await
             .map_err(|e| Error::Provider(format!("write user message: {e}")))?;
 
         // No bidirectional hooks / SDK MCP servers on our end, so closing
@@ -356,7 +384,8 @@ impl Provider for AgentSdkProvider {
             Ok(models)
         } else {
             Err(crate::error::Error::Provider(
-                "set ANTHROPIC_API_KEY to list models (or hard-code a `agent/<name>` in settings)".into(),
+                "set ANTHROPIC_API_KEY to list models (or hard-code a `agent/<name>` in settings)"
+                    .into(),
             ))
         }
     }

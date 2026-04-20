@@ -156,7 +156,12 @@ impl ProviderKind {
             Some(Self::Anthropic)
         } else if model.starts_with("codex/") || model.contains("codex") {
             Some(Self::OpenAIResponses)
-        } else if model.starts_with("gpt-") || model.starts_with("o1-") || model.starts_with("o3-") || model.starts_with("o3") || model.starts_with("o4-") {
+        } else if model.starts_with("gpt-")
+            || model.starts_with("o1-")
+            || model.starts_with("o3-")
+            || model.starts_with("o3")
+            || model.starts_with("o4-")
+        {
             Some(Self::OpenAI)
         } else if model.starts_with("gemini-") || model.starts_with("gemma-") {
             // Gemma open-weights models are served via the same Gemini API
@@ -205,17 +210,25 @@ impl RawDump {
                 .and_then(|c| c.show_raw_response)
                 .unwrap_or(false),
         };
-        Self { enabled, label: label.into(), buf: String::new() }
+        Self {
+            enabled,
+            label: label.into(),
+            buf: String::new(),
+        }
     }
 
     pub fn push(&mut self, s: &str) {
-        if self.enabled { self.buf.push_str(s); }
+        if self.enabled {
+            self.buf.push_str(s);
+        }
     }
 
     /// Print the accumulated text and clear the buffer. Safe to call
     /// repeatedly; only emits when there's something new and the flag is on.
     pub fn flush(&mut self) {
-        if !self.enabled || self.buf.is_empty() { return; }
+        if !self.enabled || self.buf.is_empty() {
+            return;
+        }
         eprintln!(
             "\n\x1b[35m─── raw response [{}] ({} chars, {} bytes) ───\x1b[0m\n\x1b[2m{}\x1b[0m\n\x1b[35m───\x1b[0m",
             self.label,
@@ -228,7 +241,9 @@ impl RawDump {
 }
 
 impl Drop for RawDump {
-    fn drop(&mut self) { self.flush(); }
+    fn drop(&mut self) {
+        self.flush();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -266,18 +281,22 @@ impl Usage {
     pub fn accumulate(&mut self, other: &Usage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
-        self.cache_creation_input_tokens = match (self.cache_creation_input_tokens, other.cache_creation_input_tokens) {
+        self.cache_creation_input_tokens = match (
+            self.cache_creation_input_tokens,
+            other.cache_creation_input_tokens,
+        ) {
             (Some(a), Some(b)) => Some(a + b),
             (Some(a), None) => Some(a),
             (None, Some(b)) => Some(b),
             (None, None) => None,
         };
-        self.cache_read_input_tokens = match (self.cache_read_input_tokens, other.cache_read_input_tokens) {
-            (Some(a), Some(b)) => Some(a + b),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
+        self.cache_read_input_tokens =
+            match (self.cache_read_input_tokens, other.cache_read_input_tokens) {
+                (Some(a), Some(b)) => Some(a + b),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
     }
 }
 
@@ -328,9 +347,21 @@ mod tests {
 
     #[test]
     fn detect_gemini_and_gemma_go_to_gemini() {
-        assert_eq!(ProviderKind::detect("gemini-2.0-flash"), Some(ProviderKind::Gemini));
-        assert_eq!(ProviderKind::detect("gemma-3-12b-it"), Some(ProviderKind::Gemini));
-        assert_eq!(ProviderKind::detect("gemma-3n-e4b-it"), Some(ProviderKind::Gemini));
-        assert_eq!(ProviderKind::detect("gemma-4-26b-a4b-it"), Some(ProviderKind::Gemini));
+        assert_eq!(
+            ProviderKind::detect("gemini-2.0-flash"),
+            Some(ProviderKind::Gemini)
+        );
+        assert_eq!(
+            ProviderKind::detect("gemma-3-12b-it"),
+            Some(ProviderKind::Gemini)
+        );
+        assert_eq!(
+            ProviderKind::detect("gemma-3n-e4b-it"),
+            Some(ProviderKind::Gemini)
+        );
+        assert_eq!(
+            ProviderKind::detect("gemma-4-26b-a4b-it"),
+            Some(ProviderKind::Gemini)
+        );
     }
 }

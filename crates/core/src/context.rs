@@ -28,10 +28,7 @@ pub struct ProjectContext {
 impl GitInfo {
     /// Parse pre-captured git command outputs into a GitInfo. Pure; trivial to test.
     pub fn from_outputs(branch: &str, head: &str, status_porcelain: &str) -> Self {
-        let lines: Vec<&str> = status_porcelain
-            .lines()
-            .filter(|l| !l.is_empty())
-            .collect();
+        let lines: Vec<&str> = status_porcelain.lines().filter(|l| !l.is_empty()).collect();
         let is_dirty = !lines.is_empty();
         let status_summary = if is_dirty {
             format!("{} file(s) changed", lines.len())
@@ -189,15 +186,15 @@ pub fn find_claude_md(start: &Path) -> Option<String> {
     // each sorted alphabetically, concatenated in order so thClaws-native
     // rules can override Claude Code's.
     for rules_dir in [start.join(".claude/rules"), start.join(".thclaws/rules")] {
-        if !rules_dir.is_dir() { continue; }
+        if !rules_dir.is_dir() {
+            continue;
+        }
         let mut rule_files: Vec<PathBuf> = std::fs::read_dir(&rules_dir)
             .ok()
             .map(|entries| {
                 entries
                     .flatten()
-                    .filter(|e| {
-                        e.path().extension().and_then(|x| x.to_str()) == Some("md")
-                    })
+                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
                     .map(|e| e.path())
                     .collect()
             })
@@ -307,10 +304,7 @@ mod tests {
         let nested = dir.path().join("a/b/c");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "monorepo rules").unwrap();
-        assert_eq!(
-            find_claude_md(&nested).as_deref(),
-            Some("monorepo rules")
-        );
+        assert_eq!(find_claude_md(&nested).as_deref(), Some("monorepo rules"));
     }
 
     #[test]
@@ -338,8 +332,7 @@ mod tests {
         assert!(out.contains("tests alongside code"));
         // Sorted — 01 rule appears before 02.
         assert!(
-            out.find("prefer terse names").unwrap()
-                < out.find("tests alongside code").unwrap()
+            out.find("prefer terse names").unwrap() < out.find("tests alongside code").unwrap()
         );
     }
 

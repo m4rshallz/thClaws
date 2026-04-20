@@ -45,7 +45,9 @@ impl Tool for EditTool {
             .unwrap_or(false);
 
         if old == new {
-            return Err(Error::Tool("old_string and new_string are identical".into()));
+            return Err(Error::Tool(
+                "old_string and new_string are identical".into(),
+            ));
         }
 
         let contents = std::fs::read_to_string(&path)
@@ -53,7 +55,10 @@ impl Tool for EditTool {
 
         let count = contents.matches(old).count();
         if count == 0 {
-            return Err(Error::Tool(format!("old_string not found in {}", path.display())));
+            return Err(Error::Tool(format!(
+                "old_string not found in {}",
+                path.display()
+            )));
         }
         if !replace_all && count > 1 {
             return Err(Error::Tool(format!(
@@ -72,7 +77,10 @@ impl Tool for EditTool {
             .map_err(|e| Error::Tool(format!("write {}: {e}", path.display())))?;
 
         let replaced = if replace_all { count } else { 1 };
-        Ok(format!("Replaced {replaced} occurrence(s) in {}", path.display()))
+        Ok(format!(
+            "Replaced {replaced} occurrence(s) in {}",
+            path.display()
+        ))
     }
 }
 

@@ -22,7 +22,9 @@ fn path() -> Option<PathBuf> {
 }
 
 fn read_map() -> BTreeMap<String, String> {
-    let Some(p) = path() else { return BTreeMap::new() };
+    let Some(p) = path() else {
+        return BTreeMap::new();
+    };
     let Ok(contents) = std::fs::read_to_string(&p) else {
         return BTreeMap::new();
     };
@@ -34,11 +36,10 @@ fn write_map(map: &BTreeMap<String, String>) -> Result<()> {
         return Err(Error::Config("HOME is not set".into()));
     };
     if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::Config(format!("create dir: {e}")))?;
+        std::fs::create_dir_all(parent).map_err(|e| Error::Config(format!("create dir: {e}")))?;
     }
-    let json = serde_json::to_string_pretty(map)
-        .map_err(|e| Error::Config(format!("serialize: {e}")))?;
+    let json =
+        serde_json::to_string_pretty(map).map_err(|e| Error::Config(format!("serialize: {e}")))?;
     std::fs::write(&p, json).map_err(|e| Error::Config(format!("write: {e}")))
 }
 

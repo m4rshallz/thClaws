@@ -207,7 +207,11 @@ pub fn parse_frontmatter(s: &str) -> (HashMap<String, String>, String) {
     }
 
     // Remaining iterator is the body.
-    let body: String = lines.collect::<Vec<_>>().join("\n").trim_start().to_string();
+    let body: String = lines
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_start()
+        .to_string();
     (map, body)
 }
 
@@ -302,14 +306,8 @@ mod tests {
     fn list_sorts_by_name() {
         let dir = tempdir().unwrap();
         let store = MemoryStore::new(dir.path().to_path_buf());
-        write(
-            &store.root.join("b.md"),
-            "---\ndescription: second\n---\n",
-        );
-        write(
-            &store.root.join("a.md"),
-            "---\ndescription: first\n---\n",
-        );
+        write(&store.root.join("b.md"), "---\ndescription: second\n---\n");
+        write(&store.root.join("a.md"), "---\ndescription: first\n---\n");
         let names: Vec<String> = store.list().unwrap().into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
     }
@@ -331,7 +329,10 @@ mod tests {
             &store.root.join("foo.md"),
             "---\ndescription: foo entry\ntype: user\n---\nActual body content goes here.",
         );
-        write(&store.root.join("bar.md"), "---\n---\njust a body, no frontmatter");
+        write(
+            &store.root.join("bar.md"),
+            "---\n---\njust a body, no frontmatter",
+        );
 
         let section = store.system_prompt_section().unwrap();
         // Index is rendered

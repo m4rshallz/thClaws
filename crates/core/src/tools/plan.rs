@@ -26,10 +26,12 @@ impl Tool for EnterPlanModeTool {
         json!({"type": "object", "properties": {}})
     }
     async fn call(&self, _input: Value) -> Result<String> {
-        Ok("Plan mode activated. I will now describe my plan step by step \
+        Ok(
+            "Plan mode activated. I will now describe my plan step by step \
             without executing any tools. Call ExitPlanMode when you are ready \
             to proceed with execution."
-            .into())
+                .into(),
+        )
     }
 }
 

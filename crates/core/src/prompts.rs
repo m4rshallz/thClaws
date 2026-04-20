@@ -17,13 +17,13 @@ const DIR: &str = "prompt";
 /// serve as the canonical reference for authors writing overrides into
 /// `.thclaws/prompt/`.
 pub mod defaults {
-    pub const SYSTEM:             &str = include_str!("default_prompts/system.md");
-    pub const LEAD:               &str = include_str!("default_prompts/lead.md");
-    pub const AGENT_TEAM:         &str = include_str!("default_prompts/agent_team.md");
-    pub const SUBAGENT:           &str = include_str!("default_prompts/subagent.md");
-    pub const WORKTREE:           &str = include_str!("default_prompts/worktree.md");
-    pub const COMPACTION:         &str = include_str!("default_prompts/compaction.md");
-    pub const COMPACTION_SYSTEM:  &str = include_str!("default_prompts/compaction_system.md");
+    pub const SYSTEM: &str = include_str!("default_prompts/system.md");
+    pub const LEAD: &str = include_str!("default_prompts/lead.md");
+    pub const AGENT_TEAM: &str = include_str!("default_prompts/agent_team.md");
+    pub const SUBAGENT: &str = include_str!("default_prompts/subagent.md");
+    pub const WORKTREE: &str = include_str!("default_prompts/worktree.md");
+    pub const COMPACTION: &str = include_str!("default_prompts/compaction.md");
+    pub const COMPACTION_SYSTEM: &str = include_str!("default_prompts/compaction_system.md");
 }
 
 fn project_path(name: &str) -> PathBuf {
@@ -76,7 +76,10 @@ mod tests {
 
     #[test]
     fn render_substitutes_known_keys() {
-        let out = render("hello {name}, you are {role}", &[("name", "ada"), ("role", "lead")]);
+        let out = render(
+            "hello {name}, you are {role}",
+            &[("name", "ada"), ("role", "lead")],
+        );
         assert_eq!(out, "hello ada, you are lead");
     }
 

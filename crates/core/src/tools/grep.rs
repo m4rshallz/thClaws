@@ -53,7 +53,10 @@ impl Tool for GrepTool {
             }
             if let Some(m) = &glob_matcher {
                 // Match the file name alone to avoid dir-path false matches.
-                let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default();
                 if !m.is_match(name.as_ref()) {
                     continue;
                 }
@@ -80,8 +83,16 @@ mod tests {
     fn setup_tree() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/main.rs"), "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
-        std::fs::write(dir.path().join("src/lib.rs"), "pub fn greet() -> String {\n    \"hello\".into()\n}\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/main.rs"),
+            "fn main() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn greet() -> String {\n    \"hello\".into()\n}\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("README.md"), "# hello world\n").unwrap();
         dir
     }
@@ -99,8 +110,12 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         // 3 occurrences: main.rs:2, lib.rs:2, README.md:1
         assert_eq!(lines.len(), 3, "got: {out}");
-        assert!(lines.iter().any(|l| l.contains("main.rs:2:") && l.contains("hello")));
-        assert!(lines.iter().any(|l| l.contains("lib.rs:2:") && l.contains("hello")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("main.rs:2:") && l.contains("hello")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("lib.rs:2:") && l.contains("hello")));
         assert!(lines.iter().any(|l| l.contains("README.md:1:")));
     }
 

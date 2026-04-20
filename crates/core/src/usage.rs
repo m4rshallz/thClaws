@@ -122,13 +122,17 @@ impl UsageTracker {
     /// List all (provider, model, data) tuples.
     pub fn all_models(&self) -> Vec<(String, String, ModelUsage)> {
         let mut out = Vec::new();
-        let Ok(providers) = std::fs::read_dir(&self.root) else { return out };
+        let Ok(providers) = std::fs::read_dir(&self.root) else {
+            return out;
+        };
         for prov_entry in providers.flatten() {
             if !prov_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
             let provider = prov_entry.file_name().to_string_lossy().into_owned();
-            let Ok(models) = std::fs::read_dir(prov_entry.path()) else { continue };
+            let Ok(models) = std::fs::read_dir(prov_entry.path()) else {
+                continue;
+            };
             for model_entry in models.flatten() {
                 let path = model_entry.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -184,8 +188,12 @@ impl UsageTracker {
         let grand_today = self.today();
         parts.push(format!(
             "\n## Total: {}in/{}out ({} req) — today: {}in/{}out ({} req)",
-            grand.input, grand.output, grand.requests,
-            grand_today.input, grand_today.output, grand_today.requests,
+            grand.input,
+            grand.output,
+            grand.requests,
+            grand_today.input,
+            grand_today.output,
+            grand_today.requests,
         ));
 
         parts.join("\n")
@@ -250,14 +258,26 @@ mod tests {
         let dir = tempdir().unwrap();
         let tracker = UsageTracker::new(dir.path().to_path_buf());
 
-        tracker.record("anthropic", "claude-sonnet-4-5", &Usage {
-            input_tokens: 100, output_tokens: 50,
-            cache_creation_input_tokens: None, cache_read_input_tokens: None,
-        });
-        tracker.record("openai", "gpt-4o", &Usage {
-            input_tokens: 200, output_tokens: 100,
-            cache_creation_input_tokens: None, cache_read_input_tokens: None,
-        });
+        tracker.record(
+            "anthropic",
+            "claude-sonnet-4-5",
+            &Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            },
+        );
+        tracker.record(
+            "openai",
+            "gpt-4o",
+            &Usage {
+                input_tokens: 200,
+                output_tokens: 100,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            },
+        );
 
         let models = tracker.all_models();
         assert_eq!(models.len(), 2);
@@ -282,10 +302,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let tracker = UsageTracker::new(dir.path().to_path_buf());
 
-        tracker.record("anthropic", "claude-sonnet-4-5", &Usage {
-            input_tokens: 1000, output_tokens: 200,
-            cache_creation_input_tokens: None, cache_read_input_tokens: None,
-        });
+        tracker.record(
+            "anthropic",
+            "claude-sonnet-4-5",
+            &Usage {
+                input_tokens: 1000,
+                output_tokens: 200,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            },
+        );
 
         let summary = tracker.summary();
         assert!(summary.contains("anthropic/claude-sonnet-4-5"));

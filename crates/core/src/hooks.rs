@@ -85,7 +85,10 @@ pub fn fire(config: &HooksConfig, event: HookEvent, env: &HashMap<String, String
 pub fn fire_pre_tool_use(config: &HooksConfig, tool_name: &str, input: &str) {
     let mut env = HashMap::new();
     env.insert("THCLAWS_TOOL_NAME".into(), tool_name.into());
-    env.insert("THCLAWS_TOOL_INPUT".into(), input.chars().take(1000).collect());
+    env.insert(
+        "THCLAWS_TOOL_INPUT".into(),
+        input.chars().take(1000).collect(),
+    );
     fire(config, HookEvent::PreToolUse, &env);
 }
 
@@ -98,7 +101,10 @@ pub fn fire_post_tool_use(config: &HooksConfig, tool_name: &str, output: &str, i
     };
     let mut env = HashMap::new();
     env.insert("THCLAWS_TOOL_NAME".into(), tool_name.into());
-    env.insert("THCLAWS_TOOL_OUTPUT".into(), output.chars().take(1000).collect());
+    env.insert(
+        "THCLAWS_TOOL_OUTPUT".into(),
+        output.chars().take(1000).collect(),
+    );
     env.insert("THCLAWS_TOOL_ERROR".into(), is_error.to_string());
     fire(config, event, &env);
 }
@@ -146,5 +152,4 @@ mod tests {
         fire(&config, HookEvent::PreToolUse, &HashMap::new());
         // No panic = pass.
     }
-
 }

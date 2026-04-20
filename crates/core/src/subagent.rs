@@ -132,7 +132,11 @@ impl Tool for SubAgentTool {
             return Err(Error::Agent(format!(
                 "unknown agent '{}'. Available: {}",
                 agent_name.unwrap(),
-                if available.is_empty() { "none" } else { &available }
+                if available.is_empty() {
+                    "none"
+                } else {
+                    &available
+                }
             )));
         }
 
@@ -188,7 +192,9 @@ mod tests {
     }
 
     fn text_script(chunks: &[&str]) -> Vec<ProviderEvent> {
-        let mut out = vec![ProviderEvent::MessageStart { model: "test".into() }];
+        let mut out = vec![ProviderEvent::MessageStart {
+            model: "test".into(),
+        }];
         for c in chunks {
             out.push(ProviderEvent::TextDelta((*c).to_string()));
         }
@@ -214,7 +220,12 @@ mod tests {
 
     #[async_trait]
     impl AgentFactory for SimpleFactory {
-        async fn build(&self, _prompt: &str, _def: Option<&AgentDef>, _depth: usize) -> Result<Agent> {
+        async fn build(
+            &self,
+            _prompt: &str,
+            _def: Option<&AgentDef>,
+            _depth: usize,
+        ) -> Result<Agent> {
             let script = self
                 .scripts
                 .lock()

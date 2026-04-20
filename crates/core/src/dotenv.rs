@@ -14,10 +14,7 @@ use std::path::{Path, PathBuf};
 /// Load `.env` files from standard locations. Call once at startup before
 /// any config or provider code reads env vars.
 pub fn load_dotenv() {
-    let candidates = [
-        global_dotenv_path(),
-        Some(PathBuf::from(".env")),
-    ];
+    let candidates = [global_dotenv_path(), Some(PathBuf::from(".env"))];
     // Load global first, then project-local. Since we only set vars that
     // aren't already present, project-local effectively overrides global
     // because it's loaded second (and the first load set them).
@@ -53,8 +50,8 @@ pub fn user_dotenv_path() -> Option<PathBuf> {
 /// Linux without Secret Service, or a user who declined the keychain
 /// permission prompt on macOS).
 pub fn upsert_user_env(var: &str, value: &str) -> crate::error::Result<PathBuf> {
-    let path = user_dotenv_path()
-        .ok_or_else(|| crate::error::Error::Config("HOME is not set".into()))?;
+    let path =
+        user_dotenv_path().ok_or_else(|| crate::error::Error::Config("HOME is not set".into()))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -88,7 +85,9 @@ pub fn upsert_user_env(var: &str, value: &str) -> crate::error::Result<PathBuf> 
 /// Remove a `KEY=...` line from the user-scope `.env`. Silently succeeds
 /// if the file or the key doesn't exist.
 pub fn remove_from_user_env(var: &str) -> crate::error::Result<Option<PathBuf>> {
-    let Some(path) = user_dotenv_path() else { return Ok(None); };
+    let Some(path) = user_dotenv_path() else {
+        return Ok(None);
+    };
     if !path.exists() {
         return Ok(None);
     }

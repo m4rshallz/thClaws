@@ -67,16 +67,18 @@ impl SkillStore {
     fn skill_dirs() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         if let Ok(home) = std::env::var("HOME") {
-            dirs.push(PathBuf::from(&home).join(".claude/skills"));       // user Claude Code
+            dirs.push(PathBuf::from(&home).join(".claude/skills")); // user Claude Code
             dirs.push(PathBuf::from(&home).join(".config/thclaws/skills")); // user thClaws
         }
-        dirs.push(PathBuf::from(".claude/skills"));   // project Claude Code
-        dirs.push(PathBuf::from(".thclaws/skills"));  // project thClaws (highest priority)
+        dirs.push(PathBuf::from(".claude/skills")); // project Claude Code
+        dirs.push(PathBuf::from(".thclaws/skills")); // project thClaws (highest priority)
         dirs
     }
 
     fn load_dir(&mut self, base: &Path) {
-        let Ok(entries) = std::fs::read_dir(base) else { return };
+        let Ok(entries) = std::fs::read_dir(base) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
@@ -96,15 +98,12 @@ impl SkillStore {
         let raw = std::fs::read_to_string(skill_md).ok()?;
         let (frontmatter, body) = crate::memory::parse_frontmatter(&raw);
 
-        let name = frontmatter
-            .get("name")
-            .cloned()
-            .unwrap_or_else(|| {
-                dir.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            });
+        let name = frontmatter.get("name").cloned().unwrap_or_else(|| {
+            dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
         let description = frontmatter.get("description").cloned().unwrap_or_default();
         let when_to_use = frontmatter
             .get("whenToUse")
@@ -197,7 +196,10 @@ pub async fn install_from_zip(
     // Extract under a staging dir first so we can inspect the structure
     // (single SKILL.md at root vs bundle) before committing to the final
     // name. Staging lives inside `target_root` so rename is same-volume.
-    let staging = target_root.join(format!(".thclaws-install-{}", uuid::Uuid::new_v4().simple()));
+    let staging = target_root.join(format!(
+        ".thclaws-install-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
     std::fs::create_dir_all(&staging)
         .map_err(|e| Error::Tool(format!("mkdir {}: {e}", staging.display())))?;
 
@@ -251,7 +253,9 @@ pub async fn install_from_zip(
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if sub_name.is_empty() { continue; }
+        if sub_name.is_empty() {
+            continue;
+        }
         let dest = target_root.join(&sub_name);
         if dest.exists() {
             conflicts.push(sub_name);
@@ -286,8 +290,7 @@ fn target_root(project_scope: bool) -> Result<PathBuf> {
             .map_err(|e| Error::Tool(format!("cwd: {e}")))?
             .join(".thclaws/skills"))
     } else {
-        let home = std::env::var("HOME")
-            .map_err(|_| Error::Tool("HOME is not set".into()))?;
+        let home = std::env::var("HOME").map_err(|_| Error::Tool("HOME is not set".into()))?;
         Ok(PathBuf::from(home).join(".config/thclaws/skills"))
     }
 }
@@ -307,10 +310,7 @@ async fn download_zip(url: &str) -> Result<Vec<u8>> {
         .await
         .map_err(|e| Error::Tool(format!("download: {e}")))?;
     if !resp.status().is_success() {
-        return Err(Error::Tool(format!(
-            "download: HTTP {}",
-            resp.status()
-        )));
+        return Err(Error::Tool(format!("download: HTTP {}", resp.status())));
     }
     if let Some(len) = resp.content_length() {
         if len > MAX_BYTES {
@@ -337,8 +337,8 @@ async fn download_zip(url: &str) -> Result<Vec<u8>> {
 
 fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
     let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| Error::Tool(format!("open zip: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| Error::Tool(format!("open zip: {e}")))?;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -368,10 +368,8 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Some(mode) = entry.unix_mode() {
-                    let _ = std::fs::set_permissions(
-                        &out_path,
-                        std::fs::Permissions::from_mode(mode),
-                    );
+                    let _ =
+                        std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode));
                 }
             }
         }
@@ -417,8 +415,7 @@ pub fn install_from_git(
             .map_err(|e| Error::Tool(format!("cwd: {e}")))?
             .join(".thclaws/skills")
     } else {
-        let home = std::env::var("HOME")
-            .map_err(|_| Error::Tool("HOME is not set".into()))?;
+        let home = std::env::var("HOME").map_err(|_| Error::Tool("HOME is not set".into()))?;
         PathBuf::from(home).join(".config/thclaws/skills")
     };
     std::fs::create_dir_all(&target_root)
@@ -441,7 +438,13 @@ pub fn install_from_git(
     }
 
     let out = std::process::Command::new("git")
-        .args(["clone", "--depth", "1", git_url, &clone_dir.to_string_lossy()])
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            git_url,
+            &clone_dir.to_string_lossy(),
+        ])
         .output()
         .map_err(|e| Error::Tool(format!("spawn git: {e}")))?;
     if !out.status.success() {
@@ -452,11 +455,7 @@ pub fn install_from_git(
         )));
     }
 
-    let mut report = vec![format!(
-        "cloned {} → {}",
-        git_url,
-        clone_dir.display()
-    )];
+    let mut report = vec![format!("cloned {} → {}", git_url, clone_dir.display())];
 
     // Single skill: clone root itself has SKILL.md.
     if clone_dir.join("SKILL.md").exists() {
@@ -470,10 +469,7 @@ pub fn install_from_git(
     // scan would miss them.
     let found = find_skill_dirs(&clone_dir);
     if found.is_empty() {
-        report.push(
-            "warning: no SKILL.md found anywhere in the cloned repo"
-                .into(),
-        );
+        report.push("warning: no SKILL.md found anywhere in the cloned repo".into());
         return Ok(report);
     }
 
@@ -484,7 +480,9 @@ pub fn install_from_git(
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if sub_name.is_empty() { continue; }
+        if sub_name.is_empty() {
+            continue;
+        }
         let dest = target_root.join(&sub_name);
         if dest.exists() {
             conflicts.push(sub_name);
@@ -532,10 +530,14 @@ fn walk_for_skills(dir: &Path, out: &mut Vec<PathBuf>) {
         out.push(dir.to_path_buf());
         return; // don't descend into an already-claimed skill dir
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() { continue; }
+        if !path.is_dir() {
+            continue;
+        }
         let name = entry.file_name();
         if name == ".git" || name == "node_modules" || name == "target" {
             continue;
@@ -570,8 +572,14 @@ mod install_tests {
 
     #[test]
     fn derive_name_strips_dot_git_and_path() {
-        assert_eq!(derive_name_from_url("https://github.com/anthropics/skills.git"), "skills");
-        assert_eq!(derive_name_from_url("git@github.com:user/my-skill.git"), "my-skill");
+        assert_eq!(
+            derive_name_from_url("https://github.com/anthropics/skills.git"),
+            "skills"
+        );
+        assert_eq!(
+            derive_name_from_url("git@github.com:user/my-skill.git"),
+            "my-skill"
+        );
         assert_eq!(derive_name_from_url("https://example.com/x/y/"), "y");
         assert_eq!(derive_name_from_url("/local/path/foo"), "foo");
     }
@@ -589,7 +597,9 @@ mod install_tests {
     #[test]
     fn derive_name_works_for_zip_urls() {
         assert_eq!(
-            derive_name_from_url("https://agentic-press.com/api/skills/deploy-to-agentic-hosting-v1.zip"),
+            derive_name_from_url(
+                "https://agentic-press.com/api/skills/deploy-to-agentic-hosting-v1.zip"
+            ),
             "deploy-to-agentic-hosting-v1"
         );
         assert_eq!(
@@ -662,7 +672,11 @@ impl Tool for SkillTool {
             Error::Tool(format!(
                 "skill '{}' not found. Available: {}",
                 name,
-                if available.is_empty() { "none" } else { &available }
+                if available.is_empty() {
+                    "none"
+                } else {
+                    &available
+                }
             ))
         })?;
 
@@ -676,12 +690,7 @@ impl Tool for SkillTool {
                     entries
                         .flatten()
                         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                        .map(|e| {
-                            format!(
-                                "  - {}",
-                                scripts_dir.join(e.file_name()).display()
-                            )
-                        })
+                        .map(|e| format!("  - {}", scripts_dir.join(e.file_name()).display()))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -736,7 +745,11 @@ mod tests {
         assert_eq!(store.skills.len(), 2);
         assert!(store.get("deploy").is_some());
         assert!(store.get("test").is_some());
-        assert!(store.get("deploy").unwrap().content.contains("/scripts/deploy.sh"));
+        assert!(store
+            .get("deploy")
+            .unwrap()
+            .content
+            .contains("/scripts/deploy.sh"));
         // {skill_dir} replaced with actual path
         assert!(!store.get("deploy").unwrap().content.contains("{skill_dir}"));
     }

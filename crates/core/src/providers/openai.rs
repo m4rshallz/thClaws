@@ -91,7 +91,11 @@ impl OpenAIProvider {
                             "function": { "name": name, "arguments": args },
                         }));
                     }
-                    ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
                         trailing_tool_results.push((tool_use_id.clone(), content.clone()));
                     }
                 }
@@ -288,7 +292,10 @@ impl ParseState {
 fn parse_openai_usage(v: &Value) -> Option<Usage> {
     let u = v.get("usage")?;
     let input = u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
-    let output = u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let output = u
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     if input == 0 && output == 0 {
         return None;
     }
@@ -497,7 +504,11 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(usage_stops.len(), 1, "expected a MessageStop carrying usage");
+        assert_eq!(
+            usage_stops.len(),
+            1,
+            "expected a MessageStop carrying usage"
+        );
         assert_eq!(usage_stops[0].input_tokens, 11);
         assert_eq!(usage_stops[0].output_tokens, 3);
     }

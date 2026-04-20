@@ -114,9 +114,7 @@ impl WebSearchTool {
             .await
             .map_err(|e| Error::Tool(format!("brave json: {e}")))?;
 
-        let results = v
-            .pointer("/web/results")
-            .and_then(Value::as_array);
+        let results = v.pointer("/web/results").and_then(Value::as_array);
 
         match results {
             Some(arr) if !arr.is_empty() => {
@@ -153,11 +151,8 @@ impl WebSearchTool {
             .map_err(|e| Error::Tool(format!("duckduckgo body: {e}")))?;
 
         let link_re =
-            regex::Regex::new(r#"class="result__a"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>"#)
-                .unwrap();
-        let snippet_re =
-            regex::Regex::new(r#"class="result__snippet"[^>]*>([^<]+)"#)
-                .unwrap();
+            regex::Regex::new(r#"class="result__a"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>"#).unwrap();
+        let snippet_re = regex::Regex::new(r#"class="result__snippet"[^>]*>([^<]+)"#).unwrap();
 
         let links: Vec<(String, String)> = link_re
             .captures_iter(&html)
