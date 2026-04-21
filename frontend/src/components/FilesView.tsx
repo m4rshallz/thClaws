@@ -199,12 +199,19 @@ export function FilesView({ active }: Props) {
     send({ type: "file_read", path: preview.path, mode: "source" });
   };
 
-  // The Discard button is only shown when `editorDirty` is true, and
-  // its label is literally "Discard" — that IS the confirmation.
-  // We don't layer a `window.confirm` on top because (a) it's
-  // redundant and (b) wry WebViews don't implement confirm reliably,
-  // which is what broke this button in the first place.
-  const exitEditMode = () => {
+  const exitEditMode = async () => {
+    // If there are unsaved edits, surface a native OS confirm so the
+    // user can abort a misclick. When the editor is already clean
+    // ("Preview" button label), skip the prompt and go straight back.
+    if (editorDirty) {
+      const ok = await confirmNative({
+        title: "Discard unsaved changes",
+        message: `Discard unsaved edits to ${preview?.path ?? "this file"} and return to preview?`,
+        yesLabel: "Discard",
+        noLabel: "Keep editing",
+      });
+      if (!ok) return;
+    }
     setMode("preview");
     setEditorDirty(false);
     setEditorSource("");
