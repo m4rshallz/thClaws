@@ -1514,8 +1514,8 @@ pub fn run_gui() {
                     ));
                 }
                 "file_list" => {
-                    let raw_path = msg.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                    let resolved = crate::sandbox::Sandbox::check(raw_path)
+                    let raw_path = ospath(msg.get("path").and_then(|v| v.as_str()).unwrap_or("."));
+                    let resolved = crate::sandbox::Sandbox::check(&raw_path)
                         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
                     if let Ok(entries) = std::fs::read_dir(&resolved) {
                         let mut items: Vec<serde_json::Value> = entries
