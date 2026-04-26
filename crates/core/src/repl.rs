@@ -42,6 +42,22 @@ pub enum SlashCommand {
     /// update the local cache. Used by the `/models refresh` UI path
     /// and by the daily auto-refresh background task.
     ModelsRefresh,
+    /// Set a per-`provider/model` user override for context window.
+    /// Defaults to user-global scope (`~/.config/thclaws/settings.json`);
+    /// `--project` scopes to `.thclaws/settings.json` of the current
+    /// working directory. Override wins over every catalogue layer at
+    /// lookup time.
+    ModelsSetContext {
+        key: String,
+        size: u32,
+        project: bool,
+    },
+    /// Remove a `provider/model` override. Falls back to whatever the
+    /// next catalogue layer says.
+    ModelsUnsetContext {
+        key: String,
+        project: bool,
+    },
     Provider(String),
     Providers,
     Config {
@@ -258,6 +274,91 @@ fn parse_mcp_subcommand(args: &str) -> SlashCommand {
     }
 }
 
+/// Parse `/models [refresh|set-context|unset-context ...]`.
+/// - `/models` → list (current behaviour)
+/// - `/models refresh` → refetch catalogue
+/// - `/models set-context [--project] <provider/model> <size>`
+/// - `/models unset-context [--project] <provider/model>`
+fn parse_models_subcommand(args: &str) -> SlashCommand {
+    let args = args.trim();
+    if args.is_empty() {
+        return SlashCommand::Models;
+    }
+    let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+    match sub {
+        "refresh" => SlashCommand::ModelsRefresh,
+        "set-context" => {
+            let mut parts: Vec<&str> = rest.split_whitespace().collect();
+            let mut project = false;
+            if parts.first().copied() == Some("--project") {
+                project = true;
+                parts.remove(0);
+            } else if parts.first().copied() == Some("--user") {
+                parts.remove(0);
+            }
+            match parts.as_slice() {
+                [key, size] => match parse_size(size) {
+                    Some(n) => SlashCommand::ModelsSetContext {
+                        key: (*key).to_string(),
+                        size: n,
+                        project,
+                    },
+                    None => SlashCommand::Unknown(format!(
+                        "/models set-context: invalid size '{size}' (try 128000 or 128k)"
+                    )),
+                },
+                _ => SlashCommand::Unknown(
+                    "usage: /models set-context [--project] <provider/model> <size>".into(),
+                ),
+            }
+        }
+        "unset-context" => {
+            let mut parts: Vec<&str> = rest.split_whitespace().collect();
+            let mut project = false;
+            if parts.first().copied() == Some("--project") {
+                project = true;
+                parts.remove(0);
+            } else if parts.first().copied() == Some("--user") {
+                parts.remove(0);
+            }
+            match parts.as_slice() {
+                [key] => SlashCommand::ModelsUnsetContext {
+                    key: (*key).to_string(),
+                    project,
+                },
+                _ => SlashCommand::Unknown(
+                    "usage: /models unset-context [--project] <provider/model>".into(),
+                ),
+            }
+        }
+        other => SlashCommand::Unknown(format!(
+            "unknown /models subcommand: '{other}' (try /models, /models refresh, /models set-context, /models unset-context)"
+        )),
+    }
+}
+
+/// Parse a token-count argument that accepts plain digits ("128000") or
+/// a `k`/`m` suffix ("128k", "1m"). Case-insensitive on the suffix.
+fn parse_size(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num, mult) = if let Some(rest) = s.strip_suffix(['k', 'K']) {
+        (rest, 1_000u64)
+    } else if let Some(rest) = s.strip_suffix(['m', 'M']) {
+        (rest, 1_000_000u64)
+    } else {
+        (s, 1u64)
+    };
+    let n: u64 = num.parse().ok()?;
+    let total = n.checked_mul(mult)?;
+    if total == 0 || total > u32::MAX as u64 {
+        return None;
+    }
+    Some(total as u32)
+}
+
 /// Default model to select when switching provider by name only.
 /// Thin wrapper around `ProviderKind::from_name` + `default_model` for
 /// backward-compat tests and REPL call sites that already use `&str`.
@@ -282,13 +383,7 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "clear" => SlashCommand::Clear,
         "history" => SlashCommand::History,
         "model" => SlashCommand::Model(args.to_string()),
-        "models" => match args.trim() {
-            "refresh" => SlashCommand::ModelsRefresh,
-            "" => SlashCommand::Models,
-            other => SlashCommand::Unknown(format!(
-                "unknown /models subcommand: '{other}' (try /models or /models refresh)"
-            )),
-        },
+        "models" => parse_models_subcommand(args),
         "provider" => SlashCommand::Provider(args.to_string()),
         "providers" => SlashCommand::Providers,
         "config" => match args.split_once('=') {
@@ -2147,6 +2242,55 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         ),
                     }
                 }
+                SlashCommand::ModelsSetContext { key, size, project } => {
+                    let scope = if project {
+                        crate::model_catalogue::OverrideScope::Project
+                    } else {
+                        crate::model_catalogue::OverrideScope::User
+                    };
+                    let entry = crate::model_catalogue::ModelEntry {
+                        context: Some(size),
+                        max_output: None,
+                        source: Some("override".into()),
+                        verified_at: None,
+                    };
+                    // Compare against catalogue value before saving so we
+                    // can warn when the override exceeds it (trust + warn).
+                    let cat = crate::model_catalogue::EffectiveCatalogue::load();
+                    let warn = cat.lookup_exact(&key).map(|n| size > n).unwrap_or(false);
+                    match crate::model_catalogue::save_override(&key, Some(entry), scope) {
+                        Ok(path) => {
+                            println!(
+                                "{COLOR_DIM}override → {key}: {size} tokens (saved to {}){COLOR_RESET}",
+                                path.display()
+                            );
+                            if warn {
+                                println!(
+                                    "{COLOR_YELLOW}warning: override exceeds catalogue value — provider may reject{COLOR_RESET}"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}set-context failed: {e}{COLOR_RESET}")
+                        }
+                    }
+                }
+                SlashCommand::ModelsUnsetContext { key, project } => {
+                    let scope = if project {
+                        crate::model_catalogue::OverrideScope::Project
+                    } else {
+                        crate::model_catalogue::OverrideScope::User
+                    };
+                    match crate::model_catalogue::save_override(&key, None, scope) {
+                        Ok(path) => println!(
+                            "{COLOR_DIM}override removed for {key} (in {}){COLOR_RESET}",
+                            path.display()
+                        ),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}unset-context failed: {e}{COLOR_RESET}")
+                        }
+                    }
+                }
                 SlashCommand::Models => {
                     // Build a fresh provider from current config and query it.
                     match build_provider(&config) {
@@ -3614,6 +3758,77 @@ mod tests {
     #[test]
     fn parse_slash_models() {
         assert_eq!(parse_slash("/models"), Some(SlashCommand::Models));
+        assert_eq!(
+            parse_slash("/models refresh"),
+            Some(SlashCommand::ModelsRefresh)
+        );
+    }
+
+    #[test]
+    fn parse_slash_models_set_context() {
+        // Default scope is user.
+        assert_eq!(
+            parse_slash("/models set-context anthropic/claude-sonnet-4-6 200000"),
+            Some(SlashCommand::ModelsSetContext {
+                key: "anthropic/claude-sonnet-4-6".into(),
+                size: 200_000,
+                project: false,
+            })
+        );
+        // --project flag scopes to project.
+        assert_eq!(
+            parse_slash("/models set-context --project openai/gpt-4o 128000"),
+            Some(SlashCommand::ModelsSetContext {
+                key: "openai/gpt-4o".into(),
+                size: 128_000,
+                project: true,
+            })
+        );
+        // Suffix shorthand: "128k", "1m".
+        assert_eq!(
+            parse_slash("/models set-context anthropic/claude-sonnet-4-6 200k"),
+            Some(SlashCommand::ModelsSetContext {
+                key: "anthropic/claude-sonnet-4-6".into(),
+                size: 200_000,
+                project: false,
+            })
+        );
+        assert_eq!(
+            parse_slash("/models set-context anthropic/claude-opus-4-7-1m 1m"),
+            Some(SlashCommand::ModelsSetContext {
+                key: "anthropic/claude-opus-4-7-1m".into(),
+                size: 1_000_000,
+                project: false,
+            })
+        );
+        // Unset.
+        assert_eq!(
+            parse_slash("/models unset-context anthropic/claude-sonnet-4-6"),
+            Some(SlashCommand::ModelsUnsetContext {
+                key: "anthropic/claude-sonnet-4-6".into(),
+                project: false,
+            })
+        );
+        assert_eq!(
+            parse_slash("/models unset-context --project openai/gpt-4o"),
+            Some(SlashCommand::ModelsUnsetContext {
+                key: "openai/gpt-4o".into(),
+                project: true,
+            })
+        );
+        // Bad usage → Unknown with hint.
+        assert!(matches!(
+            parse_slash("/models set-context"),
+            Some(SlashCommand::Unknown(msg)) if msg.contains("usage:")
+        ));
+        assert!(matches!(
+            parse_slash("/models set-context openai/gpt-4o not-a-number"),
+            Some(SlashCommand::Unknown(msg)) if msg.contains("invalid size")
+        ));
+        assert!(matches!(
+            parse_slash("/models foo"),
+            Some(SlashCommand::Unknown(msg)) if msg.contains("unknown /models subcommand")
+        ));
     }
 
     #[test]

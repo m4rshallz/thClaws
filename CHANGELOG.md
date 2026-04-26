@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-04-26
+
+Small additive release in response to issue [#30](https://github.com/thClaws/thClaws/issues/30)
+from Chawasit Tengtrairatana — same reporter who filed the
+v0.4.1 Windows bug, with another high-quality writeup that
+mapped cleanly to the existing catalogue layering.
+
+### Added
+
+- **User-defined context-window overrides.** A new `modelOverrides`
+  block in `settings.json` (project + user, project wins per-key)
+  lets the user pin context windows above every catalogue layer.
+  Keyed by `provider/model` (e.g. `"anthropic/claude-sonnet-4-6"`).
+  Useful for: (a) capping a local Ollama / LMStudio model to fit
+  a smaller GPU than the model's native context, (b) per-provider
+  variants of the same id (Anthropic vs OpenRouter for the same
+  Claude model), (c) brand-new models not yet in the catalogue.
+  Override resolution honors aliases in both directions and the
+  same `vendor/` prefix-strip rules the catalogue uses.
+
+- **`/models set-context` and `/models unset-context` slash
+  commands.** Set: `/models set-context [--project] <provider/model>
+  <size>` (size accepts `128000`, `128k`, or `1m`). Unset: `/models
+  unset-context [--project] <provider/model>`. Default scope is
+  user-global (`~/.config/thclaws/settings.json`); `--project`
+  scopes to `.thclaws/settings.json`. Saves preserve every other
+  field in the target file (atomic write).
+
+- **`ContextSource` enum.** `effective_context_window_with` now
+  returns `(u32, ContextSource)` distinguishing override hits from
+  catalogue hits and from fallbacks. `/models` rendering marks
+  override rows with a `source: "override"` stamp. Old `(u32,
+  bool)` semantics remain available via `ContextSource::is_known()`.
+
+### Policy: trust + warn
+
+Overrides exceeding the catalogue value are accepted (the user
+intent always wins) but a yellow warning is printed at save-time
+so a typo doesn't silently produce upstream rejections at request
+time. No clamp, no validation against the upstream-reported max —
+matches the spirit of "user knows their hardware better than we do."
+
 ## [0.4.1] — 2026-04-27
 
 Same-day patch release fixing a critical Windows-only bug surfaced

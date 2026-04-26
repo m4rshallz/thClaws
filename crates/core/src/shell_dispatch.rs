@@ -194,6 +194,54 @@ pub async fn dispatch(
             }
             emit(events_tx, out);
         }
+        SlashCommand::ModelsSetContext { key, size, project } => {
+            let scope = if project {
+                crate::model_catalogue::OverrideScope::Project
+            } else {
+                crate::model_catalogue::OverrideScope::User
+            };
+            let entry = crate::model_catalogue::ModelEntry {
+                context: Some(size),
+                max_output: None,
+                source: Some("override".into()),
+                verified_at: None,
+            };
+            let cat = crate::model_catalogue::EffectiveCatalogue::load();
+            let warn = cat.lookup_exact(&key).map(|n| size > n).unwrap_or(false);
+            match crate::model_catalogue::save_override(&key, Some(entry), scope) {
+                Ok(path) => {
+                    emit(
+                        events_tx,
+                        format!(
+                            "override → {key}: {size} tokens (saved to {})",
+                            path.display()
+                        ),
+                    );
+                    if warn {
+                        emit(
+                            events_tx,
+                            "warning: override exceeds catalogue value — provider may reject"
+                                .into(),
+                        );
+                    }
+                }
+                Err(e) => emit(events_tx, format!("set-context failed: {e}")),
+            }
+        }
+        SlashCommand::ModelsUnsetContext { key, project } => {
+            let scope = if project {
+                crate::model_catalogue::OverrideScope::Project
+            } else {
+                crate::model_catalogue::OverrideScope::User
+            };
+            match crate::model_catalogue::save_override(&key, None, scope) {
+                Ok(path) => emit(
+                    events_tx,
+                    format!("override removed for {key} (in {})", path.display()),
+                ),
+                Err(e) => emit(events_tx, format!("unset-context failed: {e}")),
+            }
+        }
         SlashCommand::ModelsRefresh => {
             emit(events_tx, "refreshing model catalogue…".into());
             match crate::model_catalogue::refresh_from_remote().await {
@@ -1309,9 +1357,9 @@ async fn switch_model(
     //   the result into the user cache so it sticks.
     // - Everyone else: emit the "run /models refresh" nudge.
     let cat = crate::model_catalogue::EffectiveCatalogue::load();
-    let (ctx, known) =
+    let (ctx, src) =
         crate::model_catalogue::effective_context_window_with(&cat, &state.config.model);
-    if !known {
+    if !src.is_known() {
         let is_ollama = matches!(
             new_kind,
             Some(crate::providers::ProviderKind::Ollama)
