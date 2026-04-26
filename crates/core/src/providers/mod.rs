@@ -31,6 +31,8 @@ pub enum ProviderKind {
     Ollama,
     OllamaAnthropic,
     DashScope,
+    ZAi,
+    LMStudio,
 }
 
 impl ProviderKind {
@@ -45,6 +47,8 @@ impl ProviderKind {
         Self::Ollama,
         Self::OllamaAnthropic,
         Self::DashScope,
+        Self::ZAi,
+        Self::LMStudio,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -59,6 +63,8 @@ impl ProviderKind {
             Self::Ollama => "ollama",
             Self::OllamaAnthropic => "ollama-anthropic",
             Self::DashScope => "dashscope",
+            Self::ZAi => "zai",
+            Self::LMStudio => "lmstudio",
         }
     }
 
@@ -74,6 +80,13 @@ impl ProviderKind {
             Self::Ollama => "ollama/llama3.2",
             Self::OllamaAnthropic => "oa/qwen3-coder",
             Self::DashScope => "qwen-max",
+            Self::ZAi => "zai/glm-4.6",
+            // Most LMStudio installs change models constantly; this is a
+            // placeholder that lets the connection establish so the user
+            // can `/model lmstudio/<loaded-model>` to switch. list_models
+            // will populate the GUI dropdown with whatever's actually
+            // loaded.
+            Self::LMStudio => "lmstudio/llama-3.2-3b-instruct",
         }
     }
 
@@ -87,17 +100,22 @@ impl ProviderKind {
             Self::DashScope => Some("DASHSCOPE_BASE_URL"),
             Self::Ollama => Some("OLLAMA_BASE_URL"),
             Self::OllamaAnthropic => Some("OLLAMA_BASE_URL"),
+            Self::ZAi => Some("ZAI_BASE_URL"),
+            Self::LMStudio => Some("LMSTUDIO_BASE_URL"),
             _ => None,
         }
     }
 
     /// Whether the Settings UI should expose this provider's base URL. We
-    /// keep hosted services (Agentic Press, DashScope) locked to their
+    /// keep hosted services (Agentic Press, DashScope, Z.ai) locked to their
     /// defaults so users can't accidentally mis-point them; only self-hosted
-    /// backends like Ollama are surfaced for editing. The env var still
-    /// overrides at startup for power users who need it.
+    /// backends like Ollama and LMStudio are surfaced for editing. The env
+    /// var still overrides at startup for power users who need it.
     pub fn endpoint_user_configurable(&self) -> bool {
-        matches!(self, Self::Ollama | Self::OllamaAnthropic)
+        matches!(
+            self,
+            Self::Ollama | Self::OllamaAnthropic | Self::LMStudio,
+        )
     }
 
     /// Default base URL shown as a placeholder in the Settings UI when the
@@ -109,6 +127,15 @@ impl ProviderKind {
             Self::DashScope => Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
             Self::Ollama => Some("http://localhost:11434"),
             Self::OllamaAnthropic => Some("http://localhost:11434"),
+            // Z.ai exposes the Coding Plan at /api/coding/paas/v4. The
+            // general BigModel endpoint at https://open.bigmodel.cn/api/paas/v4
+            // is also OpenAI-compatible — power users can override via
+            // ZAI_BASE_URL if they don't have the Coding Plan SKU.
+            Self::ZAi => Some("https://api.z.ai/api/coding/paas/v4"),
+            // LMStudio exposes an OpenAI-compatible endpoint at /v1.
+            // Default port 1234; users routinely change it, hence the
+            // editable Settings field above.
+            Self::LMStudio => Some("http://localhost:1234/v1"),
             _ => None,
         }
     }
@@ -126,6 +153,8 @@ impl ProviderKind {
             Self::Ollama => None,
             Self::OllamaAnthropic => None,
             Self::DashScope => Some("DASHSCOPE_API_KEY"),
+            Self::ZAi => Some("ZAI_API_KEY"),
+            Self::LMStudio => None, // Local runtime, no auth.
         }
     }
 
@@ -198,7 +227,9 @@ impl ProviderKind {
             | Self::AgentSdk
             | Self::Ollama
             | Self::OllamaAnthropic
-            | Self::DashScope => None,
+            | Self::DashScope
+            | Self::ZAi
+            | Self::LMStudio => None,
         }
     }
 
@@ -233,6 +264,16 @@ impl ProviderKind {
             Some(Self::Gemini)
         } else if model.starts_with("qwen") || model.starts_with("qwq-") {
             Some(Self::DashScope)
+        } else if model.starts_with("zai/") {
+            // Z.ai (GLM Coding Plan). Models look like zai/glm-4.6.
+            // The "zai/" prefix is stripped before forwarding to the
+            // OpenAI-compatible upstream.
+            Some(Self::ZAi)
+        } else if model.starts_with("lmstudio/") {
+            // LMStudio (local runtime, OpenAI-compatible at /v1).
+            // Models look like lmstudio/<loaded-model-id>; the prefix
+            // is stripped before the request reaches LMStudio.
+            Some(Self::LMStudio)
         } else if model.starts_with("oa/") {
             Some(Self::OllamaAnthropic)
         } else if model.starts_with("ollama/") {

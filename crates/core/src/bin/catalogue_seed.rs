@@ -105,6 +105,17 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<String, String> {
+    // Pick up API keys from a workspace-root .env, regardless of where
+    // `cargo run --bin catalogue-seed` was invoked from. Standard
+    // load_dotenv handles ./.env and ~/.config/thclaws/.env; the
+    // walking-up pass catches the workspace .env when this binary
+    // is run from a nested crate dir (the typical case in the dev
+    // workspace where the public-side root Cargo.toml doesn't exist).
+    thclaws_core::dotenv::load_dotenv();
+    if let Ok(cwd) = std::env::current_dir() {
+        thclaws_core::dotenv::load_dotenv_walking_up(&cwd);
+    }
+
     let target: PathBuf = std::env::args()
         .nth(1)
         .map(PathBuf::from)

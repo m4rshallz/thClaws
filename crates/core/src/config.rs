@@ -673,20 +673,27 @@ impl AppConfig {
     pub fn api_key_from_env(&self) -> Option<String> {
         let kind = self.detect_provider_kind().ok()?;
         let var = kind.api_key_env()?;
+        // Treat an exported-but-empty env var ("ANTHROPIC_API_KEY=") as
+        // unset and fall through to the keychain. A stale shell rc or
+        // VS Code env injection can leave the var present but blank;
+        // returning Some("") from here would produce an empty bearer
+        // token and a confusing 401 on every request.
         if let Ok(value) = std::env::var(var) {
-            if std::env::var("THCLAWS_KEYCHAIN_TRACE").is_ok() {
-                eprintln!(
-                    "\x1b[35m[keychain pid={}] api_key_from_env({}) → from env {}\x1b[0m",
-                    std::process::id(),
-                    kind.name(),
-                    var
-                );
+            if !value.trim().is_empty() {
+                if std::env::var("THCLAWS_KEYCHAIN_TRACE").is_ok() {
+                    eprintln!(
+                        "\x1b[35m[keychain pid={}] api_key_from_env({}) → from env {}\x1b[0m",
+                        std::process::id(),
+                        kind.name(),
+                        var
+                    );
+                }
+                return Some(value);
             }
-            return Some(value);
         }
         if std::env::var("THCLAWS_KEYCHAIN_TRACE").is_ok() {
             eprintln!(
-                "\x1b[35m[keychain pid={}] api_key_from_env({}) → env {} unset, falling back to keychain\x1b[0m",
+                "\x1b[35m[keychain pid={}] api_key_from_env({}) → env {} unset or blank, falling back to keychain\x1b[0m",
                 std::process::id(), kind.name(), var
             );
         }

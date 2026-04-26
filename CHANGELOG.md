@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] — 2026-04-26
+
+Same-day feature/fix follow-up to v0.3.4: two new providers, the
+post-key-entry model picker, plus a real bug fix for users whose
+shell rc / VS Code env injects a blank `ANTHROPIC_API_KEY`.
+
+### Added
+
+- **Z.ai (GLM Coding Plan) provider.** OpenAI-compatible upstream
+  at `https://api.z.ai/api/coding/paas/v4`. Models route via
+  `zai/<id>` prefix (default `zai/glm-4.6`). API key in
+  `ZAI_API_KEY`. Power users on the BigModel SKU can override the
+  endpoint via `ZAI_BASE_URL`. Closes [#14](https://github.com/thClaws/thClaws/issues/14).
+- **LMStudio provider.** Local-runtime, OpenAI-compatible at `/v1`.
+  No auth. User-configurable base URL via Settings (default
+  `http://localhost:1234/v1`); env override `LMSTUDIO_BASE_URL`.
+  Mirrors the Ollama UX so changing port doesn't require a
+  settings.json edit.
+- **Post-key-entry model picker** ([#13](https://github.com/thClaws/thClaws/issues/13)).
+  After successfully saving an API key in Settings, if the
+  provider has a non-trivial catalogue (≥3 models, skipping
+  runtime-loaded backends like Ollama/LMStudio), a searchable
+  modal opens so the user can pick a default model directly —
+  instead of landing on whatever `auto_fallback_model` chose.
+  Skip / Esc / click-outside leaves the auto-pick in place.
+- **AskUserQuestion GUI bridge** ([#16](https://github.com/thClaws/thClaws/pull/16),
+  Kinzen-dev). The agent's `AskUser` tool used to fall through to
+  invisible CLI stdin in the GUI — chat hung indefinitely. The
+  question now appears as a chat-composer reply prompt; user
+  reply routes back through a `oneshot` to the awaiting tool call.
+  Falls back to CLI readline when no GUI is registered.
+- **macOS Cmd+Q / Cmd+W shutdown shortcuts** ([#16](https://github.com/thClaws/thClaws/pull/16)).
+  Two-layer coverage (frontend keydown listener + tao native
+  KeyboardInput) so Cmd+Q reaches the SaveAndQuit save path even
+  in fullscreen / focus-edge cases.
+
+### Fixed
+
+- **Empty `ANTHROPIC_API_KEY=""` (or any provider key) was treated
+  as configured.** `std::env::var(...).is_ok()` returns true for an
+  exported-but-empty value, so a stale shell rc / VS Code env
+  injection blocked `auto_fallback_model` from switching when the
+  user added a Gemini/Z.ai/etc. key. Both `kind_has_credentials`
+  and `api_key_from_env` now require non-empty values; empty env
+  falls through to the keychain. Includes a regression test
+  (`empty_env_var_treated_as_unset`).
+- **`catalogue-seed` reads workspace-root `.env`.** When invoked
+  via `cargo run --bin catalogue-seed` from a nested crate dir,
+  the binary now walks up from cwd to find the workspace's `.env`
+  and load API keys from it. Added
+  `dotenv::load_dotenv_walking_up()`.
+- **Tool-bubble finalizer searches backwards for unfinished tools**
+  ([#16](https://github.com/thClaws/thClaws/pull/16)). Old code
+  assumed `messages[last]` was the matching tool bubble; failed
+  when text or other events arrived between `tool_use` and
+  `tool_done`.
+- **`/exit` / `/quit` / `/q` slash commands** now route through
+  the backend `app_close` save path ([#16](https://github.com/thClaws/thClaws/pull/16))
+  instead of frontend-only `window.close()` after a 200 ms timeout.
+
+### Internal
+
+- New `model_set` IPC handler — frontend-driven model change path,
+  used by the new picker; mirrors what `/model` does in the agent
+  loop. Available for any future picker UI.
+- Dotenv `load_dotenv_walking_up(start)` helper exposed for
+  operator-tool scenarios.
+
 ## [0.3.4] — 2026-04-26
 
 Same-day hardening patch following an internal security audit of v0.3.3.

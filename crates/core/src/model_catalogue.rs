@@ -306,6 +306,8 @@ pub fn provider_kind_name(k: crate::providers::ProviderKind) -> &'static str {
         ProviderKind::OllamaAnthropic => "ollama-anthropic",
         ProviderKind::DashScope => "dashscope",
         ProviderKind::AgenticPress => "agentic-press",
+        ProviderKind::ZAi => "zai",
+        ProviderKind::LMStudio => "lmstudio",
     }
 }
 

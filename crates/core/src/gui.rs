@@ -714,13 +714,21 @@ fn kind_has_credentials(kind: Option<crate::providers::ProviderKind>) -> bool {
     match kind {
         // Agent SDK uses Claude Code's own auth — assume present.
         ProviderKind::AgentSdk => true,
-        // Ollama variants don't need auth; reachability is surfaced
-        // on first prompt, not here.
-        ProviderKind::Ollama | ProviderKind::OllamaAnthropic => true,
-        // Every other provider's readiness == "its env var is set".
+        // Ollama variants and LMStudio don't need auth; reachability is
+        // surfaced on first prompt, not here.
+        ProviderKind::Ollama | ProviderKind::OllamaAnthropic | ProviderKind::LMStudio => true,
+        // Every other provider's readiness == "its env var is set to a
+        // non-empty value". std::env::var returns Ok("") for an exported-
+        // but-empty var — which a stale shell rc / VS Code env injection
+        // can produce — so we explicitly require a non-blank value here.
+        // Otherwise the sidebar shows "ready" for a provider with no real
+        // credentials, and auto_fallback_model refuses to switch off it
+        // after the user pastes a key for a different provider (#13/#15
+        // root cause).
         other => other
             .api_key_env()
-            .map(|v| std::env::var(v).is_ok())
+            .and_then(|v| std::env::var(v).ok())
+            .map(|val| !val.trim().is_empty())
             .unwrap_or(false),
     }
 }
@@ -745,6 +753,7 @@ fn auto_fallback_model(cfg: &AppConfig) -> Option<String> {
         ProviderKind::OpenRouter,
         ProviderKind::Gemini,
         ProviderKind::DashScope,
+        ProviderKind::ZAi,
         // Local providers omitted here: if the user explicitly
         // configured one of them, they're already "ready" above; we
         // don't want to auto-fall-back to Ollama for a user who has
@@ -1027,6 +1036,40 @@ pub fn run_gui() {
             match ty {
                 "app_close" => {
                     let _ = proxy_for_ipc.send_event(UserEvent::QuitRequested);
+                }
+                "model_set" => {
+                    // Frontend-driven model change (e.g. ModelPickerModal
+                    // pick after api_key_set, or any future picker UI).
+                    // Routes through the same persistence path as the
+                    // /model slash command: project config write +
+                    // ReloadConfig nudge to the worker + provider_update
+                    // broadcast so the sidebar reflects the new state.
+                    let model = msg
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !model.is_empty() {
+                        let mut project = crate::config::ProjectConfig::load()
+                            .unwrap_or_default();
+                        project.set_model(&model);
+                        let _ = project.save();
+                        let new_cfg = AppConfig::load().unwrap_or_default();
+                        let provider_name =
+                            new_cfg.detect_provider().unwrap_or("unknown");
+                        let ready = provider_has_credentials(&new_cfg);
+                        let broadcast = serde_json::json!({
+                            "type": "provider_update",
+                            "provider": provider_name,
+                            "model": new_cfg.model,
+                            "provider_ready": ready,
+                        });
+                        let _ = proxy_for_ipc.send_event(UserEvent::SessionLoaded(
+                            broadcast.to_string(),
+                        ));
+                        let _ = shared_for_ipc.input_tx.send(ShellInput::ReloadConfig);
+                    }
                 }
                 "ask_user_response" => {
                     let id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1725,6 +1768,43 @@ pub fn run_gui() {
                             let _ = proxy_for_ipc.send_event(UserEvent::SessionLoaded(
                                 broadcast.to_string()
                             ));
+                            // Post-key-entry model picker (closes #13).
+                            // For providers with a non-trivial catalogue
+                            // (OpenRouter has dozens; OpenAI/Anthropic/Gemini
+                            // each have several variants), open a modal so
+                            // the user picks a default rather than landing
+                            // on whatever auto_fallback_model chose. Skipped
+                            // for tiny catalogues (single model = no choice
+                            // to make) and for runtime-loaded backends
+                            // (Ollama / LMStudio — their model list comes
+                            // from the running runtime, not the catalogue).
+                            let cat = crate::model_catalogue::EffectiveCatalogue::load();
+                            let models = cat.list_models_for_provider(provider);
+                            let runtime_loaded = matches!(
+                                provider,
+                                "ollama" | "ollama-anthropic" | "lmstudio",
+                            );
+                            if models.len() >= 3 && !runtime_loaded {
+                                let model_rows: Vec<serde_json::Value> = models
+                                    .iter()
+                                    .map(|(id, e)| {
+                                        serde_json::json!({
+                                            "id": id,
+                                            "context": e.context,
+                                            "max_output": e.max_output,
+                                        })
+                                    })
+                                    .collect();
+                                let picker = serde_json::json!({
+                                    "type": "model_picker_open",
+                                    "provider": provider,
+                                    "current": new_cfg.model,
+                                    "models": model_rows,
+                                });
+                                let _ = proxy_for_ipc.send_event(
+                                    UserEvent::SessionLoaded(picker.to_string()),
+                                );
+                            }
                         } else {
                             // No auto-switch needed, but readiness may
                             // have flipped for the current provider —

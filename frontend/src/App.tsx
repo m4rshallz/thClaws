@@ -10,6 +10,7 @@ import { SettingsMenu } from "./components/SettingsMenu";
 import { InstructionsEditorModal } from "./components/InstructionsEditorModal";
 import { SecretsBackendDialog } from "./components/SecretsBackendDialog";
 import { ApprovalModal } from "./components/ApprovalModal";
+import { ModelPickerModal, type PickerModel } from "./components/ModelPickerModal";
 import { ContextWarningBanner } from "./components/ContextWarningBanner";
 import { useEditingShortcuts } from "./hooks/useEditingShortcuts";
 import { send, subscribe } from "./hooks/useIPC";
@@ -309,6 +310,30 @@ export default function App() {
   const [instructionsScope, setInstructionsScope] =
     useState<"global" | "folder" | null>(null);
   const closeInstructions = useCallback(() => setInstructionsScope(null), []);
+
+  // Post-key-entry model picker (issue #13). Backend broadcasts
+  // `model_picker_open` after a successful api_key_set when the
+  // provider has a non-trivial catalogue. Clearing this state on
+  // pick / Skip closes the modal.
+  const [modelPicker, setModelPicker] = useState<{
+    provider: string;
+    current: string;
+    models: PickerModel[];
+  } | null>(null);
+  const closeModelPicker = useCallback(() => setModelPicker(null), []);
+
+  useEffect(() => {
+    const unsub = subscribe((msg) => {
+      if (msg.type !== "model_picker_open") return;
+      const provider = typeof msg.provider === "string" ? msg.provider : "";
+      const current = typeof msg.current === "string" ? msg.current : "";
+      const models = Array.isArray(msg.models) ? (msg.models as PickerModel[]) : [];
+      if (provider && models.length > 0) {
+        setModelPicker({ provider, current, models });
+      }
+    });
+    return unsub;
+  }, []);
   // Secrets-backend gate: we ask once at first launch so the app
   // never touches the OS keychain behind the user's back. `null` ==
   // not picked yet → show the chooser before the main UI.
@@ -501,6 +526,14 @@ export default function App() {
       )}
       <ApprovalModal />
       <ContextWarningBanner />
+      {modelPicker && (
+        <ModelPickerModal
+          provider={modelPicker.provider}
+          current={modelPicker.current}
+          models={modelPicker.models}
+          onClose={closeModelPicker}
+        />
+      )}
     </div>
   );
 }

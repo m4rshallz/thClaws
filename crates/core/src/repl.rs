@@ -575,6 +575,25 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
                 AnthropicProvider::new("ollama").with_base_url(url),
             ));
         }
+        ProviderKind::LMStudio => {
+            // LMStudio is OpenAI-compatible at /v1 with no auth. Default
+            // base http://localhost:1234/v1; user-configurable via the
+            // Settings UI or LMSTUDIO_BASE_URL env. Pass a dummy bearer
+            // token — LMStudio ignores Authorization but the OpenAI
+            // client always sends one.
+            let base = std::env::var("LMSTUDIO_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:1234/v1".to_string());
+            let url = if base.ends_with("/chat/completions") {
+                base
+            } else {
+                format!("{}/chat/completions", base.trim_end_matches('/'))
+            };
+            return Ok(Arc::new(
+                OpenAIProvider::new("lm-studio".to_string())
+                    .with_base_url(url)
+                    .with_strip_model_prefix("lmstudio/"),
+            ));
+        }
         _ => {}
     }
 
@@ -621,7 +640,29 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
             };
             Ok(Arc::new(OpenAIProvider::new(api_key).with_base_url(url)))
         }
-        ProviderKind::Ollama | ProviderKind::OllamaAnthropic | ProviderKind::AgentSdk => {
+        ProviderKind::ZAi => {
+            // Z.ai GLM Coding Plan endpoint. Models use `zai/<id>` form
+            // (e.g. zai/glm-4.6). Strip the prefix before forwarding to
+            // the OpenAI-compatible upstream. Power users with the
+            // general BigModel SKU (https://open.bigmodel.cn/api/paas/v4)
+            // can override via ZAI_BASE_URL.
+            let base = std::env::var("ZAI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.z.ai/api/coding/paas/v4".to_string());
+            let url = if base.ends_with("/chat/completions") {
+                base
+            } else {
+                format!("{}/chat/completions", base.trim_end_matches('/'))
+            };
+            Ok(Arc::new(
+                OpenAIProvider::new(api_key)
+                    .with_base_url(url)
+                    .with_strip_model_prefix("zai/"),
+            ))
+        }
+        ProviderKind::Ollama
+        | ProviderKind::OllamaAnthropic
+        | ProviderKind::LMStudio
+        | ProviderKind::AgentSdk => {
             unreachable!("handled above")
         }
     }
@@ -678,6 +719,7 @@ pub async fn build_provider_with_fallback(
         ProviderKind::OpenRouter,
         ProviderKind::Gemini,
         ProviderKind::DashScope,
+        ProviderKind::ZAi,
         ProviderKind::Ollama,
         ProviderKind::OllamaAnthropic,
     ];
@@ -3704,6 +3746,56 @@ mod tests {
         }
         if let Some(v) = saved_o {
             std::env::set_var("OPENAI_API_KEY", v);
+        }
+    }
+
+    /// Regression: an exported-but-empty env var ("ANTHROPIC_API_KEY=")
+    /// must NOT count as configured. Before the fix, it did — and
+    /// auto_fallback_model in the GUI refused to switch off Anthropic
+    /// even after the user pasted a key for a different provider, because
+    /// `std::env::var(name).is_ok()` returns true for empty values.
+    /// Trace: https://github.com/thClaws/thClaws (screenshot in Thai)
+    #[test]
+    fn empty_env_var_treated_as_unset() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let saved_a = std::env::var("ANTHROPIC_API_KEY").ok();
+        let saved_g = std::env::var("GEMINI_API_KEY").ok();
+
+        // Empty Anthropic env (the bug-trigger), no Gemini env.
+        std::env::set_var("ANTHROPIC_API_KEY", "");
+        std::env::remove_var("GEMINI_API_KEY");
+
+        // api_key_from_env on a Claude model should NOT return Some("")
+        // — that produces a 401 with an empty bearer.
+        let mut cfg = AppConfig::default();
+        cfg.model = "claude-sonnet-4-6".into();
+        assert!(
+            cfg.api_key_from_env().is_none()
+                || cfg
+                    .api_key_from_env()
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false),
+            "empty ANTHROPIC_API_KEY must not produce an empty Some(\"\")"
+        );
+
+        // build_provider should error pointing at the env var, same as
+        // the var-not-set case (see build_provider_honors_env_keys).
+        match build_provider(&cfg) {
+            Ok(_) => panic!("empty env var must not let build_provider succeed"),
+            Err(e) => assert!(
+                format!("{e}").contains("ANTHROPIC_API_KEY"),
+                "error should point at the missing env var, got: {e}"
+            ),
+        }
+
+        // Restore original env.
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        if let Some(v) = saved_a {
+            std::env::set_var("ANTHROPIC_API_KEY", v);
+        }
+        if let Some(v) = saved_g {
+            std::env::set_var("GEMINI_API_KEY", v);
         }
     }
 }
