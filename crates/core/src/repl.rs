@@ -13,7 +13,7 @@ use crate::memory::MemoryStore;
 use crate::permissions::{PermissionMode, ReplApprover};
 use crate::providers::{
     anthropic::AnthropicProvider, gemini::GeminiProvider, ollama::OllamaProvider,
-    openai::OpenAIProvider, Provider, ProviderKind,
+    ollama_cloud::OllamaCloudProvider, openai::OpenAIProvider, Provider, ProviderKind,
 };
 use crate::session::{Session, SessionStore};
 use crate::subagent::{AgentFactory, SubAgentTool};
@@ -744,6 +744,7 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
         | ProviderKind::AgentSdk => {
             unreachable!("handled above")
         }
+        ProviderKind::OllamaCloud => Ok(Arc::new(OllamaCloudProvider::new(api_key))),
     }
 }
 
@@ -801,6 +802,7 @@ pub async fn build_provider_with_fallback(
         ProviderKind::ZAi,
         ProviderKind::Ollama,
         ProviderKind::OllamaAnthropic,
+        ProviderKind::OllamaCloud,
     ];
     let ollama_alive = ollama_is_reachable().await;
     for kind in fallback_order {
