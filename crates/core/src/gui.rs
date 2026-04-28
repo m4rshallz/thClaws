@@ -808,7 +808,7 @@ fn auto_fallback_model(cfg: &AppConfig) -> Option<String> {
     ];
     for kind in ORDER {
         if kind_has_credentials(Some(*kind)) {
-            return Some(kind.default_model().to_string());
+            return Some(kind.default_model_dynamic());
         }
     }
     None

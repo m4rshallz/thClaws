@@ -375,10 +375,10 @@ fn parse_size(s: &str) -> Option<u32> {
 }
 
 /// Default model to select when switching provider by name only.
-/// Thin wrapper around `ProviderKind::from_name` + `default_model` for
-/// backward-compat tests and REPL call sites that already use `&str`.
-pub fn default_model_for_provider(provider: &str) -> Option<&'static str> {
-    ProviderKind::from_name(provider).map(|k| k.default_model())
+/// Uses `default_model_dynamic` so providers like `vllm` can pick up a
+/// runtime override (e.g. `VLLM_MODEL`) instead of the static placeholder.
+pub fn default_model_for_provider(provider: &str) -> Option<String> {
+    ProviderKind::from_name(provider).map(|k| k.default_model_dynamic())
 }
 
 /// Parse a line as a slash command. Returns `None` when the line isn't a
@@ -805,6 +805,21 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
                     .with_strip_model_prefix("lmstudio/"),
             ));
         }
+        ProviderKind::VllmLocal => {
+            // vLLM local inference server — OpenAI-compatible at /v1.
+            let api_key = std::env::var("VLLM_API_KEY").unwrap_or_else(|_| "vllm-local".to_string());
+            let base = std::env::var("VLLM_BASE_URL").unwrap_or_else(|_| "http://localhost:8000/v1".to_string());
+            let url = if base.ends_with("/chat/completions") {
+                base
+            } else {
+                format!("{}/chat/completions", base.trim_end_matches('/'))
+            };
+            return Ok(Arc::new(
+                OpenAIProvider::new(api_key)
+                    .with_base_url(url)
+                    .with_strip_model_prefix("vllm/"),
+            ));
+        }
         _ => {}
     }
 
@@ -886,6 +901,7 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
         ProviderKind::Ollama
         | ProviderKind::OllamaAnthropic
         | ProviderKind::LMStudio
+        | ProviderKind::VllmLocal
         | ProviderKind::AgentSdk => {
             unreachable!("handled above")
         }
@@ -955,7 +971,7 @@ pub async fn build_provider_with_fallback(
         if is_ollama && !ollama_alive {
             continue;
         }
-        config.model = kind.default_model().to_string();
+        config.model = kind.default_model_dynamic();
         if let Ok(p) = build_provider(config) {
             let warning = format!(
                 "no API key for {} — falling back to {} (model: {})",
@@ -2220,7 +2236,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         println!(
                             "{COLOR_DIM}  {marker} {:<10} → {}{COLOR_RESET}",
                             kind.name(),
-                            kind.default_model()
+                            kind.default_model_dynamic()
                         );
                     }
                 }
@@ -2240,7 +2256,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         continue;
                     };
                     let mut candidate = config.clone();
-                    candidate.model = default_model.to_string();
+                    candidate.model = default_model;
                     let new_provider = match build_provider(&candidate) {
                         Ok(p) => p,
                         Err(e) => {
@@ -4095,18 +4111,44 @@ mod tests {
     fn default_model_for_provider_covers_all_supported() {
         assert_eq!(
             default_model_for_provider("anthropic"),
-            Some("claude-sonnet-4-6")
+            Some("claude-sonnet-4-6".to_string())
         );
-        assert_eq!(default_model_for_provider("openai"), Some("gpt-4o"));
+        assert_eq!(
+            default_model_for_provider("openai"),
+            Some("gpt-4o".to_string())
+        );
         assert_eq!(
             default_model_for_provider("gemini"),
-            Some("gemini-2.5-flash")
+            Some("gemini-2.5-flash".to_string())
         );
         assert_eq!(
             default_model_for_provider("ollama"),
-            Some("ollama/llama3.2")
+            Some("ollama/llama3.2".to_string())
         );
         assert_eq!(default_model_for_provider("mystery"), None);
+    }
+
+    #[test]
+    fn default_model_for_provider_vllm_reads_env() {
+        // Without env: placeholder.
+        std::env::remove_var("VLLM_MODEL");
+        assert_eq!(
+            default_model_for_provider("vllm"),
+            Some("vllm/<model>".to_string())
+        );
+        // With env (bare): prefix is added.
+        std::env::set_var("VLLM_MODEL", "qwen3.6-35b-a3b-fp8");
+        assert_eq!(
+            default_model_for_provider("vllm"),
+            Some("vllm/qwen3.6-35b-a3b-fp8".to_string())
+        );
+        // With env (already prefixed): kept as-is.
+        std::env::set_var("VLLM_MODEL", "vllm/qwen3-30b");
+        assert_eq!(
+            default_model_for_provider("vllm"),
+            Some("vllm/qwen3-30b".to_string())
+        );
+        std::env::remove_var("VLLM_MODEL");
     }
 
     #[test]

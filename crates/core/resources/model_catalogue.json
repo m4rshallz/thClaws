@@ -3336,6 +3336,11 @@
           "verified_at": "2026-04-24"
         }
       }
+    },
+    "vllm": {
+      "list_url": "http://localhost:8000/v1/models",
+      "default_context": 8192,
+      "models": {}
     }
   },
   "aliases": {},

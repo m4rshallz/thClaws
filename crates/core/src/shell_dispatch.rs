@@ -189,7 +189,7 @@ pub async fn dispatch(
                 out.push_str(&format!(
                     "  {marker} {:<12} → {}\n",
                     kind.name(),
-                    kind.default_model(),
+                    kind.default_model_dynamic(),
                 ));
             }
             emit(events_tx, out);
@@ -431,7 +431,7 @@ pub async fn dispatch(
                     // ship/retire models), fall back to the first
                     // available model rather than aborting.
                     Some(m) => {
-                        switch_model(state, m, events_tx, /* fallback_to_first */ true).await
+                        switch_model(state, &m, events_tx, /* fallback_to_first */ true).await
                     }
                     None => emit(
                         events_tx,

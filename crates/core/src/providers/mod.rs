@@ -37,6 +37,7 @@ pub enum ProviderKind {
     ZAi,
     LMStudio,
     AzureAIFoundry,
+    VllmLocal,
 }
 
 impl ProviderKind {
@@ -55,6 +56,7 @@ impl ProviderKind {
         Self::ZAi,
         Self::LMStudio,
         Self::AzureAIFoundry,
+        Self::VllmLocal,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -73,6 +75,7 @@ impl ProviderKind {
             Self::ZAi => "zai",
             Self::LMStudio => "lmstudio",
             Self::AzureAIFoundry => "azure",
+            Self::VllmLocal => "vllm",
         }
     }
 
@@ -101,6 +104,10 @@ impl ProviderKind {
             // placeholder routes to the right provider but forces the user to
             // override with `/model azure/<your-deployment>`.
             Self::AzureAIFoundry => "azure/<deployment>",
+            // vLLM model names depend entirely on what's loaded. This
+            // placeholder routes to the right provider; user must override
+            // with `/model vllm/<loaded-model-id>`.
+            Self::VllmLocal => "vllm/<model>",
         }
     }
 
@@ -117,6 +124,7 @@ impl ProviderKind {
             Self::ZAi => Some("ZAI_BASE_URL"),
             Self::LMStudio => Some("LMSTUDIO_BASE_URL"),
             Self::AzureAIFoundry => Some("AZURE_AI_FOUNDRY_ENDPOINT"),
+            Self::VllmLocal => Some("VLLM_BASE_URL"),
             _ => None,
         }
     }
@@ -129,7 +137,11 @@ impl ProviderKind {
     pub fn endpoint_user_configurable(&self) -> bool {
         matches!(
             self,
-            Self::Ollama | Self::OllamaAnthropic | Self::LMStudio | Self::AzureAIFoundry,
+            Self::Ollama
+                | Self::OllamaAnthropic
+                | Self::LMStudio
+                | Self::AzureAIFoundry
+                | Self::VllmLocal,
         )
     }
 
@@ -152,6 +164,8 @@ impl ProviderKind {
             // editable Settings field above.
             Self::LMStudio => Some("http://localhost:1234/v1"),
             Self::AzureAIFoundry => Some("https://{resource}.services.ai.azure.com"),
+            // vLLM default port is 8000; users frequently override it.
+            Self::VllmLocal => Some("http://localhost:8000/v1"),
             _ => None,
         }
     }
@@ -173,6 +187,27 @@ impl ProviderKind {
             Self::ZAi => Some("ZAI_API_KEY"),
             Self::LMStudio => None, // Local runtime, no auth.
             Self::AzureAIFoundry => Some("AZURE_AI_FOUNDRY_API_KEY"),
+            Self::VllmLocal => None, // Local runtime, no auth.
+        }
+    }
+
+    /// Like `default_model` but reads env vars for providers where the model
+    /// name isn't known at compile time. Currently only `VllmLocal` reads
+    /// `VLLM_MODEL`; all others fall back to the static `default_model`.
+    pub fn default_model_dynamic(&self) -> String {
+        match self {
+            Self::VllmLocal => std::env::var("VLLM_MODEL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(|m| {
+                    if m.starts_with("vllm/") {
+                        m
+                    } else {
+                        format!("vllm/{m}")
+                    }
+                })
+                .unwrap_or_else(|| self.default_model().to_string()),
+            _ => self.default_model().to_string(),
         }
     }
 
@@ -249,7 +284,8 @@ impl ProviderKind {
             | Self::DashScope
             | Self::ZAi
             | Self::LMStudio
-            | Self::AzureAIFoundry => None,
+            | Self::AzureAIFoundry
+            | Self::VllmLocal => None,
         }
     }
 
@@ -294,6 +330,11 @@ impl ProviderKind {
             // Models look like lmstudio/<loaded-model-id>; the prefix
             // is stripped before the request reaches LMStudio.
             Some(Self::LMStudio)
+        } else if model.starts_with("vllm/") {
+            // vLLM local inference server (OpenAI-compatible at /v1).
+            // Models look like vllm/<loaded-model-id>; the prefix is
+            // stripped before forwarding to the upstream.
+            Some(Self::VllmLocal)
         } else if model.starts_with("oa/") {
             Some(Self::OllamaAnthropic)
         } else if model.starts_with("ollama/") {

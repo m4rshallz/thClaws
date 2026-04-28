@@ -43,6 +43,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   "ollama-anthropic": "Ollama (Anthropic-compatible)",
   "ollama-cloud": "Ollama Cloud",
   azure: "Azure AI Foundry",
+  vllm: "vLLM (local)",
 };
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
