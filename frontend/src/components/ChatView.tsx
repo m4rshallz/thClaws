@@ -507,7 +507,7 @@ export function ChatView({ active, modalOpen }: Props) {
                   style={{
                     color: "var(--text-secondary)",
                     fontFamily:
-                      "Menlo, Monaco, 'Courier New', 'Noto Sans Mono', 'Tlwg Mono', 'Loma', 'Noto Sans Thai', monospace",
+                      "Menlo, Monaco, 'Courier New', monospace",
                     paddingLeft: 2,
                     opacity: msg.toolDone ? 0.7 : 1,
                   }}
@@ -550,7 +550,7 @@ export function ChatView({ active, modalOpen }: Props) {
                         : "var(--text-primary)",
                   border: isSystem ? "1px solid var(--border)" : "none",
                   fontFamily: isSystem
-                    ? "Menlo, Monaco, 'Courier New', 'Noto Sans Mono', 'Tlwg Mono', 'Loma', 'Noto Sans Thai', monospace"
+                    ? "Menlo, Monaco, 'Courier New', monospace"
                     : "inherit",
                   fontSize: isSystem ? "12px" : "14px",
                 }}

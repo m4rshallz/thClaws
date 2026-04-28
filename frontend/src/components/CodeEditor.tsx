@@ -129,7 +129,7 @@ export function CodeEditor({
         "&": { height: "100%", fontSize: "13px" },
         ".cm-scroller": {
           fontFamily:
-            "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Noto Sans Mono', 'Tlwg Mono', 'Loma', 'Noto Sans Thai', monospace",
+            "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
         },
       }),
     ];
