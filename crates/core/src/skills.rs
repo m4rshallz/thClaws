@@ -546,7 +546,11 @@ pub fn install_from_git(
         })?;
         let _ = std::fs::remove_dir_all(&stage_dir);
         return Ok(vec![
-            format!("cloned {} (subpath: {sub}) → {}", base_url, clone_dir.display()),
+            format!(
+                "cloned {} (subpath: {sub}) → {}",
+                base_url,
+                clone_dir.display()
+            ),
             format!("installed skill '{derived}' (single)"),
         ]);
     }
@@ -661,7 +665,11 @@ fn derive_name_from_url(url: &str) -> String {
     // marketplace install of an `anthropics/skills/skills/<name>` URL
     // would derive to "skills").
     if let (_base, _branch, Some(subpath)) = parse_git_subpath(url) {
-        let tail = subpath.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        let tail = subpath
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("");
         if !tail.is_empty() {
             return tail.to_string();
         }
@@ -690,11 +698,19 @@ pub(crate) fn parse_git_subpath(url: &str) -> (String, Option<String>, Option<St
     if let Some((base, frag)) = url.split_once('#') {
         let (branch, subpath) = match frag.split_once(':') {
             Some((b, p)) if !p.is_empty() => (
-                if b.is_empty() { None } else { Some(b.to_string()) },
+                if b.is_empty() {
+                    None
+                } else {
+                    Some(b.to_string())
+                },
                 Some(p.to_string()),
             ),
             _ => (
-                if frag.is_empty() { None } else { Some(frag.to_string()) },
+                if frag.is_empty() {
+                    None
+                } else {
+                    Some(frag.to_string())
+                },
                 None,
             ),
         };
@@ -756,7 +772,11 @@ mod install_tests {
         // Branch only.
         assert_eq!(
             parse_git_subpath("https://github.com/x/y.git#main"),
-            ("https://github.com/x/y.git".into(), Some("main".into()), None)
+            (
+                "https://github.com/x/y.git".into(),
+                Some("main".into()),
+                None
+            )
         );
         // Branch + subpath.
         assert_eq!(
@@ -770,7 +790,11 @@ mod install_tests {
         // Empty branch with subpath (`#:path`) — both fields populated as expected.
         assert_eq!(
             parse_git_subpath("https://github.com/x/y.git#:sub"),
-            ("https://github.com/x/y.git".into(), None, Some("sub".into()))
+            (
+                "https://github.com/x/y.git".into(),
+                None,
+                Some("sub".into())
+            )
         );
     }
 

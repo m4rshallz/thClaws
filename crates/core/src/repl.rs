@@ -673,11 +673,7 @@ fn resolve_skill_install_target(
     explicit_name: Option<&str>,
 ) -> (String, Option<String>, Option<String>) {
     if looks_like_url(arg) {
-        return (
-            arg.to_string(),
-            explicit_name.map(String::from),
-            None,
-        );
+        return (arg.to_string(), explicit_name.map(String::from), None);
     }
     let mp = crate::marketplace::load();
     match mp.find(arg) {

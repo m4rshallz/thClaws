@@ -853,7 +853,13 @@ pub async fn dispatch(
                 emit(events_tx, msg);
                 return;
             }
-            match crate::skills::install_from_url(&effective_url, effective_name.as_deref(), project).await {
+            match crate::skills::install_from_url(
+                &effective_url,
+                effective_name.as_deref(),
+                project,
+            )
+            .await
+            {
                 Ok(report) => {
                     // Live refresh: replace the SkillTool's store
                     // contents + recompute the system prompt so the
@@ -897,8 +903,10 @@ pub async fn dispatch(
                 mp.source,
                 mp.skills.len()
             );
-            let mut by_cat: std::collections::BTreeMap<String, Vec<&crate::marketplace::MarketplaceSkill>> =
-                std::collections::BTreeMap::new();
+            let mut by_cat: std::collections::BTreeMap<
+                String,
+                Vec<&crate::marketplace::MarketplaceSkill>,
+            > = std::collections::BTreeMap::new();
             for s in &mp.skills {
                 let cat = if s.category.is_empty() {
                     "other".to_string()
@@ -914,7 +922,11 @@ pub async fn dispatch(
                         "linked-only" => " [linked-only]",
                         _ => "",
                     };
-                    out.push_str(&format!("  {:<24}{tier_tag} — {}\n", s.name, s.short_line()));
+                    out.push_str(&format!(
+                        "  {:<24}{tier_tag} — {}\n",
+                        s.name,
+                        s.short_line()
+                    ));
                 }
             }
             out.push_str("install with: /skill install <name>   |   detail: /skill info <name>");
