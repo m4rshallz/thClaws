@@ -113,19 +113,29 @@ install with: /mcp install weather-mcp
 
 ```
 ❯ /mcp install --user weather-mcp
-  cloned https://github.com/thClaws/marketplace.git → ~/.config/thclaws/mcp/weather-mcp
-  registered 'weather-mcp' in ~/.config/thclaws/mcp.json (stdio transport)
-  note: Run `pip install -e <clone-path>` …
+  registered 'weather-mcp' in ~/.config/thclaws/mcp.json (user scope, stdio transport)
+  command: uvx --from git+https://github.com/thClaws/marketplace.git#subdirectory=mcp/weather-mcp thclaws-weather
+  note: Requires `uv` (one-time: `pip install uv` or `brew install uv`). First invocation downloads the package and dependencies into an isolated env automatically — no separate pip install needed.
+  restart thClaws to spawn the MCP and load its tools
 ```
 
-For stdio entries with a `post_install_message`, follow that
-instruction (typically `pip install` / `npm install` to fetch runtime
-dependencies) before the server can start. After the install, restart
-or reconnect to load the new tools.
+Unlike skills, MCP install **does not copy any source code locally** —
+an MCP is a separate process the agent connects to, not code the agent
+reads. `/mcp install` writes a single `mcp.json` entry; whatever
+package manager the upstream ships under (PyPI via `uvx` / `pip`,
+npm via `npx`, cargo, a binary release) is what actually fetches and
+runs the server.
 
-For hosted entries (transport `sse`), no source clone happens — the
-mcp.json entry just points at the hosted URL, and the agent connects
-on next session start.
+For stdio entries the marketplace lists the exact `command + args`
+that the spawned subprocess will run. Modern entries use auto-installing
+runners (`uvx` for Python, `npx -y` for Node) so first invocation
+fetches the package without a separate manual install. Older entries
+may need a `pip install`/`npm install -g` step beforehand — that's
+what the `post_install_message` describes.
+
+For hosted entries (transport `sse`) no install is needed beyond
+writing the `mcp.json` entry pointing at the hosted URL — the agent
+connects over HTTP/SSE on next session start.
 
 ## Listing what's available
 

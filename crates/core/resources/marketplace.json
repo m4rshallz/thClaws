@@ -12,10 +12,14 @@
       "license": "Apache-2.0",
       "license_tier": "open",
       "transport": "stdio",
-      "command": "python",
-      "args": ["-m", "thclaws_weather"],
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/thClaws/marketplace.git#subdirectory=mcp/weather-mcp",
+        "thclaws-weather"
+      ],
       "install_url": "https://github.com/thClaws/marketplace.git#main:mcp/weather-mcp",
-      "post_install_message": "Run `pip install -e <clone-path>` to install Python dependencies (mcp, httpx) before the server can start.",
+      "post_install_message": "Requires `uv` (one-time: `pip install uv` or `brew install uv`). First invocation downloads the package and dependencies into an isolated env automatically — no separate pip install needed.",
       "homepage": "https://github.com/thClaws/marketplace/tree/main/mcp/weather-mcp"
     }
   ],

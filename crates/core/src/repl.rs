@@ -806,15 +806,22 @@ fn looks_like_url(s: &str) -> bool {
         || s.to_ascii_lowercase().ends_with(".zip")
 }
 
-/// Install an MCP server from the marketplace catalogue. Clones the
-/// source (if `install_url` is set), writes the matching mcp.json
-/// entry, and returns a human-readable report. Does **not** spawn the
-/// client — caller is responsible for connecting (CLI vs GUI surfaces
-/// have different wiring for that).
+/// Install an MCP server from the marketplace catalogue. Writes the
+/// matching `mcp.json` entry — that's it. **Does not** download or
+/// install the underlying package; the entry's `command` / `args`
+/// must already resolve on PATH (or use a runner like `uvx` / `npx`
+/// that fetches the package on first invocation).
 ///
-/// Errors out cleanly with a useful message when the name isn't in the
-/// catalog, when the source clone fails, or when the mcp.json write
-/// fails.
+/// Why no clone: an MCP server is a separate process the agent spawns
+/// via the configured command — it's not source the agent reads.
+/// Whatever package manager the upstream ships under (PyPI / npm /
+/// cargo / a binary release) is responsible for installing it; the
+/// marketplace entry's `post_install_message` describes that step
+/// when needed (e.g. "first run will auto-install via uvx" or "run
+/// `pip install foo` first").
+///
+/// Errors out cleanly when the name isn't in the catalog or when the
+/// mcp.json write fails.
 pub async fn install_mcp_from_marketplace(
     name: &str,
     user: bool,
@@ -827,76 +834,9 @@ pub async fn install_mcp_from_marketplace(
         ))?
         .clone();
 
-    let mut report: Vec<String> = Vec::new();
-
-    // Step 1: optional source clone for stdio MCPs that ship as a
-    // git repo. Skip silently for sse-transport entries (the upstream
-    // is a hosted URL, no local source).
-    if let Some(src_url) = &entry.install_url {
-        if entry.transport == "stdio" {
-            let target_root = if user {
-                crate::util::home_dir()
-                    .ok_or_else(|| "no home directory".to_string())?
-                    .join(".config/thclaws/mcp")
-            } else {
-                std::env::current_dir()
-                    .map_err(|e| format!("cwd: {e}"))?
-                    .join(".thclaws/mcp")
-            };
-            std::fs::create_dir_all(&target_root)
-                .map_err(|e| format!("mkdir {}: {e}", target_root.display()))?;
-            let clone_dir = target_root.join(&entry.name);
-            if clone_dir.exists() {
-                report.push(format!(
-                    "source already at {} — reusing (delete to force fresh clone)",
-                    clone_dir.display()
-                ));
-            } else {
-                let (base, branch, subpath) = crate::skills::parse_git_subpath(src_url);
-                let stage = if subpath.is_some() {
-                    target_root.join(format!(
-                        ".thclaws-install-{}",
-                        uuid::Uuid::new_v4().simple()
-                    ))
-                } else {
-                    clone_dir.clone()
-                };
-                let mut args: Vec<String> = vec!["clone".into(), "--depth".into(), "1".into()];
-                if let Some(b) = &branch {
-                    args.push("--branch".into());
-                    args.push(b.clone());
-                }
-                args.push(base.clone());
-                args.push(stage.to_string_lossy().into_owned());
-                let out = std::process::Command::new("git")
-                    .args(&args)
-                    .output()
-                    .map_err(|e| format!("spawn git: {e}"))?;
-                if !out.status.success() {
-                    let _ = std::fs::remove_dir_all(&stage);
-                    return Err(format!(
-                        "git clone failed: {}",
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    ));
-                }
-                if let Some(sub) = &subpath {
-                    let src = stage.join(sub);
-                    if !src.is_dir() {
-                        let _ = std::fs::remove_dir_all(&stage);
-                        return Err(format!("subpath '{sub}' not found in cloned repo"));
-                    }
-                    std::fs::rename(&src, &clone_dir)
-                        .map_err(|e| format!("move subpath into place: {e}"))?;
-                    let _ = std::fs::remove_dir_all(&stage);
-                }
-                report.push(format!("cloned {} → {}", src_url, clone_dir.display()));
-            }
-        }
-    }
-
-    // Step 2: write the mcp.json entry. The McpServerConfig shape
-    // differs per transport — http for sse-style hosted servers, stdio
-    // for everything else.
+    // Build the mcp.json config from the entry. Transport shape:
+    //   - "sse"   → http transport, url-only
+    //   - "stdio" → command + args, no url
     let cfg = if entry.transport == "sse" {
         crate::mcp::McpServerConfig {
             name: entry.name.clone(),
@@ -920,16 +860,28 @@ pub async fn install_mcp_from_marketplace(
     };
     let saved_to =
         crate::config::save_mcp_server(&cfg, user).map_err(|e| format!("save mcp.json: {e}"))?;
+
+    let mut report: Vec<String> = Vec::new();
+    let scope = if user { "user" } else { "project" };
     report.push(format!(
-        "registered '{}' in {} ({} transport)",
+        "registered '{}' in {} ({} scope, {} transport)",
         entry.name,
         saved_to.display(),
+        scope,
         entry.transport
     ));
-
+    if entry.transport == "stdio" && !entry.command.is_empty() {
+        let argv = if entry.args.is_empty() {
+            entry.command.clone()
+        } else {
+            format!("{} {}", entry.command, entry.args.join(" "))
+        };
+        report.push(format!("command: {argv}"));
+    }
     if let Some(msg) = &entry.post_install_message {
         report.push(format!("note: {msg}"));
     }
+    report.push("restart thClaws to spawn the MCP and load its tools".into());
 
     Ok(report)
 }

@@ -111,19 +111,29 @@ install with: /mcp install weather-mcp
 
 ```
 ❯ /mcp install --user weather-mcp
-  cloned https://github.com/thClaws/marketplace.git → ~/.config/thclaws/mcp/weather-mcp
-  registered 'weather-mcp' in ~/.config/thclaws/mcp.json (stdio transport)
-  note: Run `pip install -e <clone-path>` …
+  registered 'weather-mcp' in ~/.config/thclaws/mcp.json (user scope, stdio transport)
+  command: uvx --from git+https://github.com/thClaws/marketplace.git#subdirectory=mcp/weather-mcp thclaws-weather
+  note: Requires `uv` (one-time: `pip install uv` or `brew install uv`). First invocation downloads the package and dependencies into an isolated env automatically — no separate pip install needed.
+  restart thClaws to spawn the MCP and load its tools
 ```
 
-สำหรับ entry แบบ stdio ที่มี `post_install_message` ทำตามคำแนะนำ
-(โดยทั่วไปเป็น `pip install` / `npm install` สำหรับติดตั้ง runtime
-dependencies) ก่อน server จะเริ่มทำงานได้ หลังติดตั้งให้ restart
-หรือ reconnect เพื่อโหลด tools ใหม่
+ต่างจาก skill, MCP install **ไม่ได้ copy source code มาเก็บไว้
+locally** — MCP เป็น process แยกที่ agent ต่อด้วย ไม่ใช่ code ที่
+agent อ่าน `/mcp install` แค่เขียน entry ใน `mcp.json` หนึ่ง entry
+เท่านั้น ตัวจริงที่ fetch และ run server คือ package manager ของ
+upstream (PyPI ผ่าน `uvx` / `pip`, npm ผ่าน `npx`, cargo, หรือ
+binary release)
 
-สำหรับ entry แบบ hosted (transport `sse`) จะไม่มีการ clone source
-— เพียงเขียน entry ใน mcp.json ที่ชี้ไปยัง URL ที่ host ไว้ แล้ว
-agent จะ connect ในการเปิด session ครั้งต่อไป
+สำหรับ entry แบบ stdio marketplace จะระบุ `command + args` ที่
+subprocess จะรัน entry สมัยใหม่ใช้ runner ที่ติดตั้งให้อัตโนมัติ
+(`uvx` สำหรับ Python, `npx -y` สำหรับ Node) ทำให้รันครั้งแรก fetch
+package เอง โดยไม่ต้อง install แยก entry แบบเก่าอาจต้อง `pip
+install` / `npm install -g` ก่อน — `post_install_message` อธิบาย
+เรื่องนี้
+
+สำหรับ entry แบบ hosted (transport `sse`) ไม่ต้องติดตั้งอะไรเพิ่ม
+นอกจากเขียน entry ใน `mcp.json` ที่ชี้ไปยัง URL ที่ host ไว้ —
+agent จะ connect ผ่าน HTTP/SSE ในการเปิด session ครั้งต่อไป
 
 ## ดูว่ามีอะไรให้ใช้บ้าง
 
