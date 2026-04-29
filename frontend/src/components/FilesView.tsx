@@ -119,6 +119,13 @@ export function FilesView({ active }: Props) {
     readMode: ReadMode;
   } | null>(null);
 
+  // Bumped on every Refresh click; used as part of iframe `key` props so
+  // the iframe unmounts + re-fetches its asset (otherwise the browser
+  // caches the iframe content even after the file on disk changes —
+  // most visible with the productivity plugin's dashboard.html, which
+  // an agent regenerates after every TASKS.md mutation).
+  const [previewVersion, setPreviewVersion] = useState(0);
+
   const [mode, setMode] = useState<ViewMode>("preview");
   // Source-text kept separate from preview.content because the preview
   // content may be rendered HTML while the editor always operates on
@@ -228,6 +235,34 @@ export function FilesView({ active }: Props) {
     if (!preview) return;
     setMode("edit");
     send({ type: "file_read", path: preview.path, mode: "source" });
+  };
+
+  /// Refresh the current preview — re-fetches content from disk via
+  /// the backend AND forces the preview iframe (when applicable) to
+  /// re-mount so it re-fetches its asset URL. Needed because:
+  ///   1. iframe content is browser-cached by URL; when an agent
+  ///      regenerates a file on disk, the iframe still shows the old
+  ///      content until it remounts.
+  ///   2. The send() re-read alone updates preview.content (used for
+  ///      .md and code-mirror previews), but iframe-rendered HTML
+  ///      uses src={assetUrl(path)} not srcDoc={content}, so it
+  ///      doesn't notice the state change without a key bump.
+  const refreshPreview = () => {
+    if (!preview) return;
+    if (editorDirty) {
+      const ok = window.confirm(
+        "You have unsaved changes in the editor. Refresh anyway? Unsaved edits will be lost."
+      );
+      if (!ok) return;
+      setEditorDirty(false);
+    }
+    setPreviewVersion((v) => v + 1);
+    send({
+      type: "file_read",
+      path: preview.path,
+      mode: mode === "preview" ? "preview" : "source",
+      theme: themeMode,
+    });
   };
 
   const exitEditMode = async () => {
@@ -376,6 +411,14 @@ export function FilesView({ active }: Props) {
                     {saveToast}
                   </span>
                 )}
+                <button
+                  onClick={refreshPreview}
+                  className="flex items-center gap-1 text-[11px] px-2 py-1 rounded hover:bg-white/5"
+                  style={{ color: "var(--text-primary)" }}
+                  title="Re-read this file from disk and re-render the preview"
+                >
+                  Refresh
+                </button>
                 {canEdit && mode === "preview" && (
                   <button
                     onClick={enterEditMode}
@@ -457,6 +500,7 @@ export function FilesView({ active }: Props) {
                 // fetch the raw .md via the custom protocol and the
                 // iframe would end up blank.
                 <iframe
+                  key={`md-${preview.path}-${previewVersion}`}
                   srcDoc={preview.content}
                   className="w-full flex-1 min-h-0 rounded border"
                   style={{ borderColor: "var(--border)", background: "var(--bg-primary)" }}
@@ -465,6 +509,7 @@ export function FilesView({ active }: Props) {
                 />
               ) : (
                 <iframe
+                  key={`html-${preview.path}-${previewVersion}`}
                   src={assetUrl(preview.path)}
                   className="w-full flex-1 min-h-0 rounded border"
                   style={{ borderColor: "var(--border)", background: "var(--bg-primary)" }}
