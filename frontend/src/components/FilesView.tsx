@@ -291,6 +291,61 @@ export function FilesView({ active }: Props) {
     send({ type: "file_write", path: preview.path, content: editorSource });
   }, [preview, editorDirty, editorSource]);
 
+  // ── thClaws → dashboard host bridge ─────────────────────────────
+  //
+  // Lets self-contained HTML dashboards (e.g. the productivity
+  // plugin's dashboard.html, opened in an iframe via this Files
+  // tab) save sibling files back to disk WITHOUT prompting the
+  // user for a File System Access API permission. The dashboard
+  // postMessage()s with a `thclaws-dashboard-save` envelope; we
+  // resolve the target path against the currently-previewed file's
+  // directory and route through the existing `file_write` IPC.
+  //
+  // Acks back with `thclaws-dashboard-save-ack` so the dashboard
+  // knows the bridge is available (and falls back to FSAA / download
+  // when run outside thClaws). Sender origin isn't checked because
+  // the iframe runs sandboxed from a `thclaws://` asset URL — the
+  // attack surface is just our own dashboard files.
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      const d = e.data as
+        | { type?: string; reqId?: string; filename?: string; content?: string }
+        | undefined;
+      if (!d || d.type !== "thclaws-dashboard-save") return;
+      if (!preview) return;
+      // Resolve `filename` (e.g. "TASKS.md") against the directory of
+      // the currently-previewed file. So opening
+      // `/proj/business-cards/dashboard.html` and saving "TASKS.md"
+      // writes `/proj/business-cards/TASKS.md` — the obvious sibling.
+      const slash = preview.path.lastIndexOf("/");
+      const dir = slash > 0 ? preview.path.slice(0, slash) : ".";
+      const targetPath = `${dir}/${d.filename || "TASKS.md"}`;
+      try {
+        send({ type: "file_write", path: targetPath, content: d.content || "" });
+        if (e.source && "postMessage" in e.source) {
+          (e.source as Window).postMessage(
+            { type: "thclaws-dashboard-save-ack", reqId: d.reqId, ok: true },
+            "*",
+          );
+        }
+      } catch (err) {
+        if (e.source && "postMessage" in e.source) {
+          (e.source as Window).postMessage(
+            {
+              type: "thclaws-dashboard-save-ack",
+              reqId: d.reqId,
+              ok: false,
+              error: String(err),
+            },
+            "*",
+          );
+        }
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [preview]);
+
   // Global Cmd/Ctrl-S when Files tab is active + in edit mode.
   useEffect(() => {
     if (!active || mode !== "edit") return;
