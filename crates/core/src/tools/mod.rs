@@ -19,6 +19,8 @@ pub mod glob;
 pub mod grep;
 pub mod kms;
 pub mod ls;
+pub mod pdf_create;
+pub mod pdf_read;
 pub mod plan;
 pub mod read;
 pub mod search;
@@ -34,6 +36,8 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use kms::{KmsReadTool, KmsSearchTool};
 pub use ls::LsTool;
+pub use pdf_create::PdfCreateTool;
+pub use pdf_read::PdfReadTool;
 pub use plan::{EnterPlanModeTool, ExitPlanModeTool};
 pub use read::ReadTool;
 pub use search::WebSearchTool;
@@ -86,6 +90,8 @@ impl ToolRegistry {
         r.register(Arc::new(GlobTool));
         r.register(Arc::new(GrepTool));
         r.register(Arc::new(BashTool));
+        r.register(Arc::new(PdfCreateTool));
+        r.register(Arc::new(PdfReadTool));
         r.register(Arc::new(WebFetchTool::new()));
         r.register(Arc::new(WebSearchTool::default()));
         r.register(Arc::new(AskUserTool));
@@ -182,6 +188,8 @@ mod tests {
                 "Glob",
                 "Grep",
                 "Ls",
+                "PdfCreate",
+                "PdfRead",
                 "Read",
                 "TodoWrite",
                 "WebFetch",

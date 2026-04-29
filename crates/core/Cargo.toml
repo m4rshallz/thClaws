@@ -30,6 +30,15 @@ uuid = { version = "1", features = ["v4"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 arboard = "3"
+# PDF generation backing the PdfCreate tool. Embedded Noto Sans + Noto Sans
+# Thai TTFs (resources/fonts/) ship Thai-native glyphs without a system-font
+# dependency. printpdf 0.7's font API takes any `Read` — we feed `&[u8]`
+# from `include_bytes!`.
+printpdf = "0.7"
+# Markdown parser used by PdfCreate to walk paragraphs, headings, lists,
+# emphasis, and code blocks before laying them out in the PDF. No HTML
+# features needed — we render directly to printpdf primitives.
+pulldown-cmark = { version = "0.10", default-features = false }
 tao = { version = "0.34", optional = true }
 wry = { version = "0.54", optional = true }
 # Markdown → HTML for the Files-tab preview. GFM tables, strikethrough,
