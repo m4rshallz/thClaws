@@ -869,12 +869,7 @@ fn ospath(path: &str) -> String {
 /// Windows MessageBox enforces "Yes"/"No" labels; `yes_label`/`no_label`
 /// are only honoured on macOS and Linux, with the message text carrying
 /// the intent on Windows.
-pub(crate) fn native_confirm(
-    title: &str,
-    message: &str,
-    yes_label: &str,
-    no_label: &str,
-) -> bool {
+pub(crate) fn native_confirm(title: &str, message: &str, yes_label: &str, no_label: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
         let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
