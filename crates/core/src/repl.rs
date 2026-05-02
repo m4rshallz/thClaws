@@ -31,6 +31,14 @@ const COLOR_YELLOW: &str = "\x1b[33m";
 const COLOR_BOLD: &str = "\x1b[1m";
 const COLOR_RED: &str = "\x1b[31m";
 
+const REPL_PROMPT: &str = "❯ ";
+
+fn readline_config() -> rustyline::Config {
+    let builder = rustyline::Config::builder();
+    #[cfg(windows)]
+    let builder = builder.behavior(rustyline::Behavior::PreferTerm);
+    builder.build()
+}
 /// Render the current plan as a coloured ANSI block for the CLI
 /// terminal — analogue of the right-side `PlanSidebar` component the
 /// GUI chat tab gets. M5 CLI parity. Called from the agent loop after
@@ -2390,7 +2398,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     let mut rl: rustyline::Editor<
         crate::cli_completer::SlashCompleter,
         rustyline::history::DefaultHistory,
-    > = rustyline::Editor::new().map_err(|e| Error::Agent(format!("readline init: {e}")))?;
+    > = rustyline::Editor::with_config(readline_config())
+        .map_err(|e| Error::Agent(format!("readline init: {e}")))?;
     rl.set_helper(Some(crate::cli_completer::SlashCompleter));
     let rl_mutex = std::sync::Arc::new(std::sync::Mutex::new(rl));
 
@@ -2528,7 +2537,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         let rl_clone = rl_mutex.clone();
         let readline_task = tokio::task::spawn_blocking(move || {
             let mut rl = rl_clone.lock().unwrap();
-            match rl.readline(&format!("{COLOR_CYAN}❯ {COLOR_RESET}")) {
+            match rl.readline(REPL_PROMPT) {
                 Ok(line) => {
                     let trimmed = line.trim().to_string();
                     if !trimmed.is_empty() {
@@ -2560,7 +2569,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 Some(msgs) = inbox_rx.recv() => {
                     process_team_messages!(msgs);
                     // Reprint prompt hint since our output pushed it up.
-                    print!("{COLOR_CYAN}❯ {COLOR_RESET}");
+                    print!("{COLOR_CYAN}{REPL_PROMPT}{COLOR_RESET}");
                     let _ = std::io::stdout().flush();
                 }
             }
@@ -4452,7 +4461,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
 
         // Run a turn and stream the output live.
         // Ctrl-C during streaming cancels the turn cleanly.
-        lead_log!("\n{COLOR_CYAN}❯ {line}{COLOR_RESET}\n{COLOR_GREEN}");
+        lead_log!("\n{COLOR_CYAN}{REPL_PROMPT}{line}{COLOR_RESET}\n{COLOR_GREEN}");
         print!("{COLOR_GREEN}");
         let _ = std::io::stdout().flush();
         let turn_start = std::time::Instant::now();
@@ -4618,6 +4627,17 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readline_config_matches_platform() {
+        #[cfg(windows)]
+        assert_eq!(
+            readline_config().behavior(),
+            rustyline::Behavior::PreferTerm
+        );
+        #[cfg(not(windows))]
+        assert_eq!(readline_config().behavior(), rustyline::Behavior::Stdio);
+    }
 
     #[test]
     fn parse_slash_returns_none_for_plain_text() {
