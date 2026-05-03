@@ -680,6 +680,14 @@ pub struct Agent {
     /// `None` for tests / non-interactive consumers that don't want
     /// cancellation plumbing.
     pub(crate) cancel: Option<crate::cancel::CancelToken>,
+    /// M6.35 HOOK1+HOOK3: lifecycle hooks. Pre-fix the `crate::hooks`
+    /// module existed and had a documented user-manual chapter
+    /// (`ch13-hooks.md`) but was completely orphaned — no production
+    /// code path called `fire_*`. Now the dispatch site (around
+    /// `tool.call_multimodal`) and the explicit-deny site fire the
+    /// configured hooks. `None` keeps tests and standalone consumers
+    /// hook-free.
+    pub(crate) hooks: Option<std::sync::Arc<crate::hooks::HooksConfig>>,
 }
 
 impl Agent {
@@ -710,6 +718,7 @@ impl Agent {
             approver: Arc::new(AutoApprover),
             history: Arc::new(Mutex::new(Vec::new())),
             cancel: None,
+            hooks: None,
         }
     }
 
@@ -718,6 +727,13 @@ impl Agent {
     /// for `cancel.reset()`-ing between turns. M6.17 BUG H1 + M3.
     pub fn with_cancel(mut self, token: crate::cancel::CancelToken) -> Self {
         self.cancel = Some(token);
+        self
+    }
+
+    /// Wire in a HooksConfig so the agent fires user-configured shell
+    /// hooks at tool dispatch / permission denial. M6.35 HOOK1.
+    pub fn with_hooks(mut self, hooks: std::sync::Arc<crate::hooks::HooksConfig>) -> Self {
+        self.hooks = Some(hooks);
         self
     }
 
@@ -820,6 +836,7 @@ impl Agent {
         let approver = self.approver.clone();
         let history = self.history.clone();
         let cancel = self.cancel.clone();
+        let hooks = self.hooks.clone();
 
         try_stream! {
             {
@@ -859,7 +876,39 @@ impl Agent {
                     let messages_budget = budget_tokens
                         .saturating_sub(system_tokens)
                         .saturating_sub(tools_reserve_tokens);
-                    compact(&h, messages_budget)
+
+                    // M6.35 HOOK4: pre_compact / post_compact fire only
+                    // when compaction actually trims (history is over
+                    // budget). compact() is called every turn but
+                    // no-ops when within budget — firing on every turn
+                    // would spam audit hooks with empty events.
+                    let pre_tokens = crate::compaction::estimate_messages_tokens(&h);
+                    let pre_count = h.len();
+                    let will_compact = pre_tokens > messages_budget;
+                    if will_compact {
+                        if let Some(hk) = &hooks {
+                            crate::hooks::fire_compact(
+                                hk,
+                                crate::hooks::HookEvent::PreCompact,
+                                pre_count,
+                                pre_tokens,
+                            );
+                        }
+                    }
+                    let compacted = compact(&h, messages_budget);
+                    if will_compact {
+                        if let Some(hk) = &hooks {
+                            let post_tokens =
+                                crate::compaction::estimate_messages_tokens(&compacted);
+                            crate::hooks::fire_compact(
+                                hk,
+                                crate::hooks::HookEvent::PostCompact,
+                                compacted.len(),
+                                post_tokens,
+                            );
+                        }
+                    }
+                    compacted
                 };
                 let tool_defs = tools.tool_defs();
 
@@ -1239,6 +1288,15 @@ impl Agent {
                         };
                         let decision = approver.approve(&req).await;
                         if matches!(decision, ApprovalDecision::Deny) {
+                            // M6.35 HOOK3: surface explicit user denial
+                            // to the configured permission_denied hook.
+                            // BashTool / sandbox / plan-mode hard-blocks
+                            // are NOT denials per this gate (they're
+                            // tool-level rejections); only the explicit
+                            // approver Deny lands here.
+                            if let Some(h) = &hooks {
+                                crate::hooks::fire_permission_denied(h, &name);
+                            }
                             let denied = format!("denied by user: {name}");
                             result_blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
@@ -1251,6 +1309,17 @@ impl Agent {
                             };
                             continue;
                         }
+                    }
+
+                    // M6.35 HOOK1: pre_tool_use fires after the approval
+                    // gate but before the tool runs. Fire-and-forget so
+                    // the hook doesn't block dispatch — pre/post strict
+                    // ordering is documented as best-effort, not a
+                    // guarantee, in the user manual.
+                    if let Some(h) = &hooks {
+                        let input_str = serde_json::to_string(input)
+                            .unwrap_or_else(|_| "<unserializable>".to_string());
+                        crate::hooks::fire_pre_tool_use(h, &name, &input_str);
                     }
 
                     // ToolCallStart was yielded at parse time (see the
@@ -1288,6 +1357,20 @@ impl Agent {
                     } else {
                         content
                     };
+
+                    // M6.35 HOOK1: post_tool_use (or _failure) fires
+                    // after we've materialized the result content but
+                    // before pushing it into history. The output the
+                    // hook sees is the truncated-to-disk variant — same
+                    // text the next provider call will see, so audit
+                    // hooks log what the model actually consumed.
+                    if let Some(h) = &hooks {
+                        let preview = match &content {
+                            crate::types::ToolResultContent::Text(s) => s.clone(),
+                            crate::types::ToolResultContent::Blocks(_) => "<multimodal>".to_string(),
+                        };
+                        crate::hooks::fire_post_tool_use(h, &name, &preview, is_error);
+                    }
                     result_blocks.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         content: content.clone(),

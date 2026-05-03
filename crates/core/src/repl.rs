@@ -2628,6 +2628,11 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         }
     }
 
+    // M6.35 HOOK1: snapshot HooksConfig early so the factory + the
+    // top-level agent share one Arc. Subagent inherits via factory
+    // propagation so Task-spawned tool calls fire hooks too.
+    let hooks_arc = std::sync::Arc::new(config.hooks.clone());
+
     // M6.33 SUB1 + SUB3 + SUB4: register the Task tool AFTER the
     // --allowed-tools / --disallowed-tools filter has run. The
     // ProductionAgentFactory captures the FILTERED tool_registry as
@@ -2653,6 +2658,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
             // CLI doesn't have a CancelToken plumbing today; subagents
             // run uninterruptibly here. GUI passes Some via build_state.
             cancel: None,
+            hooks: Some(hooks_arc.clone()),
         });
         tool_registry.register(Arc::new(
             SubAgentTool::new(factory)
@@ -2697,7 +2703,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     )
     .with_max_iterations(config.max_iterations)
     .with_permission_mode(perm_mode)
-    .with_approver(approver.clone());
+    .with_approver(approver.clone())
+    .with_hooks(hooks_arc.clone());
 
     let session_store = SessionStore::default_path().map(SessionStore::new);
     let mut session = Session::new(&config.model, cwd.to_string_lossy());
@@ -3235,6 +3242,17 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         }};
     }
 
+    // M6.35 HOOK2: fire session_start hook now that the agent + session
+    // are both built and we're about to enter the readline loop. Pre-fix
+    // the entire hooks subsystem was dead code; this is the first place
+    // a CLI session_start hook ever runs.
+    crate::hooks::fire_session(
+        &hooks_arc,
+        crate::hooks::HookEvent::SessionStart,
+        &session.id,
+        &config.model,
+    );
+
     // ── Normal interactive REPL ──────────────────────────────────────
     // Uses select! to race user input against team inbox messages so the
     // lead can respond to teammates without the user needing to press Enter.
@@ -3267,6 +3285,13 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     match result {
                         Ok(Some(l)) => { line = l; break; }
                         _ => {
+                            // M6.35 HOOK2: fire session_end before tearing down.
+                            crate::hooks::fire_session(
+                                &hooks_arc,
+                                crate::hooks::HookEvent::SessionEnd,
+                                &session.id,
+                                &config.model,
+                            );
                             // M6.34 TEAM3: scoped to this lead's team_dir.
                             crate::team::kill_my_teammates();
                             println!("{COLOR_DIM}bye{COLOR_RESET}");
@@ -3512,7 +3537,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     )
                     .with_max_iterations(config.max_iterations)
                     .with_permission_mode(perm_mode)
-                    .with_approver(approver.clone());
+                    .with_approver(approver.clone())
+                    .with_hooks(std::sync::Arc::new(config.hooks.clone()));
                     agent.clear_history();
                     session = Session::new(&config.model, session.cwd.clone());
                     // M6.20 BUG M2 + M3: model swap mints a fresh
@@ -3587,7 +3613,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     )
                     .with_max_iterations(config.max_iterations)
                     .with_permission_mode(perm_mode)
-                    .with_approver(approver.clone());
+                    .with_approver(approver.clone())
+                    .with_hooks(std::sync::Arc::new(config.hooks.clone()));
                     agent.clear_history();
                     session = Session::new(&config.model, session.cwd.clone());
                     // M6.20 BUG M2 + M3: provider swap mints a fresh
@@ -4544,7 +4571,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 )
                                 .with_max_iterations(config.max_iterations)
                                 .with_permission_mode(perm_mode)
-                                .with_approver(approver.clone());
+                                .with_approver(approver.clone())
+                                .with_hooks(std::sync::Arc::new(config.hooks.clone()));
                                 agent.set_history(prev_history);
                                 println!(
                                     "{COLOR_DIM}mcp '{name}' added ({scope}, {} tool(s)) → {}{COLOR_RESET}",
@@ -6080,6 +6108,13 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         }
     }
 
+    // M6.35 HOOK2: fire session_end before teardown.
+    crate::hooks::fire_session(
+        &hooks_arc,
+        crate::hooks::HookEvent::SessionEnd,
+        &session.id,
+        &config.model,
+    );
     // Kill any teammate processes spawned by this session.
     // M6.34 TEAM3: scoped to this lead's team_dir.
     crate::team::kill_my_teammates();
@@ -7124,6 +7159,7 @@ mod tests {
             approver: approver.clone(),
             permission_mode: PermissionMode::Ask,
             cancel: None,
+            hooks: None,
         };
         let child = factory
             .build("go", None, 1)

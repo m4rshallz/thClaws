@@ -428,7 +428,11 @@ impl WorkerState {
             &self.system_prompt,
         )
         .with_approver(self.approver.clone())
-        .with_cancel(self.cancel.clone());
+        .with_cancel(self.cancel.clone())
+        // M6.35 HOOK1: re-snapshot config.hooks on rebuild — config
+        // edits via Settings → save → ReloadConfig take effect on the
+        // next agent. Pre-fix the snapshot was only at first boot.
+        .with_hooks(std::sync::Arc::new(self.config.hooks.clone()));
         self.agent = new_agent;
         self.agent.permission_mode = prev_perm;
         self.agent.thinking_budget = prev_thinking;
@@ -832,6 +836,19 @@ async fn run_worker(
     if let Some(w) = &warning {
         let _ = events_tx.send(ViewEvent::ErrorText(format!("Provider: {w}")));
     }
+
+    // M6.35 HOOK1+HOOK10: snapshot HooksConfig in an Arc so the agent +
+    // every subagent factory build shares one immutable copy. Register
+    // a broadcaster that forwards hook errors (spawn fail / non-zero
+    // exit / timeout) to the chat surface so users see broken hooks
+    // without tailing stderr.
+    let hooks_arc = std::sync::Arc::new(config.hooks.clone());
+    {
+        let err_tx = events_tx.clone();
+        crate::hooks::set_error_broadcaster(move |msg| {
+            let _ = err_tx.send(ViewEvent::SlashOutput(format!("⚠ {msg}")));
+        });
+    }
     let provider: Arc<dyn Provider> = maybe_provider.unwrap_or_else(|| {
         Arc::new(NoopProvider::new(
             "no LLM provider configured — open Settings → Provider API keys to add one",
@@ -863,6 +880,9 @@ async fn run_worker(
             approver: approver.clone(),
             permission_mode: perm_mode,
             cancel: Some(cancel.clone()),
+            // M6.35 HOOK1: subagents inherit GUI worker's hooks so audit
+            // hooks see Task-spawned tool calls.
+            hooks: Some(hooks_arc.clone()),
         });
         tools.register(std::sync::Arc::new(
             crate::subagent::SubAgentTool::new(factory)
@@ -872,7 +892,8 @@ async fn run_worker(
     }
     let mut agent = Agent::new(provider, tools.clone(), &config.model, &system)
         .with_approver(approver.clone())
-        .with_cancel(cancel.clone());
+        .with_cancel(cancel.clone())
+        .with_hooks(hooks_arc.clone());
     // Respect the user's configured permission mode (project
     // `.thclaws/settings.json` can set it to "ask"). Without this the
     // GUI's Ask mode flag had no effect because the Agent was built
@@ -952,6 +973,17 @@ async fn run_worker(
         cancel: cancel.clone(),
         active_loop: None,
     };
+
+    // M6.35 HOOK2: fire session_start hook now that WorkerState is
+    // built (state.session.id + state.config.model are stable). Pre-fix
+    // the entire hooks subsystem was orphaned — this is the first
+    // place a session_start hook ever runs.
+    crate::hooks::fire_session(
+        &hooks_arc,
+        crate::hooks::HookEvent::SessionStart,
+        &state.session.id,
+        &state.config.model,
+    );
 
     // Lead inbox poller — parity with repl.rs:1524. Without this, teammates
     // message the lead, messages pile up in `.thclaws/team/inboxes/lead.json`
@@ -1511,6 +1543,21 @@ async fn run_worker(
             }
         }
     }
+
+    // M6.35 HOOK2: input_rx loop exited (channel closed by handle drop /
+    // GUI shutdown). Fire session_end so audit hooks can record the
+    // close. Best-effort — the hook spawn is fire-and-forget and the
+    // tokio runtime is about to shut down with the worker, so any
+    // hook child that's still booting may be killed by the runtime
+    // teardown. For long-running notification hooks, prefer foreground
+    // commands that exec quickly (`notify-send`, `osascript -e ...`)
+    // over slow shell pipelines.
+    crate::hooks::fire_session(
+        &hooks_arc,
+        crate::hooks::HookEvent::SessionEnd,
+        &state.session.id,
+        &state.config.model,
+    );
 }
 
 pub(crate) fn save_history(agent: &Agent, session: &mut Session, store: &Option<SessionStore>) {

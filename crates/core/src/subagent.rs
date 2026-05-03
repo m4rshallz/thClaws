@@ -71,6 +71,11 @@ pub struct ProductionAgentFactory {
     pub approver: Arc<dyn ApprovalSink>,
     pub permission_mode: PermissionMode,
     pub cancel: Option<CancelToken>,
+    /// M6.35 HOOK1: lifecycle hooks propagate parent → subagent so a
+    /// pre/post_tool_use hook fires for tool calls inside a Task spawn,
+    /// not just at the top-level agent. Audit hooks would otherwise miss
+    /// every subagent action — silent gap.
+    pub hooks: Option<Arc<crate::hooks::HooksConfig>>,
 }
 
 #[async_trait]
@@ -150,6 +155,7 @@ impl AgentFactory for ProductionAgentFactory {
                 approver: self.approver.clone(),
                 permission_mode: self.permission_mode,
                 cancel: self.cancel.clone(),
+                hooks: self.hooks.clone(),
             });
             let mut child_tool = SubAgentTool::new(child_factory)
                 .with_depth(child_depth)
@@ -169,6 +175,11 @@ impl AgentFactory for ProductionAgentFactory {
             .with_permission_mode(self.permission_mode);
         if let Some(c) = self.cancel.clone() {
             agent = agent.with_cancel(c);
+        }
+        // M6.35 HOOK1: subagent inherits parent's hooks so audit hooks
+        // see Task-spawned tool calls too.
+        if let Some(h) = self.hooks.clone() {
+            agent = agent.with_hooks(h);
         }
         Ok(agent)
     }
@@ -472,6 +483,7 @@ mod tests {
             approver: Arc::new(crate::permissions::DenyApprover),
             permission_mode: PermissionMode::Auto,
             cancel: None,
+            hooks: None,
         };
         let def = AgentDef {
             name: "restricted".into(),
@@ -504,6 +516,7 @@ mod tests {
             approver: Arc::new(crate::permissions::DenyApprover),
             permission_mode: PermissionMode::Auto,
             cancel: Some(cancel.clone()),
+            hooks: None,
         };
         let child = factory.build("go", None, 1).await.unwrap();
         cancel.cancel();
