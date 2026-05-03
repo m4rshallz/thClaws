@@ -16,6 +16,7 @@ pub mod context;
 pub mod dotenv;
 pub mod endpoints;
 pub mod error;
+pub mod goal_state;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod hooks;

@@ -183,6 +183,63 @@ pub enum SlashCommand {
     Rename(String),
     MemoryList,
     MemoryRead(String),
+    /// M6.26 BUG #2: write a memory entry. `body` carries an inline
+    /// content string when `--body` was passed; `None` means open
+    /// $EDITOR (CLI) or fall back to a one-shot scaffold (GUI).
+    MemoryWrite {
+        name: String,
+        body: Option<String>,
+        type_: Option<String>,
+        description: Option<String>,
+    },
+    /// M6.26 BUG #2: append a chunk to an entry.
+    MemoryAppend {
+        name: String,
+        body: String,
+    },
+    /// M6.26 BUG #2: edit an existing entry — same as Write but
+    /// pre-fills the editor with current content. CLI only.
+    MemoryEdit(String),
+    /// M6.26 BUG #2: delete an entry. `yes` skips the confirmation prompt.
+    MemoryDelete {
+        name: String,
+        yes: bool,
+    },
+    /// M6.29: start an iteration loop. Either fixed interval (`/loop 30s
+    /// <body>`) or self-paced (`/loop <body>`, default 5min). `body` is
+    /// the line the loop fires each iteration — slash command, bare
+    /// prompt, or any input the worker would normally accept.
+    Loop {
+        interval_secs: Option<u64>,
+        body: String,
+    },
+    /// M6.29: stop the active loop. No-op if none running.
+    LoopStop,
+    /// M6.29: show active loop status.
+    LoopStatus,
+    /// M6.29: start a new goal with audit-driven completion. `objective`
+    /// is the user-supplied task; budgets are optional.
+    GoalStart {
+        objective: String,
+        budget_tokens: Option<u64>,
+        budget_time_secs: Option<u64>,
+    },
+    /// M6.29: show current goal state + budget consumption.
+    GoalStatus,
+    /// M6.29: fire one iteration toward the goal. Builds the audit
+    /// prompt and runs an agent turn. Composable with `/loop /goal continue`.
+    GoalContinue,
+    /// M6.29: manually mark the goal complete. Bypasses the audit
+    /// (use sparingly — the audit exists for a reason).
+    GoalComplete {
+        reason: Option<String>,
+    },
+    /// M6.29: abandon the goal with an optional reason.
+    GoalAbandon {
+        reason: Option<String>,
+    },
+    /// M6.29: show the goal's full text + budgets.
+    GoalShow,
     Mcp,
     McpAdd {
         name: String,
@@ -296,6 +353,37 @@ pub enum SlashCommand {
         file: String,
         alias: Option<String>,
         force: bool,
+    },
+    /// M6.25 BUG #8: ingest a remote URL (fetched via HTTP) into a KMS.
+    KmsIngestUrl {
+        name: String,
+        url: String,
+        alias: Option<String>,
+        force: bool,
+    },
+    /// M6.25 BUG #8: ingest a PDF file (extracted via pdftotext) into a KMS.
+    KmsIngestPdf {
+        name: String,
+        file: String,
+        alias: Option<String>,
+        force: bool,
+    },
+    /// M6.28: ingest the current chat session as a KMS page. Triggers an
+    /// agent turn that summarizes history and calls `KmsWrite`.
+    /// Source target was `$`.
+    KmsIngestSession {
+        name: String,
+        alias: Option<String>,
+        force: bool,
+    },
+    /// M6.25 BUG #3: lint a KMS for orphans / broken links / index drift /
+    /// missing frontmatter. Pure-read; no mutation.
+    KmsLint(String),
+    /// M6.25 BUG #4: file the latest assistant message into a KMS as a
+    /// new page. Compounds explorations into the wiki.
+    KmsFileAnswer {
+        name: String,
+        title: String,
     },
     Unknown(String),
 }
@@ -595,8 +683,18 @@ pub fn default_model_for_provider(provider: &str) -> Option<&'static str> {
 
 /// Parse a line as a slash command. Returns `None` when the line isn't a
 /// slash command (so the caller can treat it as a user prompt).
+///
+/// M6.27: also recognizes the `# <name>:<body>` memory shortcut (Claude
+/// Code parity) — translates to `SlashCommand::MemoryWrite` so the
+/// dispatch goes through the same write path as `/memory write`. The
+/// shortcut requires `<name>` to match `[A-Za-z0-9_-]+` and a colon
+/// separator, so accidental markdown headers like `# Architecture: foo`
+/// don't get intercepted.
 pub fn parse_slash(input: &str) -> Option<SlashCommand> {
     let input = input.trim();
+    if let Some(cmd) = parse_memory_shortcut(input) {
+        return Some(cmd);
+    }
     if !input.starts_with('/') {
         return None;
     }
@@ -732,20 +830,571 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "plan" => SlashCommand::Plan(args.trim().to_string()),
         "team" => SlashCommand::Team,
         "usage" => SlashCommand::Usage,
-        "memory" => {
-            let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
-            match sub {
-                "" | "list" => SlashCommand::MemoryList,
-                "read" | "show" | "cat" => SlashCommand::MemoryRead(rest.trim().to_string()),
-                other => SlashCommand::Unknown(format!("memory {other}")),
-            }
-        }
+        "memory" => parse_memory_subcommand(args),
         "kms" => parse_kms_subcommand(args),
+        "loop" => parse_loop_subcommand(args),
+        "goal" => parse_goal_subcommand(args),
         _ => SlashCommand::Unknown(cmd.to_string()),
     })
 }
 
+/// M6.27: detect the `# <name>:<body>` memory shortcut.
+///
+/// Matches when the input starts with `#` followed by a single space,
+/// a slug-style name (`[A-Za-z0-9_-]+`), `:`, and non-empty body. The
+/// strict pattern prevents intercepting markdown headers like
+/// `# Architecture Plan: build a REST API` — `Architecture Plan` has a
+/// space, so the name capture fails.
+///
+/// Returns `Some(MemoryWrite)` on match, `None` otherwise (including
+/// for `#` prefixes that don't fit the pattern, like a bare comment).
+fn parse_memory_shortcut(input: &str) -> Option<SlashCommand> {
+    // Must start with `# ` (hash + exactly one space) or `#` followed
+    // by the name directly (no space). Either form is fine; the colon
+    // anchors the body separator.
+    let after_hash = if let Some(rest) = input.strip_prefix("# ") {
+        rest
+    } else if let Some(rest) = input.strip_prefix('#') {
+        rest
+    } else {
+        return None;
+    };
+
+    let (name_part, body_part) = after_hash.split_once(':')?;
+    let name = name_part.trim();
+    let body = body_part.trim();
+
+    if name.is_empty() || body.is_empty() {
+        return None;
+    }
+    // Validate name shape: slug chars only. Rejects `Architecture Plan`
+    // (space) and any name with non-slug chars so markdown headers
+    // pass through unchanged.
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+
+    Some(SlashCommand::MemoryWrite {
+        name: name.to_string(),
+        body: Some(body.to_string()),
+        type_: None,
+        description: None,
+    })
+}
+
+/// M6.26 BUG #2: parse `/memory [list|read|write|append|edit|delete ...]`.
+///
+/// Syntax:
+/// - `/memory` (or `/memory list`) → list
+/// - `/memory read <name>` (or `show` / `cat`) → read
+/// - `/memory write <name>` → editor flow
+/// - `/memory write <name> --body "..."` → one-shot inline write
+/// - `/memory write <name> --type <user|feedback|project|reference> --description "..."`
+///   → flag-pre-fill the frontmatter
+/// - `/memory append <name> --body "..."` (or `add`)
+/// - `/memory edit <name>` → editor pre-filled with existing content
+/// - `/memory delete <name>` (or `rm`) [-y / --yes]
+fn parse_memory_subcommand(args: &str) -> SlashCommand {
+    let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+    let rest = rest.trim();
+    match sub {
+        "" | "list" => SlashCommand::MemoryList,
+        "read" | "show" | "cat" => SlashCommand::MemoryRead(rest.to_string()),
+        "write" | "new" => parse_memory_write_args(rest),
+        "append" | "add" => parse_memory_append_args(rest),
+        "edit" => {
+            if rest.is_empty() {
+                SlashCommand::Unknown("usage: /memory edit <name>".into())
+            } else {
+                SlashCommand::MemoryEdit(rest.to_string())
+            }
+        }
+        "delete" | "rm" | "remove" => parse_memory_delete_args(rest),
+        other => SlashCommand::Unknown(format!("memory {other}")),
+    }
+}
+
+/// Parse `<name> [--body "..."] [--type ...] [--description "..."]`.
+/// Quotes around `--body` / `--description` values are honored to allow
+/// embedded spaces. Unquoted values consume one whitespace-delimited token.
+fn parse_memory_write_args(rest: &str) -> SlashCommand {
+    let tokens = tokenize_quoted(rest);
+    let mut name: Option<String> = None;
+    let mut body: Option<String> = None;
+    let mut type_: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        match tok {
+            "--body" | "-b" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return SlashCommand::Unknown(
+                        "usage: /memory write <name> --body \"...\"".into(),
+                    );
+                }
+                body = Some(tokens[i].clone());
+            }
+            "--type" | "-t" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return SlashCommand::Unknown("--type requires a value".into());
+                }
+                type_ = Some(tokens[i].clone());
+            }
+            "--description" | "--desc" | "-d" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return SlashCommand::Unknown("--description requires a value".into());
+                }
+                description = Some(tokens[i].clone());
+            }
+            other if other.starts_with("--") => {
+                return SlashCommand::Unknown(format!("unknown flag: {other}"));
+            }
+            other => {
+                if name.is_some() {
+                    return SlashCommand::Unknown(format!(
+                        "unexpected positional: {other} (name already set)"
+                    ));
+                }
+                name = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    match name {
+        Some(n) => SlashCommand::MemoryWrite {
+            name: n,
+            body,
+            type_,
+            description,
+        },
+        None => SlashCommand::Unknown(
+            "usage: /memory write <name> [--body \"...\"] [--type ...] [--description \"...\"]"
+                .into(),
+        ),
+    }
+}
+
+fn parse_memory_append_args(rest: &str) -> SlashCommand {
+    let tokens = tokenize_quoted(rest);
+    let mut name: Option<String> = None;
+    let mut body: Option<String> = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        match tok {
+            "--body" | "-b" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return SlashCommand::Unknown(
+                        "usage: /memory append <name> --body \"...\"".into(),
+                    );
+                }
+                body = Some(tokens[i].clone());
+            }
+            other if other.starts_with("--") => {
+                return SlashCommand::Unknown(format!("unknown flag: {other}"));
+            }
+            other => {
+                if name.is_some() {
+                    return SlashCommand::Unknown(format!("unexpected positional: {other}"));
+                }
+                name = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    match (name, body) {
+        (Some(n), Some(b)) => SlashCommand::MemoryAppend { name: n, body: b },
+        _ => SlashCommand::Unknown("usage: /memory append <name> --body \"...\"".into()),
+    }
+}
+
+fn parse_memory_delete_args(rest: &str) -> SlashCommand {
+    let mut name: Option<String> = None;
+    let mut yes = false;
+    for tok in rest.split_whitespace() {
+        match tok {
+            "--yes" | "-y" => yes = true,
+            other if other.starts_with("--") => {
+                return SlashCommand::Unknown(format!("unknown flag: {other}"));
+            }
+            other => {
+                if name.is_some() {
+                    return SlashCommand::Unknown(format!("unexpected positional: {other}"));
+                }
+                name = Some(other.to_string());
+            }
+        }
+    }
+    match name {
+        Some(n) => SlashCommand::MemoryDelete { name: n, yes },
+        None => SlashCommand::Unknown("usage: /memory delete <name> [-y]".into()),
+    }
+}
+
+/// Split `s` into whitespace-delimited tokens, honoring `"..."` and
+/// `'...'` quoting (so `--body "long string with spaces"` becomes one
+/// token). Backslash escapes inside quotes are NOT honored — keep it
+/// simple; users who need literal quote chars can avoid them.
+fn tokenize_quoted(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_double = false;
+    let mut in_single = false;
+    for ch in s.chars() {
+        match ch {
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            c if c.is_whitespace() && !in_double && !in_single => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Source of the auto-resolved page slug for `/kms ingest <name> $`.
+/// Drives the wording of the prompt's "Page name:" hint so the model
+/// sees provenance (and can decide whether the slug fits the topic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KmsIngestSessionAliasSource {
+    /// User passed `as <alias>` on the command line.
+    UserSupplied,
+    /// Derived from the active session's title (`session.title`).
+    SessionTitle,
+    /// Derived from the session id (no title set).
+    SessionId,
+}
+
+/// M6.28: resolve the page slug + its provenance for `/kms ingest
+/// <name> $`. Precedence:
+///   1. User-supplied `as <alias>` (sanitized)
+///   2. `session.title` if set (sanitized)
+///   3. `session.id` (already slug-safe — `sess-<hex>`)
+/// The slug is guaranteed non-empty because session.id always starts
+/// with `sess-` + hex chars.
+pub fn resolve_session_alias(
+    user_alias: Option<&str>,
+    session_title: Option<&str>,
+    session_id: &str,
+) -> (String, KmsIngestSessionAliasSource) {
+    if let Some(a) = user_alias {
+        let sanitized = crate::kms::sanitize_alias(a);
+        if !sanitized.is_empty() {
+            return (sanitized, KmsIngestSessionAliasSource::UserSupplied);
+        }
+    }
+    if let Some(t) = session_title {
+        let sanitized = crate::kms::sanitize_alias(t);
+        if !sanitized.is_empty() {
+            return (sanitized, KmsIngestSessionAliasSource::SessionTitle);
+        }
+    }
+    (
+        session_id.to_string(),
+        KmsIngestSessionAliasSource::SessionId,
+    )
+}
+
+/// M6.28: build the prompt that gets fed to the agent for `/kms ingest
+/// <name> $`. Tells the model to summarize the current session and call
+/// `KmsWrite` to file it. The page slug is resolved at the call site
+/// (CLI / GUI) before this is called — see `resolve_session_alias` —
+/// so the model gets a concrete page name with provenance hint.
+///
+/// Used by both CLI and GUI handlers — both rewrite the slash command
+/// into this prompt and feed it to `agent.run_turn`.
+pub fn build_kms_ingest_session_prompt(
+    kms_name: &str,
+    page: &str,
+    source: KmsIngestSessionAliasSource,
+    force: bool,
+) -> String {
+    let provenance = match source {
+        KmsIngestSessionAliasSource::UserSupplied => "user-supplied via `as <alias>`",
+        KmsIngestSessionAliasSource::SessionTitle => "derived from the active session title",
+        KmsIngestSessionAliasSource::SessionId => {
+            "derived from the active session id (the session has no title — \
+             refine if a meaningful theme is obvious)"
+        }
+    };
+    let force_hint = if force {
+        "The user passed `--force` — if the page already exists, replace it."
+    } else {
+        "If `KmsWrite` errors with `already exists`, suggest the user re-run with `--force` to \
+         replace; do not silently skip."
+    };
+    format!(
+        "The user ran `/kms ingest {kms_name} $` to file the current chat session as a \
+         knowledge-base page in KMS '{kms_name}'.\n\
+         \n\
+         Steps:\n\
+         1. Summarize this conversation as a self-contained wiki page suitable for future \
+         reference. Include:\n   - An H1 title that captures the topic\n   - Key topics \
+         discussed / decisions made / conclusions reached\n   - Any artifacts created (files, \
+         commits, dev-logs, manuals, etc.) with paths or commit SHAs\n   - Open questions or \
+         follow-ups\n   Keep it tight: synthesize, don't transcribe. Aim for 200-1500 words \
+         depending on conversation depth.\n\
+         \n\
+         2. Call `KmsWrite(kms: \"{kms_name}\", page: \"{page}\", content: \"...\")` with \
+         frontmatter:\n   ---\n   category: session\n   sources: chat\n   description: \
+         <one-line hook>\n   ---\n   <your summary>\n\
+         \n\
+         Page name: `{page}` ({provenance}).\n\
+         \n\
+         3. {force_hint}\n\
+         \n\
+         4. After the write succeeds, confirm to the user with the resolved page path."
+    )
+}
+
+/// M6.26 BUG #2: scaffold body for `/memory write` / `/memory edit`.
+/// When `existing` is `Some`, pre-fills with that entry's frontmatter +
+/// body for editing. When `None`, builds a fresh template.
+fn build_memory_scaffold(
+    name: &str,
+    type_: Option<&str>,
+    description: Option<&str>,
+    existing: Option<&crate::memory::MemoryEntry>,
+) -> String {
+    if let Some(e) = existing {
+        // Edit flow — re-emit frontmatter + body so the user sees what
+        // they're about to change.
+        let mut out = String::from("---\n");
+        out.push_str(&format!("name: {}\n", e.name));
+        if !e.description.is_empty() {
+            out.push_str(&format!("description: {}\n", e.description));
+        }
+        if let Some(ty) = &e.memory_type {
+            out.push_str(&format!("type: {ty}\n"));
+        }
+        out.push_str("---\n");
+        out.push_str(&e.body);
+        if !e.body.ends_with('\n') {
+            out.push('\n');
+        }
+        out
+    } else {
+        // Fresh template — pre-fill anything the user gave on the
+        // command line so the editor doesn't duplicate the work.
+        let mut out = String::from("---\n");
+        out.push_str(&format!("name: {name}\n"));
+        out.push_str(&format!("description: {}\n", description.unwrap_or("")));
+        out.push_str(&format!("type: {}\n", type_.unwrap_or("")));
+        out.push_str("---\n\n");
+        out
+    }
+}
+
+/// M6.26 BUG #2: spawn `$EDITOR` (default `vi`) on a temp file
+/// pre-filled with `scaffold`, return the post-edit content. Ignores
+/// the post-edit content if the editor exits non-zero (treated as
+/// cancellation — the caller surfaces "(empty content — write cancelled)").
+fn spawn_editor_for_memory(
+    name: &str,
+    scaffold: &str,
+) -> std::result::Result<String, std::io::Error> {
+    use std::io::Write;
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let tmp = std::env::temp_dir().join(format!("thclaws-memory-{name}.md"));
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(scaffold.as_bytes())?;
+    }
+    let status = std::process::Command::new(&editor).arg(&tmp).status()?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(std::io::Error::other(format!(
+            "$EDITOR ({editor}) exited {}",
+            status.code().unwrap_or(-1)
+        )));
+    }
+    let contents = std::fs::read_to_string(&tmp)?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(contents)
+}
+
 /// Parse `/kms [list|new|use|off|show ...]`.
+/// M6.29: parse `/loop [<interval>] <body>` / `/loop stop` / `/loop status`.
+///
+/// `<interval>` is a duration like `30s`, `5m`, `2h`. If the first
+/// token doesn't parse as a duration, the whole `args` string is
+/// treated as the body and the loop runs self-paced (default 5min).
+///
+/// Examples:
+///   /loop                         → status
+///   /loop status                  → status
+///   /loop stop / cancel           → stop
+///   /loop 30s /goal continue      → fixed-interval, 30s
+///   /loop 5m continue working     → fixed-interval, 5min, plain prompt
+///   /loop /goal continue          → self-paced (default 5min)
+fn parse_loop_subcommand(args: &str) -> SlashCommand {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed == "status" || trimmed == "list" {
+        return SlashCommand::LoopStatus;
+    }
+    if matches!(trimmed, "stop" | "cancel" | "kill" | "off") {
+        return SlashCommand::LoopStop;
+    }
+    let (first, rest) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
+    if let Some(secs) = parse_duration_secs(first) {
+        let body = rest.trim();
+        if body.is_empty() {
+            return SlashCommand::Unknown(
+                "usage: /loop <interval> <body>; got interval but no body".into(),
+            );
+        }
+        SlashCommand::Loop {
+            interval_secs: Some(secs),
+            body: body.to_string(),
+        }
+    } else {
+        // First token isn't a duration — treat whole input as body,
+        // self-paced.
+        SlashCommand::Loop {
+            interval_secs: None,
+            body: trimmed.to_string(),
+        }
+    }
+}
+
+/// Parse a duration string like `30s` / `5m` / `2h` / `1d` to seconds.
+/// Returns `None` if the string doesn't match the pattern.
+fn parse_duration_secs(s: &str) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    let (num_part, unit) = s.split_at(s.len() - 1);
+    let n: u64 = num_part.parse().ok()?;
+    match unit {
+        "s" | "S" => Some(n),
+        "m" | "M" => Some(n * 60),
+        "h" | "H" => Some(n * 3600),
+        "d" | "D" => Some(n * 86_400),
+        _ => None,
+    }
+}
+
+/// M6.29: parse `/goal <subcommand>`.
+///
+///   /goal start "<objective>" [--budget-tokens N] [--budget-time T]
+///   /goal status
+///   /goal continue
+///   /goal complete [reason]
+///   /goal abandon [reason]
+///   /goal show
+fn parse_goal_subcommand(args: &str) -> SlashCommand {
+    let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+    let rest = rest.trim();
+    match sub {
+        "" | "status" => SlashCommand::GoalStatus,
+        "show" | "info" => SlashCommand::GoalShow,
+        "continue" | "next" => SlashCommand::GoalContinue,
+        "complete" | "done" => SlashCommand::GoalComplete {
+            reason: if rest.is_empty() {
+                None
+            } else {
+                Some(rest.to_string())
+            },
+        },
+        "abandon" | "stop" | "cancel" => SlashCommand::GoalAbandon {
+            reason: if rest.is_empty() {
+                None
+            } else {
+                Some(rest.to_string())
+            },
+        },
+        "start" | "set" | "new" => parse_goal_start_args(rest),
+        other => SlashCommand::Unknown(format!(
+            "unknown goal subcommand: '{other}' (try: /goal, /goal start, /goal continue, \
+             /goal complete, /goal abandon, /goal show)"
+        )),
+    }
+}
+
+/// Parse `/goal start <objective> [--budget-tokens N] [--budget-time T]`.
+/// Objective can be quoted ("...") to include all words; unquoted
+/// strings consume up to the first `--` flag.
+fn parse_goal_start_args(rest: &str) -> SlashCommand {
+    let tokens = tokenize_quoted(rest);
+    let mut objective_parts: Vec<String> = Vec::new();
+    let mut budget_tokens: Option<u64> = None;
+    let mut budget_time_secs: Option<u64> = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        match tok {
+            "--budget-tokens" | "--tokens" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return SlashCommand::Unknown("--budget-tokens requires a number".into());
+                }
+                match tokens[i].parse::<u64>() {
+                    Ok(n) => budget_tokens = Some(n),
+                    Err(_) => {
+                        return SlashCommand::Unknown(format!(
+                            "--budget-tokens: not a number: {}",
+                            tokens[i]
+                        ))
+                    }
+                }
+            }
+            "--budget-time" | "--time" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return SlashCommand::Unknown(
+                        "--budget-time requires a duration (e.g. 30m, 2h)".into(),
+                    );
+                }
+                match parse_duration_secs(&tokens[i]) {
+                    Some(n) => budget_time_secs = Some(n),
+                    None => {
+                        return SlashCommand::Unknown(format!(
+                            "--budget-time: not a duration: {}",
+                            tokens[i]
+                        ))
+                    }
+                }
+            }
+            other if other.starts_with("--") => {
+                return SlashCommand::Unknown(format!("unknown flag: {other}"));
+            }
+            other => objective_parts.push(other.to_string()),
+        }
+        i += 1;
+    }
+    let objective = objective_parts.join(" ");
+    if objective.trim().is_empty() {
+        return SlashCommand::Unknown(
+            "usage: /goal start \"<objective>\" [--budget-tokens N] [--budget-time T]".into(),
+        );
+    }
+    SlashCommand::GoalStart {
+        objective,
+        budget_tokens,
+        budget_time_secs,
+    }
+}
+
 fn parse_kms_subcommand(args: &str) -> SlashCommand {
     let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
     let rest = rest.trim();
@@ -798,19 +1447,17 @@ fn parse_kms_subcommand(args: &str) -> SlashCommand {
             }
         }
         "ingest" | "add" => {
-            // Syntax: /kms ingest <kms-name> <file> [as <alias>] [--force]
+            // Syntax: /kms ingest <kms-name> <file-or-url> [as <alias>] [--force]
             //
-            // KMS name is always explicit — we don't want to "helpfully"
-            // pick an active KMS when the user has several attached and
-            // mean the one they think of.
+            // M6.25 BUG #8: detect URL vs PDF vs text and dispatch to the
+            // matching ingest variant. URL: starts with http:// or https://.
+            // PDF: file extension is .pdf. Otherwise: standard text ingest.
             let mut parts: Vec<&str> = rest.split_whitespace().collect();
             let mut force = false;
             if let Some(i) = parts.iter().position(|p| *p == "--force" || *p == "-f") {
                 force = true;
                 parts.remove(i);
             }
-            // Pull optional `as <alias>` out before parsing positionals so
-            // the alias slot isn't sensitive to position.
             let mut alias: Option<String> = None;
             if let Some(i) = parts.iter().position(|p| *p == "as") {
                 if i + 1 < parts.len() {
@@ -818,24 +1465,77 @@ fn parse_kms_subcommand(args: &str) -> SlashCommand {
                     parts.drain(i..=i + 1);
                 } else {
                     return SlashCommand::Unknown(
-                        "usage: /kms ingest <kms> <file> [as <alias>] [--force]".into(),
+                        "usage: /kms ingest <kms> <file-or-url> [as <alias>] [--force]".into(),
                     );
                 }
             }
             match parts.as_slice() {
-                [name, file] => SlashCommand::KmsIngest {
-                    name: (*name).to_string(),
-                    file: (*file).to_string(),
-                    alias,
-                    force,
-                },
+                [name, target] => {
+                    let t = *target;
+                    if t == "$" {
+                        // M6.28: `$` = current chat session. Triggers an
+                        // agent turn that summarizes history + calls
+                        // KmsWrite.
+                        SlashCommand::KmsIngestSession {
+                            name: (*name).to_string(),
+                            alias,
+                            force,
+                        }
+                    } else if t.starts_with("http://") || t.starts_with("https://") {
+                        SlashCommand::KmsIngestUrl {
+                            name: (*name).to_string(),
+                            url: t.to_string(),
+                            alias,
+                            force,
+                        }
+                    } else if t.to_ascii_lowercase().ends_with(".pdf") {
+                        SlashCommand::KmsIngestPdf {
+                            name: (*name).to_string(),
+                            file: t.to_string(),
+                            alias,
+                            force,
+                        }
+                    } else {
+                        SlashCommand::KmsIngest {
+                            name: (*name).to_string(),
+                            file: t.to_string(),
+                            alias,
+                            force,
+                        }
+                    }
+                }
                 _ => SlashCommand::Unknown(
-                    "usage: /kms ingest <kms> <file> [as <alias>] [--force]".into(),
+                    "usage: /kms ingest <kms> <file-or-url-or-$> [as <alias>] [--force]".into(),
+                ),
+            }
+        }
+        "lint" | "check" | "doctor" => {
+            // M6.25 BUG #3: pure-read health check.
+            if rest.is_empty() {
+                SlashCommand::Unknown("usage: /kms lint <name>".into())
+            } else {
+                SlashCommand::KmsLint(rest.to_string())
+            }
+        }
+        "file-answer" | "file" => {
+            // M6.25 BUG #4: file the latest assistant message as a new
+            // KMS page. Syntax: /kms file-answer <kms-name> <title>
+            // (everything after the kms name is the title).
+            let mut parts = rest.splitn(2, char::is_whitespace);
+            match (parts.next(), parts.next()) {
+                (Some(name), Some(title)) if !name.is_empty() && !title.trim().is_empty() => {
+                    SlashCommand::KmsFileAnswer {
+                        name: name.to_string(),
+                        title: title.trim().to_string(),
+                    }
+                }
+                _ => SlashCommand::Unknown(
+                    "usage: /kms file-answer <kms> <title>".into(),
                 ),
             }
         }
         other => SlashCommand::Unknown(format!(
-            "unknown kms subcommand: '{other}' (try: /kms, /kms new …, /kms use …, /kms off …, /kms show …, /kms ingest …)"
+            "unknown kms subcommand: '{other}' (try: /kms, /kms new …, /kms use …, /kms off …, /kms show …, /kms ingest …, /kms lint …, /kms file-answer …)"
         )),
     }
 }
@@ -1706,7 +2406,14 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
     if !config.kms_active.is_empty() {
         tool_registry.register(Arc::new(crate::tools::KmsReadTool));
         tool_registry.register(Arc::new(crate::tools::KmsSearchTool));
+        // M6.25 BUG #1: write tools alongside read tools.
+        tool_registry.register(Arc::new(crate::tools::KmsWriteTool));
+        tool_registry.register(Arc::new(crate::tools::KmsAppendTool));
     }
+    // M6.26 BUG #1: Memory tools always-on (model can create first entry).
+    tool_registry.register(Arc::new(crate::tools::MemoryReadTool));
+    tool_registry.register(Arc::new(crate::tools::MemoryWriteTool));
+    tool_registry.register(Arc::new(crate::tools::MemoryAppendTool));
     let (_mcp_clients, _mcp_summary) =
         load_mcp_servers(&config.mcp_servers, &mut tool_registry).await;
 
@@ -1779,7 +2486,14 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     if !config.kms_active.is_empty() {
         tool_registry.register(Arc::new(crate::tools::KmsReadTool));
         tool_registry.register(Arc::new(crate::tools::KmsSearchTool));
+        // M6.25 BUG #1: write tools alongside read tools.
+        tool_registry.register(Arc::new(crate::tools::KmsWriteTool));
+        tool_registry.register(Arc::new(crate::tools::KmsAppendTool));
     }
+    // M6.26 BUG #1: Memory tools always-on (model can create first entry).
+    tool_registry.register(Arc::new(crate::tools::MemoryReadTool));
+    tool_registry.register(Arc::new(crate::tools::MemoryWriteTool));
+    tool_registry.register(Arc::new(crate::tools::MemoryAppendTool));
     if config.search_engine != "auto" {
         tool_registry.register(Arc::new(crate::tools::WebSearchTool::new(
             &config.search_engine,
@@ -2427,6 +3141,11 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     // the select! arm is effectively a no-op.
     let (inbox_tx, mut inbox_rx) =
         tokio::sync::mpsc::unbounded_channel::<Vec<crate::team::TeamMessage>>();
+    // M6.29: /loop fires lines back into the readline loop via this
+    // channel. The loop task pushes; the readline select! arm pulls.
+    let (cli_input_tx, mut cli_input_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let mut active_loop_handle: Option<tokio::task::AbortHandle> = None;
+    let mut active_loop_body: Option<String> = None;
     if team_enabled {
         let mailbox = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
         tokio::spawn(async move {
@@ -2604,7 +3323,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
             }
         });
 
-        // Race readline against team inbox messages.
+        // Race readline against team inbox messages AND any active
+        // /loop firings (M6.29: cli_input_rx delivers loop body lines
+        // back into the readline path so the next iteration just
+        // takes the next line).
         let mut line: String;
         tokio::pin!(readline_task);
         loop {
@@ -2623,9 +3345,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 }
                 Some(msgs) = inbox_rx.recv() => {
                     process_team_messages!(msgs);
-                    // Reprint prompt hint since our output pushed it up.
                     print!("{COLOR_CYAN}{REPL_PROMPT}{COLOR_RESET}");
                     let _ = std::io::stdout().flush();
+                }
+                Some(loop_line) = cli_input_rx.recv() => {
+                    println!(
+                        "{COLOR_DIM}[loop fired]{COLOR_RESET} {loop_line}"
+                    );
+                    line = loop_line;
+                    break;
                 }
             }
         }
@@ -2683,6 +3411,75 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     );
                     line = cmd.render(args);
                 }
+            }
+
+            // M6.29: `/goal continue` rewrite-before-match. Same shape
+            // as KmsIngestSession — the slash command becomes the
+            // user prompt for the next agent turn (the audit prompt
+            // built from the embedded template + current goal state).
+            // Auto-stops the loop on terminal goal status.
+            if matches!(parse_slash(&line), Some(SlashCommand::GoalContinue)) {
+                match crate::goal_state::current() {
+                    Some(g) if g.status.is_terminal() => {
+                        println!(
+                            "{COLOR_DIM}/goal continue — goal already {} (last: {}){COLOR_RESET}",
+                            g.status.as_str(),
+                            g.last_message.as_deref().unwrap_or("(none)")
+                        );
+                        if let Some(h) = active_loop_handle.take() {
+                            h.abort();
+                            active_loop_body = None;
+                            println!("{COLOR_DIM}loop auto-stopped{COLOR_RESET}");
+                        }
+                        continue;
+                    }
+                    Some(g) => {
+                        println!(
+                            "{COLOR_DIM}(/goal continue → audit prompt fired — iteration {}, {}s elapsed){COLOR_RESET}",
+                            g.iterations_done.saturating_add(1),
+                            g.time_used_secs(),
+                        );
+                        crate::goal_state::record_iteration(0);
+                        line = crate::goal_state::build_audit_prompt(&g);
+                        // After this loop iteration's agent turn finishes,
+                        // we'll check goal_state for terminal status and
+                        // auto-stop the loop. That check is below the
+                        // turn pipeline (around the existing post-turn
+                        // section); for now just rewrite line and fall
+                        // through.
+                    }
+                    None => {
+                        println!(
+                            "{COLOR_YELLOW}/goal continue — no active goal. Try /goal start \"<objective>\".{COLOR_RESET}"
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            // M6.28: `/kms ingest <name> $` rewrite-before-match. The
+            // `$` source means "the current chat session"; instead of
+            // dispatching to a synchronous handler, build a prompt
+            // that tells the model to summarize history + call
+            // KmsWrite. Same pattern as the skill / command rewrites
+            // above — `line` becomes plain text so the slash match
+            // below skips it and the agent turn runs naturally.
+            if let Some(SlashCommand::KmsIngestSession { name, alias, force }) = parse_slash(&line)
+            {
+                if crate::kms::resolve(&name).is_some() {
+                    let (page, source) = resolve_session_alias(
+                        alias.as_deref(),
+                        session.title.as_deref(),
+                        &session.id,
+                    );
+                    println!(
+                        "{COLOR_DIM}(/kms ingest {name} $ → page `{page}` — summarize and KmsWrite){COLOR_RESET}"
+                    );
+                    line = build_kms_ingest_session_prompt(&name, &page, source, force);
+                }
+                // If the KMS doesn't exist, leave `line` as the
+                // original slash command — the slash match's
+                // `KmsIngestSession` arm will print a clear error.
             }
         }
 
@@ -3122,6 +3919,163 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             ),
                         },
                         None => println!("{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}"),
+                    }
+                }
+                // M6.26 BUG #2: write a memory entry. Editor flow when
+                // body is missing; --body shortcut for one-shot.
+                SlashCommand::MemoryWrite {
+                    name,
+                    body,
+                    type_,
+                    description,
+                } => {
+                    let Some(store) = &memory_store else {
+                        println!("{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}");
+                        continue;
+                    };
+                    let body_str = match body {
+                        Some(b) => b,
+                        None => {
+                            // Editor flow: scaffold + spawn $EDITOR.
+                            let scaffold = build_memory_scaffold(
+                                &name,
+                                type_.as_deref(),
+                                description.as_deref(),
+                                store.get(&name).as_ref(),
+                            );
+                            match spawn_editor_for_memory(&name, &scaffold) {
+                                Ok(content) if content.trim().is_empty() => {
+                                    println!(
+                                        "{COLOR_DIM}(empty content — write cancelled){COLOR_RESET}"
+                                    );
+                                    continue;
+                                }
+                                Ok(content) => content,
+                                Err(e) => {
+                                    println!("{COLOR_YELLOW}editor failed: {e}{COLOR_RESET}");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    // If --type / --description were passed alongside
+                    // --body, splice them into a frontmatter block.
+                    let final_content = if (type_.is_some() || description.is_some())
+                        && !body_str.starts_with("---")
+                    {
+                        let mut fm = std::collections::HashMap::new();
+                        if let Some(t) = &type_ {
+                            fm.insert("type".to_string(), t.clone());
+                        }
+                        if let Some(d) = &description {
+                            fm.insert("description".to_string(), d.clone());
+                        }
+                        crate::memory::write_frontmatter_map(&fm, &body_str)
+                    } else {
+                        body_str
+                    };
+                    match crate::memory::write_entry(store, &name, &final_content) {
+                        Ok(path) => println!(
+                            "{COLOR_DIM}wrote {} ({} bytes){COLOR_RESET}",
+                            path.display(),
+                            final_content.len()
+                        ),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}write failed: {e}{COLOR_RESET}");
+                        }
+                    }
+                }
+                SlashCommand::MemoryAppend { name, body } => {
+                    let Some(store) = &memory_store else {
+                        println!("{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}");
+                        continue;
+                    };
+                    match crate::memory::append_to_entry(store, &name, &body) {
+                        Ok(path) => println!(
+                            "{COLOR_DIM}appended {} bytes → {}{COLOR_RESET}",
+                            body.len(),
+                            path.display()
+                        ),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}append failed: {e}{COLOR_RESET}");
+                        }
+                    }
+                }
+                SlashCommand::MemoryEdit(name) => {
+                    let Some(store) = &memory_store else {
+                        println!("{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}");
+                        continue;
+                    };
+                    let existing = store.get(&name);
+                    if existing.is_none() {
+                        println!(
+                            "{COLOR_YELLOW}entry not found: {name} (use /memory write {name} to create){COLOR_RESET}"
+                        );
+                        continue;
+                    }
+                    let scaffold = build_memory_scaffold(&name, None, None, existing.as_ref());
+                    let content = match spawn_editor_for_memory(&name, &scaffold) {
+                        Ok(c) if c.trim().is_empty() => {
+                            println!("{COLOR_DIM}(empty content — edit cancelled){COLOR_RESET}");
+                            continue;
+                        }
+                        Ok(c) => c,
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}editor failed: {e}{COLOR_RESET}");
+                            continue;
+                        }
+                    };
+                    match crate::memory::write_entry(store, &name, &content) {
+                        Ok(path) => println!(
+                            "{COLOR_DIM}updated {} ({} bytes){COLOR_RESET}",
+                            path.display(),
+                            content.len()
+                        ),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}edit failed: {e}{COLOR_RESET}");
+                        }
+                    }
+                }
+                SlashCommand::MemoryDelete { name, yes } => {
+                    let Some(store) = &memory_store else {
+                        println!("{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}");
+                        continue;
+                    };
+                    if !yes {
+                        // Show a quick preview so the user sees what
+                        // they're about to nuke.
+                        match store.get(&name) {
+                            Some(entry) => {
+                                println!(
+                                    "{COLOR_DIM}About to delete: {} — {}{COLOR_RESET}",
+                                    entry.name,
+                                    if entry.description.is_empty() {
+                                        "(no description)".to_string()
+                                    } else {
+                                        entry.description
+                                    }
+                                );
+                            }
+                            None => {
+                                println!("{COLOR_YELLOW}entry not found: {name}{COLOR_RESET}");
+                                continue;
+                            }
+                        }
+                        use std::io::{BufRead, Write};
+                        print!("Delete? [y/N] ");
+                        std::io::stdout().flush().ok();
+                        let mut line = String::new();
+                        std::io::stdin().lock().read_line(&mut line).ok();
+                        if !matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                            println!("{COLOR_DIM}cancelled{COLOR_RESET}");
+                            continue;
+                        }
+                    }
+                    match crate::memory::delete_entry(store, &name) {
+                        Ok(path) => println!("{COLOR_DIM}deleted {}{COLOR_RESET}", path.display()),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}delete failed: {e}{COLOR_RESET}");
+                        }
                     }
                 }
                 SlashCommand::Tasks => {
@@ -4643,8 +5597,13 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     match crate::kms::ingest(&k, &source, alias.as_deref(), force) {
                         Ok(r) => {
                             let verb = if r.overwrote { "replaced" } else { "ingested" };
+                            let cascade = if r.cascaded > 0 {
+                                format!(" (marked {} dependent page(s) stale)", r.cascaded)
+                            } else {
+                                String::new()
+                            };
                             println!(
-                                "{COLOR_DIM}{verb} → {} — {}{COLOR_RESET}",
+                                "{COLOR_DIM}{verb} → {} — {}{cascade}{COLOR_RESET}",
                                 r.target.display(),
                                 r.summary,
                             );
@@ -4652,6 +5611,351 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         Err(e) => {
                             println!("{COLOR_YELLOW}ingest failed: {e}{COLOR_RESET}");
                         }
+                    }
+                }
+                // M6.25 BUG #8: URL ingest variant (CLI mirror).
+                SlashCommand::KmsIngestUrl {
+                    name,
+                    url,
+                    alias,
+                    force,
+                } => {
+                    let Some(k) = crate::kms::resolve(&name) else {
+                        println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
+                        continue;
+                    };
+                    match crate::kms::ingest_url(&k, &url, alias.as_deref(), force).await {
+                        Ok(r) => println!(
+                            "{COLOR_DIM}ingested {url} → {} — {}{COLOR_RESET}",
+                            r.target.display(),
+                            r.summary,
+                        ),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}url ingest failed: {e}{COLOR_RESET}");
+                        }
+                    }
+                }
+                // M6.25 BUG #8: PDF ingest variant (CLI mirror).
+                SlashCommand::KmsIngestPdf {
+                    name,
+                    file,
+                    alias,
+                    force,
+                } => {
+                    let Some(k) = crate::kms::resolve(&name) else {
+                        println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
+                        continue;
+                    };
+                    let source = std::path::PathBuf::from(&file);
+                    let source = if source.is_absolute() {
+                        source
+                    } else {
+                        std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                            .join(&source)
+                    };
+                    match crate::kms::ingest_pdf(&k, &source, alias.as_deref(), force).await {
+                        Ok(r) => println!(
+                            "{COLOR_DIM}ingested {} → {} — {}{COLOR_RESET}",
+                            source.display(),
+                            r.target.display(),
+                            r.summary,
+                        ),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}pdf ingest failed: {e}{COLOR_RESET}");
+                        }
+                    }
+                }
+                // M6.28: handled above as a rewrite-before-match (so the
+                // turn fires via the regular pipeline). This arm should
+                // be unreachable; if the rewrite path missed (e.g. no
+                // such KMS), fall through with a notice so the user
+                // sees something.
+                SlashCommand::KmsIngestSession { name, .. } => {
+                    println!(
+                        "{COLOR_YELLOW}/kms ingest {name} $ — no KMS named '{name}' \
+                         (try /kms list){COLOR_RESET}"
+                    );
+                }
+                // M6.25 BUG #3: lint (CLI).
+                SlashCommand::KmsLint(name) => {
+                    let Some(k) = crate::kms::resolve(&name) else {
+                        println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
+                        continue;
+                    };
+                    match crate::kms::lint(&k) {
+                        Ok(report) => {
+                            let total = report.total_issues();
+                            if total == 0 {
+                                println!(
+                                    "{COLOR_DIM}KMS '{name}': clean — no issues found.{COLOR_RESET}"
+                                );
+                            } else {
+                                println!("KMS '{name}': {total} issue(s)");
+                                if !report.broken_links.is_empty() {
+                                    println!("  broken links ({}):", report.broken_links.len());
+                                    for (page, target) in &report.broken_links {
+                                        println!("    {page} → pages/{target}.md (missing)");
+                                    }
+                                }
+                                if !report.index_orphans.is_empty() {
+                                    println!(
+                                        "  index entries with no underlying file ({}):",
+                                        report.index_orphans.len()
+                                    );
+                                    for stem in &report.index_orphans {
+                                        println!("    {stem}");
+                                    }
+                                }
+                                if !report.missing_in_index.is_empty() {
+                                    println!(
+                                        "  pages missing from index ({}):",
+                                        report.missing_in_index.len()
+                                    );
+                                    for stem in &report.missing_in_index {
+                                        println!("    {stem}");
+                                    }
+                                }
+                                if !report.orphan_pages.is_empty() {
+                                    println!("  orphan pages ({}):", report.orphan_pages.len());
+                                    for stem in &report.orphan_pages {
+                                        println!("    {stem}");
+                                    }
+                                }
+                                if !report.missing_frontmatter.is_empty() {
+                                    println!(
+                                        "  pages without YAML frontmatter ({}):",
+                                        report.missing_frontmatter.len()
+                                    );
+                                    for stem in &report.missing_frontmatter {
+                                        println!("    {stem}");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}lint failed: {e}{COLOR_RESET}");
+                        }
+                    }
+                }
+                // M6.25 BUG #4: file-answer (CLI).
+                SlashCommand::KmsFileAnswer { name, title } => {
+                    let Some(k) = crate::kms::resolve(&name) else {
+                        println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
+                        continue;
+                    };
+                    let answer = session
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| matches!(m.role, crate::types::Role::Assistant))
+                        .map(|m| {
+                            m.content
+                                .iter()
+                                .filter_map(|b| match b {
+                                    crate::types::ContentBlock::Text { text } => {
+                                        Some(text.as_str())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n\n")
+                        });
+                    let Some(answer_text) = answer.filter(|s| !s.trim().is_empty()) else {
+                        println!(
+                            "{COLOR_YELLOW}no assistant message in session yet — nothing to file{COLOR_RESET}"
+                        );
+                        continue;
+                    };
+                    let stem: String = title
+                        .trim()
+                        .chars()
+                        .map(|c| {
+                            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                                c
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect::<String>()
+                        .trim_matches('_')
+                        .to_string();
+                    if stem.is_empty() {
+                        println!(
+                            "{COLOR_YELLOW}title sanitises to empty — pick another{COLOR_RESET}"
+                        );
+                        continue;
+                    }
+                    let body = format!("# {title}\n\n{answer_text}\n");
+                    let mut fm = std::collections::BTreeMap::new();
+                    fm.insert("category".into(), "answer".into());
+                    fm.insert("filed_from".into(), "chat".into());
+                    let serialized = crate::kms::write_frontmatter(&fm, &body);
+                    match crate::kms::write_page(&k, &stem, &serialized) {
+                        Ok(path) => println!(
+                            "{COLOR_DIM}filed answer → {} ({} bytes){COLOR_RESET}",
+                            path.display(),
+                            serialized.len()
+                        ),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}file-answer failed: {e}{COLOR_RESET}");
+                        }
+                    }
+                }
+                // M6.29: /loop + /goal CLI dispatch.
+                SlashCommand::Loop { interval_secs, body } => {
+                    if active_loop_handle.is_some() {
+                        println!(
+                            "{COLOR_YELLOW}loop already running — `/loop stop` first{COLOR_RESET}"
+                        );
+                        continue;
+                    }
+                    let interval =
+                        std::time::Duration::from_secs(interval_secs.unwrap_or(300));
+                    let label = interval_secs
+                        .map(|s| format!("every {s}s"))
+                        .unwrap_or_else(|| "self-paced (5min default)".to_string());
+                    let body_for_task = body.clone();
+                    let cli_input_tx_for_task = cli_input_tx.clone();
+                    let handle = tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(interval).await;
+                            if cli_input_tx_for_task
+                                .send(body_for_task.clone())
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                    active_loop_handle = Some(handle.abort_handle());
+                    active_loop_body = Some(body.clone());
+                    println!(
+                        "{COLOR_DIM}loop started ({label}): {body}{COLOR_RESET}"
+                    );
+                }
+                SlashCommand::LoopStop => match active_loop_handle.take() {
+                    Some(h) => {
+                        h.abort();
+                        let body = active_loop_body.take().unwrap_or_default();
+                        println!(
+                            "{COLOR_DIM}loop stopped (was firing `{body}`){COLOR_RESET}"
+                        );
+                    }
+                    None => println!("{COLOR_YELLOW}no active loop{COLOR_RESET}"),
+                },
+                SlashCommand::LoopStatus => match &active_loop_body {
+                    Some(b) => println!(
+                        "{COLOR_DIM}loop active: body=`{b}`{COLOR_RESET}"
+                    ),
+                    None => println!("{COLOR_DIM}no active loop{COLOR_RESET}"),
+                },
+                SlashCommand::GoalStart {
+                    objective,
+                    budget_tokens,
+                    budget_time_secs,
+                } => {
+                    let new_goal = crate::goal_state::GoalState::new(
+                        objective.clone(),
+                        budget_tokens,
+                        budget_time_secs,
+                    );
+                    crate::goal_state::set(Some(new_goal));
+                    tool_registry.register(Arc::new(crate::tools::UpdateGoalTool));
+                    // System prompt + agent rebuild aren't strictly
+                    // required (UpdateGoal is a callable tool either
+                    // way) but rebuilding ensures the model sees the
+                    // new tool in its catalog this turn.
+                    println!(
+                        "{COLOR_DIM}goal started: \"{}\" (budget_tokens={}, budget_time={}){COLOR_RESET}",
+                        objective,
+                        budget_tokens
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "unlimited".into()),
+                        budget_time_secs
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "unlimited".into()),
+                    );
+                }
+                SlashCommand::GoalStatus => match crate::goal_state::current() {
+                    Some(g) => {
+                        println!(
+                            "{COLOR_DIM}goal status: {} ({}s elapsed, {} iterations, {} tokens){COLOR_RESET}",
+                            g.status.as_str(),
+                            g.time_used_secs(),
+                            g.iterations_done,
+                            g.tokens_used,
+                        );
+                        println!("  objective: {}", g.objective);
+                        if let Some(m) = &g.last_message {
+                            println!("  last: {m}");
+                        }
+                    }
+                    None => println!(
+                        "{COLOR_YELLOW}no active goal — try /goal start \"<objective>\"{COLOR_RESET}"
+                    ),
+                },
+                SlashCommand::GoalShow => match crate::goal_state::current() {
+                    Some(g) => println!("{:#?}", g),
+                    None => println!("{COLOR_YELLOW}no active goal{COLOR_RESET}"),
+                },
+                SlashCommand::GoalContinue => {
+                    // Handled as a rewrite-before-match below — see
+                    // the rewrite block earlier in the loop.
+                    println!(
+                        "{COLOR_YELLOW}/goal continue — internal: rewrite block missed; check goal state{COLOR_RESET}"
+                    );
+                }
+                SlashCommand::GoalComplete { reason } => {
+                    if crate::goal_state::current().is_none() {
+                        println!("{COLOR_YELLOW}no active goal{COLOR_RESET}");
+                        continue;
+                    }
+                    let r = reason.clone();
+                    crate::goal_state::apply(|g| {
+                        g.status = crate::goal_state::GoalStatus::Complete;
+                        if let Some(r) = &r {
+                            g.last_message = Some(r.clone());
+                        }
+                        g.completed_at = Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                        );
+                        true
+                    });
+                    println!("{COLOR_DIM}goal marked complete{COLOR_RESET}");
+                    if let Some(h) = active_loop_handle.take() {
+                        h.abort();
+                        active_loop_body = None;
+                        println!("{COLOR_DIM}loop auto-stopped{COLOR_RESET}");
+                    }
+                }
+                SlashCommand::GoalAbandon { reason } => {
+                    if crate::goal_state::current().is_none() {
+                        println!("{COLOR_YELLOW}no active goal{COLOR_RESET}");
+                        continue;
+                    }
+                    let r = reason.clone();
+                    crate::goal_state::apply(|g| {
+                        g.status = crate::goal_state::GoalStatus::Abandoned;
+                        if let Some(r) = &r {
+                            g.last_message = Some(r.clone());
+                        }
+                        g.completed_at = Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                        );
+                        true
+                    });
+                    println!("{COLOR_DIM}goal abandoned{COLOR_RESET}");
+                    if let Some(h) = active_loop_handle.take() {
+                        h.abort();
+                        active_loop_body = None;
+                        println!("{COLOR_DIM}loop auto-stopped{COLOR_RESET}");
                     }
                 }
                 SlashCommand::Unknown(what) => {
@@ -5420,6 +6724,233 @@ mod tests {
             parse_slash("/kms use"),
             Some(SlashCommand::Unknown(_))
         ));
+
+        // M6.28: `$` source = current chat session → KmsIngestSession
+        assert_eq!(
+            parse_slash("/kms ingest mynotes $"),
+            Some(SlashCommand::KmsIngestSession {
+                name: "mynotes".into(),
+                alias: None,
+                force: false,
+            })
+        );
+        // With `as <alias>` and `--force` flags.
+        assert_eq!(
+            parse_slash("/kms ingest mynotes $ as my-thread --force"),
+            Some(SlashCommand::KmsIngestSession {
+                name: "mynotes".into(),
+                alias: Some("my-thread".into()),
+                force: true,
+            })
+        );
+    }
+
+    /// M6.28: build_kms_ingest_session_prompt produces a non-empty
+    /// prompt referencing the KMS name + page + KmsWrite tool, with a
+    /// provenance hint that varies by alias source.
+    #[test]
+    fn build_kms_ingest_session_prompt_mentions_kms_and_tool() {
+        let p = build_kms_ingest_session_prompt(
+            "mynotes",
+            "session-page-slug",
+            KmsIngestSessionAliasSource::SessionId,
+            false,
+        );
+        assert!(p.contains("mynotes"));
+        assert!(p.contains("KmsWrite"));
+        assert!(p.contains("session-page-slug"));
+        assert!(p.contains("session id"));
+
+        let p_user = build_kms_ingest_session_prompt(
+            "mynotes",
+            "my-topic",
+            KmsIngestSessionAliasSource::UserSupplied,
+            true,
+        );
+        assert!(p_user.contains("my-topic"));
+        assert!(p_user.contains("user-supplied"));
+        // Force hint changes when --force is set.
+        assert!(p_user.contains("--force"));
+
+        let p_title = build_kms_ingest_session_prompt(
+            "mynotes",
+            "memory-overhaul",
+            KmsIngestSessionAliasSource::SessionTitle,
+            false,
+        );
+        assert!(p_title.contains("memory-overhaul"));
+        assert!(p_title.contains("session title"));
+    }
+
+    // ─── M6.29: /loop + /goal parser tests ──────────────────────────
+
+    #[test]
+    fn parse_slash_loop_status() {
+        assert_eq!(parse_slash("/loop"), Some(SlashCommand::LoopStatus));
+        assert_eq!(parse_slash("/loop status"), Some(SlashCommand::LoopStatus));
+    }
+
+    #[test]
+    fn parse_slash_loop_stop() {
+        assert_eq!(parse_slash("/loop stop"), Some(SlashCommand::LoopStop));
+        assert_eq!(parse_slash("/loop cancel"), Some(SlashCommand::LoopStop));
+    }
+
+    #[test]
+    fn parse_slash_loop_with_interval() {
+        assert_eq!(
+            parse_slash("/loop 30s /goal continue"),
+            Some(SlashCommand::Loop {
+                interval_secs: Some(30),
+                body: "/goal continue".into(),
+            })
+        );
+        assert_eq!(
+            parse_slash("/loop 5m do this thing"),
+            Some(SlashCommand::Loop {
+                interval_secs: Some(300),
+                body: "do this thing".into(),
+            })
+        );
+        assert_eq!(
+            parse_slash("/loop 2h /kms ingest mynotes $"),
+            Some(SlashCommand::Loop {
+                interval_secs: Some(7200),
+                body: "/kms ingest mynotes $".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_slash_loop_self_paced() {
+        // No interval token → self-paced; whole input is the body.
+        assert_eq!(
+            parse_slash("/loop /goal continue"),
+            Some(SlashCommand::Loop {
+                interval_secs: None,
+                body: "/goal continue".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_duration_secs_units() {
+        assert_eq!(parse_duration_secs("30s"), Some(30));
+        assert_eq!(parse_duration_secs("5m"), Some(300));
+        assert_eq!(parse_duration_secs("2h"), Some(7200));
+        assert_eq!(parse_duration_secs("1d"), Some(86400));
+        assert_eq!(parse_duration_secs("nonsense"), None);
+        assert_eq!(parse_duration_secs(""), None);
+    }
+
+    #[test]
+    fn parse_slash_goal_lifecycle() {
+        assert_eq!(parse_slash("/goal"), Some(SlashCommand::GoalStatus));
+        assert_eq!(parse_slash("/goal status"), Some(SlashCommand::GoalStatus));
+        assert_eq!(parse_slash("/goal show"), Some(SlashCommand::GoalShow));
+        assert_eq!(
+            parse_slash("/goal continue"),
+            Some(SlashCommand::GoalContinue)
+        );
+        assert_eq!(
+            parse_slash("/goal complete done audited"),
+            Some(SlashCommand::GoalComplete {
+                reason: Some("done audited".into())
+            })
+        );
+        assert_eq!(
+            parse_slash("/goal abandon need API key"),
+            Some(SlashCommand::GoalAbandon {
+                reason: Some("need API key".into())
+            })
+        );
+    }
+
+    #[test]
+    fn parse_slash_goal_start_with_budgets() {
+        assert_eq!(
+            parse_slash(
+                "/goal start \"ship the auth refactor\" --budget-tokens 200000 --budget-time 30m"
+            ),
+            Some(SlashCommand::GoalStart {
+                objective: "ship the auth refactor".into(),
+                budget_tokens: Some(200_000),
+                budget_time_secs: Some(1800),
+            })
+        );
+        // Without quotes — objective is words up to first --flag.
+        assert_eq!(
+            parse_slash("/goal start build a REST API --budget-tokens 50000"),
+            Some(SlashCommand::GoalStart {
+                objective: "build a REST API".into(),
+                budget_tokens: Some(50_000),
+                budget_time_secs: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_slash_goal_start_missing_objective_errors() {
+        match parse_slash("/goal start") {
+            Some(SlashCommand::Unknown(_)) => {}
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+        match parse_slash("/goal start --budget-tokens 100") {
+            Some(SlashCommand::Unknown(_)) => {}
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    /// M6.28: resolve_session_alias precedence — user > title > id.
+    #[test]
+    fn resolve_session_alias_precedence() {
+        // 1. User-supplied wins.
+        assert_eq!(
+            resolve_session_alias(Some("my-page"), Some("My Session Title"), "sess-194a3b7c"),
+            (
+                "my-page".to_string(),
+                KmsIngestSessionAliasSource::UserSupplied
+            ),
+        );
+        // 2. Title used when no user alias; sanitized (spaces → `_`).
+        assert_eq!(
+            resolve_session_alias(None, Some("My Session Title"), "sess-194a3b7c"),
+            (
+                "My_Session_Title".to_string(),
+                KmsIngestSessionAliasSource::SessionTitle,
+            ),
+        );
+        // 3. Session id used when neither user alias nor title.
+        assert_eq!(
+            resolve_session_alias(None, None, "sess-194a3b7c"),
+            (
+                "sess-194a3b7c".to_string(),
+                KmsIngestSessionAliasSource::SessionId
+            ),
+        );
+        // 4. Empty user alias / empty title → fall through to next.
+        assert_eq!(
+            resolve_session_alias(Some(""), None, "sess-abc"),
+            (
+                "sess-abc".to_string(),
+                KmsIngestSessionAliasSource::SessionId
+            ),
+        );
+        assert_eq!(
+            resolve_session_alias(None, Some(""), "sess-abc"),
+            (
+                "sess-abc".to_string(),
+                KmsIngestSessionAliasSource::SessionId
+            ),
+        );
+        // 5. Title that sanitizes to empty (e.g. all special chars).
+        assert_eq!(
+            resolve_session_alias(None, Some("///"), "sess-fallback"),
+            (
+                "sess-fallback".to_string(),
+                KmsIngestSessionAliasSource::SessionId
+            ),
+        );
     }
 
     #[test]
@@ -5464,6 +6995,72 @@ mod tests {
             Some(SlashCommand::Unknown(msg)) => assert!(msg.contains("memory wat")),
             other => panic!("expected Unknown, got {other:?}"),
         }
+    }
+
+    /// M6.27: `# <name>:<body>` shortcut → MemoryWrite. Strict slug-name
+    /// pattern lets real markdown headers pass through to the agent.
+    #[test]
+    fn parse_memory_shortcut_basic() {
+        match parse_slash("# user_role: senior backend engineer") {
+            Some(SlashCommand::MemoryWrite {
+                name,
+                body,
+                type_,
+                description,
+            }) => {
+                assert_eq!(name, "user_role");
+                assert_eq!(body.as_deref(), Some("senior backend engineer"));
+                assert_eq!(type_, None);
+                assert_eq!(description, None);
+            }
+            other => panic!("expected MemoryWrite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_memory_shortcut_no_space_after_hash() {
+        // `#name:body` (no space) also accepted.
+        match parse_slash("#quick_fact: always use absolute paths") {
+            Some(SlashCommand::MemoryWrite { name, body, .. }) => {
+                assert_eq!(name, "quick_fact");
+                assert_eq!(body.as_deref(), Some("always use absolute paths"));
+            }
+            other => panic!("expected MemoryWrite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_memory_shortcut_body_with_special_chars() {
+        // Body may contain colons, dashes, etc. (only the FIRST colon
+        // splits name from body).
+        match parse_slash("# build_flags: --release means optimized: true") {
+            Some(SlashCommand::MemoryWrite { name, body, .. }) => {
+                assert_eq!(name, "build_flags");
+                assert_eq!(body.as_deref(), Some("--release means optimized: true"));
+            }
+            other => panic!("expected MemoryWrite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_memory_shortcut_rejects_markdown_headers() {
+        // Name with space (real markdown header) → falls through.
+        assert_eq!(parse_slash("# Architecture Plan: build a REST API"), None);
+        // Name with non-slug char.
+        assert_eq!(parse_slash("# user.role: foo"), None);
+        // Missing colon.
+        assert_eq!(parse_slash("# remember this"), None);
+        // Empty name or body.
+        assert_eq!(parse_slash("# : value"), None);
+        assert_eq!(parse_slash("# name:"), None);
+        assert_eq!(parse_slash("# name: "), None);
+    }
+
+    #[test]
+    fn parse_memory_shortcut_doesnt_steal_non_hash_input() {
+        // Plain text + slash commands still parse normally.
+        assert_eq!(parse_slash("hello"), None);
+        assert_eq!(parse_slash("/memory list"), Some(SlashCommand::MemoryList));
     }
 
     // Env-var tests live in a single serialized block because they mutate

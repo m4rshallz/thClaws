@@ -386,6 +386,20 @@ pub struct WorkerState {
     /// `rebuild_agent` so a `/model` swap doesn't lose the cancel
     /// plumbing.
     pub cancel: crate::cancel::CancelToken,
+    /// M6.29: active iteration loop. `Some` when `/loop <interval>
+    /// <body>` is running; the cancel handle aborts the spawned tokio
+    /// task on `/loop stop` / session swap / goal-terminal.
+    pub active_loop: Option<ActiveLoop>,
+}
+
+/// M6.29: handle to a running `/loop` task.
+#[derive(Debug)]
+pub struct ActiveLoop {
+    pub interval_secs: Option<u64>,
+    pub body: String,
+    pub started_at: u64,
+    pub iterations_fired: u64,
+    pub abort: tokio::task::AbortHandle,
 }
 
 impl WorkerState {
@@ -662,7 +676,18 @@ async fn run_worker(
     if !config.kms_active.is_empty() {
         tools.register(std::sync::Arc::new(crate::tools::KmsReadTool));
         tools.register(std::sync::Arc::new(crate::tools::KmsSearchTool));
+        // M6.25 BUG #1: KmsWrite + KmsAppend make the LLM an active
+        // wiki maintainer (not just a passive reader).
+        tools.register(std::sync::Arc::new(crate::tools::KmsWriteTool));
+        tools.register(std::sync::Arc::new(crate::tools::KmsAppendTool));
     }
+
+    // M6.26 BUG #1: Memory tools always-on. The model needs them even
+    // when no entries exist yet (so it can create the first one). Sandbox
+    // carve-out validated by `memory::writable_entry_path`.
+    tools.register(std::sync::Arc::new(crate::tools::MemoryReadTool));
+    tools.register(std::sync::Arc::new(crate::tools::MemoryWriteTool));
+    tools.register(std::sync::Arc::new(crate::tools::MemoryAppendTool));
 
     // M6.11 (H1): daily auto-refresh of the marketplace catalog. No-op
     // when the cache is < 24h old; otherwise spawns a fail-silent
@@ -884,6 +909,7 @@ async fn run_worker(
         warned_file_size: false,
         lead_log,
         cancel: cancel.clone(),
+        active_loop: None,
     };
 
     // Lead inbox poller — parity with repl.rs:1524. Without this, teammates
@@ -1485,6 +1511,109 @@ async fn handle_line(
         return;
     }
 
+    // M6.27: `# <name>:<body>` memory-shortcut intercept (Claude Code
+    // parity). `parse_slash` recognizes the shortcut and returns
+    // `SlashCommand::MemoryWrite`; route through `shell_dispatch` so
+    // the same write path runs as `/memory write --body ...`. Strict
+    // pattern (slug-only name + colon) means real markdown headers
+    // like `# Architecture Plan: ...` fall through to the agent
+    // unchanged.
+    if matches!(
+        crate::repl::parse_slash(trimmed),
+        Some(crate::repl::SlashCommand::MemoryWrite { .. })
+    ) && !trimmed.starts_with('/')
+    {
+        crate::shell_dispatch::dispatch(trimmed, state, events_tx, input_tx).await;
+        let _ = events_tx.send(ViewEvent::TurnDone);
+        return;
+    }
+
+    // M6.29: `/goal continue` intercept — fires the audit prompt as
+    // an agent turn (composes with `/loop /goal continue`). Same
+    // rewrite-before-match pattern as `/kms ingest <name> $`. If no
+    // active goal or goal already terminal, surface a notice and
+    // stop the active loop.
+    if matches!(
+        crate::repl::parse_slash(trimmed),
+        Some(crate::repl::SlashCommand::GoalContinue)
+    ) {
+        match crate::goal_state::current() {
+            Some(g) if g.status.is_terminal() => {
+                let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+                    "/goal continue — goal already {}. Stopping loop if active.",
+                    g.status.as_str(),
+                )));
+                if let Some(loop_state) = state.active_loop.take() {
+                    loop_state.abort.abort();
+                }
+                let _ = events_tx.send(ViewEvent::TurnDone);
+                return;
+            }
+            Some(g) => {
+                let prompt = crate::goal_state::build_audit_prompt(&g);
+                crate::goal_state::record_iteration(0);
+                let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+                    "(/goal continue → audit prompt fired — iteration {}, {}s elapsed)",
+                    g.iterations_done.saturating_add(1),
+                    g.time_used_secs(),
+                )));
+                if let Some(l) = state.active_loop.as_mut() {
+                    l.iterations_fired = l.iterations_fired.saturating_add(1);
+                }
+                let stream = Box::pin(state.agent.run_turn(prompt));
+                let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
+                let _ = lead_mb.write_status("lead", "working", None);
+                drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+                // Post-turn: if the model called UpdateGoal with terminal
+                // status, stop the loop so the next firing doesn't run.
+                if let Some(g) = crate::goal_state::current() {
+                    if g.status.is_terminal() {
+                        if let Some(loop_state) = state.active_loop.take() {
+                            loop_state.abort.abort();
+                            let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+                                "loop auto-stopped (goal {})",
+                                g.status.as_str(),
+                            )));
+                        }
+                    }
+                }
+                return;
+            }
+            None => {
+                let _ = events_tx.send(ViewEvent::SlashOutput(
+                    "/goal continue — no active goal. Try /goal start \"<objective>\" first."
+                        .into(),
+                ));
+                let _ = events_tx.send(ViewEvent::TurnDone);
+                return;
+            }
+        }
+    }
+
+    // M6.28: `/kms ingest <name> $` intercept — the `$` source means
+    // "the current chat session". Page slug resolves from
+    // session.title (if set) or session.id (fallback). Rewrite into a
+    // turn-starting prompt that instructs the model to summarize
+    // history and call `KmsWrite`.
+    if let Some(crate::repl::SlashCommand::KmsIngestSession { name, alias, force }) =
+        crate::repl::parse_slash(trimmed)
+    {
+        let (page, source) = crate::repl::resolve_session_alias(
+            alias.as_deref(),
+            state.session.title.as_deref(),
+            &state.session.id,
+        );
+        let rewritten = crate::repl::build_kms_ingest_session_prompt(&name, &page, source, force);
+        let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+            "(/kms ingest {name} $ → page `{page}` — summarize and KmsWrite)"
+        )));
+        let stream = Box::pin(state.agent.run_turn(rewritten));
+        let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
+        let _ = lead_mb.write_status("lead", "working", None);
+        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+        return;
+    }
+
     if trimmed.starts_with('/') {
         // `/<word> [args]` shortcut — same UX + resolution order as
         // the CLI repl (see repl.rs:2601-2632). If `parse_slash`
@@ -1546,7 +1675,7 @@ async fn handle_line(
             }
         }
 
-        crate::shell_dispatch::dispatch(trimmed, state, events_tx).await;
+        crate::shell_dispatch::dispatch(trimmed, state, events_tx, input_tx).await;
         let _ = events_tx.send(ViewEvent::TurnDone);
         return;
     }
