@@ -64,12 +64,25 @@ struct SessionHeader {
 }
 
 /// A single message event line in the JSONL file.
+///
+/// `provider` + `model` are populated only for `assistant` lines so a
+/// reader can attribute which model produced each turn. The session
+/// header carries the model the session was created with; assistant
+/// lines carry whatever model was active at write time. Today every
+/// model switch mints a fresh session, so these are redundant with the
+/// header — but the per-line attribution future-proofs scenarios where
+/// model switching becomes mid-session (and is cheap to add now while
+/// the schema is still under our control).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MessageEvent {
     #[serde(rename = "type")]
     kind: String, // "user", "assistant", "system"
     content: Vec<crate::types::ContentBlock>,
     timestamp: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
 }
 
 /// Append-only event for renaming an existing session. Keeps the JSONL
@@ -259,6 +272,11 @@ impl Session {
 
         let new_messages = &self.messages[self.last_saved_count..];
         let now = now_secs();
+        // Provider name is derived from the session's active model.
+        // Cached once outside the loop since `self.model` is stable for
+        // every message in this batch (model swaps mint a fresh session).
+        let provider_name =
+            crate::providers::ProviderKind::detect(&self.model).map(|k| k.name().to_string());
         let mut event_lines: Vec<String> = Vec::with_capacity(new_messages.len());
         for msg in new_messages {
             let role_str = match msg.role {
@@ -266,10 +284,21 @@ impl Session {
                 crate::types::Role::Assistant => "assistant",
                 crate::types::Role::System => "system",
             };
+            let is_assistant = matches!(msg.role, crate::types::Role::Assistant);
             let event = MessageEvent {
                 kind: role_str.into(),
                 content: msg.content.clone(),
                 timestamp: now,
+                provider: if is_assistant {
+                    provider_name.clone()
+                } else {
+                    None
+                },
+                model: if is_assistant {
+                    Some(self.model.clone())
+                } else {
+                    None
+                },
             };
             event_lines.push(serde_json::to_string(&event)?);
         }
@@ -1167,6 +1196,51 @@ mod tests {
         assert_eq!(event["type"], "user");
         assert!(event["content"].is_array());
         assert!(event["timestamp"].is_number());
+    }
+
+    #[test]
+    fn assistant_messages_carry_provider_and_model_attribution() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+
+        let mut session = Session::new("claude-sonnet-4-5", "/tmp");
+        session.sync(vec![Message::user("ping"), Message::assistant("pong")]);
+        store.save(&mut session).unwrap();
+
+        let contents = std::fs::read_to_string(store.path_for(&session.id)).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+
+        // User line: no provider/model attribution.
+        let user_ev: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(user_ev["type"], "user");
+        assert!(user_ev.get("provider").is_none());
+        assert!(user_ev.get("model").is_none());
+
+        // Assistant line: carries provider + model from the session.
+        let asst_ev: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(asst_ev["type"], "assistant");
+        assert_eq!(asst_ev["provider"], "anthropic");
+        assert_eq!(asst_ev["model"], "claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn old_sessions_without_provider_model_still_load() {
+        // Backward compat: a JSONL file written before M-now (no
+        // provider/model fields on assistant lines) must still load.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"header","id":"sess-old","model":"gpt-4o","cwd":"/tmp","created_at":1000}
+{"type":"user","content":[{"type":"text","text":"hi"}],"timestamp":1001}
+{"type":"assistant","content":[{"type":"text","text":"hello"}],"timestamp":1002}
+"#,
+        )
+        .unwrap();
+
+        let loaded = Session::load_from(&path).unwrap();
+        assert_eq!(loaded.id, "sess-old");
+        assert_eq!(loaded.messages.len(), 2);
     }
 
     #[test]

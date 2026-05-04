@@ -190,6 +190,16 @@ mod tests {
     }
 
     #[test]
+    fn csv_to_markdown_preserves_thai_cells() {
+        // Migrated from gui.rs::csv_table_tests in M6.36 SERVE9k —
+        // pinning that the markdown rendering doesn't break on
+        // multi-byte UTF-8.
+        let md = csv_to_markdown_table("ชื่อ,อายุ\nสมชาย,25");
+        assert!(md.contains("ชื่อ"));
+        assert!(md.contains("สมชาย"));
+    }
+
+    #[test]
     fn csv_to_markdown_escapes_pipe_characters() {
         let csv = "col1,col2\n\"a|b\",c";
         let md = csv_to_markdown_table(csv);
