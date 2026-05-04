@@ -138,6 +138,17 @@ pub fn render_chat_dispatches(ev: &ViewEvent) -> Vec<String> {
             });
             vec![payload.to_string()]
         }
+        ViewEvent::GoalUpdate(goal) => {
+            // Phase A: sidebar refresh whenever /goal mutates. Goal is
+            // serialized as the full GoalState shape — frontend reads
+            // objective, status, tokens_used / budget_tokens,
+            // iterations_done, time_used (computed from started_at).
+            let payload = serde_json::json!({
+                "type": "chat_goal_update",
+                "goal": goal,
+            });
+            vec![payload.to_string()]
+        }
         ViewEvent::PermissionModeChanged(mode) => {
             let mode_str = match mode {
                 crate::permissions::PermissionMode::Auto => "auto",
@@ -347,6 +358,7 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
         ViewEvent::McpAppCallToolResult { .. } => None,
         ViewEvent::QuitRequested => None,
         ViewEvent::PlanUpdate(_) => None,
+        ViewEvent::GoalUpdate(_) => None,
         ViewEvent::PermissionModeChanged(_) => None,
         ViewEvent::PlanStalled { .. } => None,
     };

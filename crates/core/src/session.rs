@@ -108,6 +108,18 @@ struct PlanSnapshotEvent {
     timestamp: u64,
 }
 
+/// Same shape as PlanSnapshotEvent but for `/goal` state. Latest snapshot
+/// wins on load — `null` goal means the active goal was cleared (status
+/// moved to terminal or `/goal abandon`). Decoupled from PlanSnapshotEvent
+/// so a session can carry a plan + goal independently.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GoalSnapshotEvent {
+    #[serde(rename = "type")]
+    kind: String, // always "goal_snapshot"
+    goal: Option<crate::goal_state::GoalState>,
+    timestamp: u64,
+}
+
 /// Append-only checkpoint marking that the preceding message events
 /// have been compacted (via `/compact` or similar). On load, the most
 /// recent checkpoint "wins" — its `messages` list is used as the
@@ -154,6 +166,13 @@ pub struct Session {
     /// button (not by `/load` itself).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<crate::tools::plan_state::Plan>,
+    /// Active goal (M6.29 + Phase A sidebar). `None` when no goal is in
+    /// flight. Persisted alongside the conversation so `/load` restores
+    /// the goal sidebar with elapsed iterations + token consumption
+    /// intact. Cleared via `/goal abandon` or by completing the goal
+    /// (status moves to terminal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<crate::goal_state::GoalState>,
 }
 
 impl PartialEq for Session {
@@ -189,6 +208,7 @@ impl Session {
             title: None,
             last_saved_count: 0,
             plan: None,
+            goal: None,
         }
     }
 
@@ -344,6 +364,21 @@ impl Session {
         Ok(())
     }
 
+    /// Append a goal snapshot to the JSONL. Same contract as
+    /// `append_plan_snapshot_to` — fires after every `goal_state`
+    /// mutation so a `/load` restores the goal sidebar (objective,
+    /// elapsed iterations, token consumption, status) intact.
+    pub fn append_goal_snapshot_to(
+        &mut self,
+        path: &Path,
+        goal: Option<&crate::goal_state::GoalState>,
+    ) -> Result<()> {
+        append_goal_snapshot(path, goal)?;
+        self.goal = goal.cloned();
+        self.updated_at = now_secs();
+        Ok(())
+    }
+
     /// Load only the metadata (id, model, title, message count, last
     /// activity timestamp) from a JSONL file. Streams the file
     /// line-by-line WITHOUT keeping message bodies in memory — used by
@@ -435,11 +470,11 @@ impl Session {
                         .map(|a| a.len())
                         .unwrap_or(0);
                 }
-                "plan_snapshot" => {
+                "plan_snapshot" | "goal_snapshot" => {
                     // Per M6.16.1: do NOT bump last_timestamp from
-                    // plan_snapshot events (restore-on-load fires the
+                    // snapshot events (restore-on-load fires the
                     // broadcaster which writes a fresh snapshot —
-                    // not user activity).
+                    // not user activity). Same rule for goal_snapshot.
                 }
                 "user" | "assistant" | "system" => {
                     if let Some(ts) = val.get("timestamp").and_then(|v| v.as_u64()) {
@@ -517,6 +552,7 @@ impl Session {
         let mut last_timestamp = 0u64;
         let mut title: Option<String> = None;
         let mut plan: Option<crate::tools::plan_state::Plan> = None;
+        let mut goal: Option<crate::goal_state::GoalState> = None;
         let mut skipped: usize = 0;
 
         for (line_num, line_result) in reader.lines().enumerate() {
@@ -616,6 +652,26 @@ impl Session {
                     }
                 };
                 plan = ev.plan;
+            } else if kind == "goal_snapshot" {
+                // Latest goal_snapshot wins. `null` goal means the
+                // active goal was cleared (terminal status reached or
+                // user-initiated /goal abandon). Same recency-protection
+                // rule as plan_snapshot — restore-on-load fires its own
+                // broadcaster which writes a fresh snapshot, so don't
+                // bump last_timestamp from these events.
+                let ev: GoalSnapshotEvent = match serde_json::from_value(val) {
+                    Ok(ev) => ev,
+                    Err(e) => {
+                        eprintln!(
+                            "\x1b[33m[session] {}:{}: skipping malformed goal_snapshot ({e})\x1b[0m",
+                            path.display(),
+                            line_num + 1
+                        );
+                        skipped += 1;
+                        continue;
+                    }
+                };
+                goal = ev.goal;
             } else if kind == "compaction" {
                 // Replay checkpoint: everything accumulated so far is
                 // archived-on-disk but gets replaced in memory by the
@@ -751,6 +807,7 @@ impl Session {
             title,
             last_saved_count: msg_count,
             plan,
+            goal,
         })
     }
 
@@ -855,6 +912,25 @@ pub fn append_plan_snapshot(
     };
     let line = serde_json::to_string(&event)?;
     // M6.24 BUG M4: lock the write.
+    append_locked(path, |file| writeln!(file, "{}", line))
+}
+
+/// Module-level companion to [`Session::append_goal_snapshot_to`]. Used
+/// by the GUI's `goal_state` broadcaster, which only has the JSONL path
+/// in scope — no owned `&mut Session` to update.
+pub fn append_goal_snapshot(
+    path: &Path,
+    goal: Option<&crate::goal_state::GoalState>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let event = GoalSnapshotEvent {
+        kind: "goal_snapshot".into(),
+        goal: goal.cloned(),
+        timestamp: now_secs(),
+    };
+    let line = serde_json::to_string(&event)?;
     append_locked(path, |file| writeln!(file, "{}", line))
 }
 

@@ -202,6 +202,11 @@ pub enum ViewEvent {
     /// Emitted after `/mcp add | remove` so the sidebar reflects the
     /// new state without waiting for the next full session_update.
     McpUpdate(String),
+    /// Goal-state sidebar refresh (Phase A). Carries the latest snapshot
+    /// of the active /goal — `None` means the goal was cleared. Frontend
+    /// renders a compact indicator (objective, iterations, tokens
+    /// used/budget, status) above the plan sidebar.
+    GoalUpdate(Option<crate::goal_state::GoalState>),
     /// Open the GUI's interactive model picker — pre-built JSON payload
     /// shaped like `{type: "model_picker_open", provider, current,
     /// models: [{id, context, max_output}, ...]}`. Emitted by the
@@ -684,6 +689,26 @@ async fn run_worker(
         });
     }
 
+    // Goal-state → ViewEvent bridge + JSONL persistence (Phase A). Same
+    // pattern as plan_state above; reuses `plan_persist_path` because
+    // both snapshot kinds always target the same session JSONL — every
+    // session swap (via /new, /load, /fork) needs to retarget both at
+    // once anyway, and sharing the Arc means we don't have two paths
+    // that can drift out of sync. Locks are independent per-call so
+    // there's no extra contention.
+    {
+        let goal_tx = events_tx.clone();
+        let path_arc = plan_persist_path.clone();
+        crate::goal_state::set_broadcaster(move |goal_opt| {
+            let _ = goal_tx.send(ViewEvent::GoalUpdate(goal_opt.cloned()));
+            if let Ok(g) = path_arc.lock() {
+                if let Some(p) = g.as_ref() {
+                    let _ = crate::session::append_goal_snapshot(p, goal_opt);
+                }
+            }
+        });
+    }
+
     if !config.kms_active.is_empty() {
         tools.register(std::sync::Arc::new(crate::tools::KmsReadTool));
         tools.register(std::sync::Arc::new(crate::tools::KmsSearchTool));
@@ -945,6 +970,9 @@ async fn run_worker(
     // a fresh `Session::new`, but Some(plan) for a session loaded
     // off disk that already had a plan_snapshot in its JSONL).
     crate::tools::plan_state::restore_from_session(current_session.plan.clone());
+    // Same restore for goal_state — the broadcaster fires
+    // ViewEvent::GoalUpdate so the sidebar picks up a /load.
+    crate::goal_state::restore_from_session(current_session.goal.clone());
 
     // Lead status + output log so the Team tab can show a 'lead' pane.
     // `run_repl` writes these from the CLI loop; in GUI mode nobody does,
@@ -1173,6 +1201,7 @@ async fn run_worker(
                     *g = Some(store.path_for(&state.session.id));
                 }
                 crate::tools::plan_state::restore_from_session(state.session.plan.clone());
+                crate::goal_state::restore_from_session(state.session.goal.clone());
                 // M6.9 (Bug E1): reset the per-step attempt counter
                 // on session swap. The counter is process-global and
                 // would otherwise leak across sessions — if the prior
