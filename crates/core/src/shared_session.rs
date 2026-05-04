@@ -402,6 +402,16 @@ pub struct WorkerState {
     /// <body>` is running; the cancel handle aborts the spawned tokio
     /// task on `/loop stop` / session swap / goal-terminal.
     pub active_loop: Option<ActiveLoop>,
+    /// Phase B2 (mirror of codex's empty-turn anti-loop): `true` if the
+    /// most recent agent turn fired at least one ToolCallStart event.
+    /// Set false at the start of each turn, flipped true on the first
+    /// tool call. Read by the `/goal continue` intercept — when an
+    /// active /loop fires it after a turn that produced no tool calls
+    /// (model just monologued, no concrete progress), the next firing
+    /// is suppressed once, so glm-class reasoning models can't burn the
+    /// loop budget on pure thinking. Init `true` so the very first
+    /// /loop /goal continue isn't pre-suppressed.
+    pub last_turn_made_tool_calls: bool,
 }
 
 /// M6.29: handle to a running `/loop` task.
@@ -1007,6 +1017,10 @@ async fn run_worker(
         lead_log,
         cancel: cancel.clone(),
         active_loop: None,
+        // Init true: the very first /loop /goal continue firing
+        // happens before any turn has run, so the suppression check
+        // would otherwise gate the loop forever on iteration 0.
+        last_turn_made_tool_calls: true,
     };
 
     // M6.35 HOOK2: fire session_start hook now that WorkerState is
@@ -1707,6 +1721,22 @@ async fn handle_line(
                 return;
             }
             Some(g) => {
+                // Phase B2: anti-loop guard mirroring codex's runtime
+                // continuation suppression. If a /loop is wrapping us
+                // AND the previous turn produced zero tool calls (model
+                // monologued without doing anything concrete), skip
+                // this firing once and let the next interval try again.
+                // Reset the flag on suppression so we don't dead-loop.
+                if state.active_loop.is_some() && !state.last_turn_made_tool_calls {
+                    let _ = events_tx.send(ViewEvent::SlashOutput(
+                        "(/goal continue suppressed: prior turn made no tool calls — \
+                         model just monologued. Will retry next /loop firing.)"
+                            .into(),
+                    ));
+                    state.last_turn_made_tool_calls = true;
+                    let _ = events_tx.send(ViewEvent::TurnDone);
+                    return;
+                }
                 let prompt = crate::goal_state::build_audit_prompt(&g);
                 crate::goal_state::record_iteration(0);
                 let _ = events_tx.send(ViewEvent::SlashOutput(format!(
@@ -1929,6 +1959,11 @@ async fn drive_turn_stream(
     lead_mb: &crate::team::Mailbox,
     input_tx: &mpsc::Sender<ShellInput>,
 ) {
+    // Phase B2: reset the empty-turn flag at the start of every turn.
+    // Flipped to true on the first ToolCallStart below; if the model
+    // produces zero tool calls during this turn, the next /loop /goal
+    // continue firing gets suppressed once.
+    state.last_turn_made_tool_calls = false;
     loop {
         // M6.17 BUG H1: race the next stream event against the cancel
         // signal so a long tool run / stalled provider stream doesn't
@@ -1961,6 +1996,7 @@ async fn drive_turn_stream(
                 let _ = events_tx.send(ViewEvent::AssistantThinkingDelta(s));
             }
             Ok(AgentEvent::ToolCallStart { name, input, .. }) => {
+                state.last_turn_made_tool_calls = true;
                 let label = format_tool_label(&name, &input);
                 write_lead_log(
                     &state.lead_log,
