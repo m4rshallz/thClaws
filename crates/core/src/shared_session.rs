@@ -1134,8 +1134,8 @@ async fn run_worker(
                     }
                     let provider_name = target_kind.name();
                     let _ = events_tx.send(ViewEvent::SlashOutput(format!(
-                        "(auto-switched to {provider_name}/{} to match session)",
-                        loaded.model
+                        "(auto-switched to {} to match session)",
+                        format_provider_model(provider_name, &loaded.model)
                     )));
                     // Keep `.thclaws/settings.json` in sync so a
                     // restart lands on the same provider/model.
@@ -1430,8 +1430,8 @@ async fn run_worker(
                         });
                         let _ = events_tx.send(ViewEvent::ProviderUpdate(payload.to_string()));
                         let _ = events_tx.send(ViewEvent::SlashOutput(format!(
-                            "(provider reloaded: {provider_name}/{})",
-                            state.config.model
+                            "(provider reloaded: {})",
+                            format_provider_model(provider_name, &state.config.model)
                         )));
                     }
                     Err(e) => {
@@ -2489,6 +2489,21 @@ fn team_grounding_prompt(model: &str, team_enabled: bool) -> String {
 /// intact — only ASCII control chars get replaced. Then collapses
 /// runs of whitespace so a sanitized multi-line string doesn't read
 /// as `Line 1   Line 2  ` after stripping.
+/// Render `<provider>/<model>` for status-line messages without doubling
+/// the provider segment when the model id already carries a routing
+/// prefix. Most prefix-routed providers (ollama, ollama-cloud, thaillm,
+/// nvidia, openrouter) embed the provider name in the model id; naively
+/// prepending it again gives `nvidia/nvidia/<owner>/<name>` which reads
+/// like a bug.
+fn format_provider_model(provider: &str, model: &str) -> String {
+    let prefix = format!("{provider}/");
+    if model.starts_with(&prefix) {
+        model.to_string()
+    } else {
+        format!("{prefix}{model}")
+    }
+}
+
 fn sanitize_label_field(s: &str) -> String {
     let cleaned: String = s
         .chars()
