@@ -594,6 +594,7 @@ pub enum ProviderEvent {
     ToolUseStart {
         id: String,
         name: String,
+        thought_signature: Option<String>,
     },
     ToolUseDelta {
         partial_json: String,
