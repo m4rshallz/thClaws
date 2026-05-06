@@ -1122,6 +1122,17 @@ const IGNORED_SEGMENTS: &[&str] = &[
 /// rewrite (and equivalent symlink hops on Linux) doesn't cause a
 /// strip_prefix mismatch. Falls through to literal comparison when
 /// canonicalize fails (e.g. path no longer exists at check time).
+///
+/// Root-level events: when the changed path IS the watched root
+/// (`rel` empty), we can't tell what actually changed underneath.
+/// macOS FSEvents coalesces concurrent writes across multiple
+/// subdirectories into a single parent-dir event at this level.
+/// We return `true` here so writes happening exclusively under
+/// `.git/` / `.thclaws/` don't fire-loop the schedule when FSEvents
+/// hides them inside a parent-dir event. Cost: a rare false-negative
+/// on a legitimate top-level file edit when FSEvents coalesces.
+/// In practice subsequent edits emit finer-grained events, and the
+/// schedule's cron trigger (if any) is the secondary safety net.
 pub fn is_path_ignored(root: &Path, changed: &Path) -> bool {
     let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let canon_changed = changed
@@ -1130,6 +1141,9 @@ pub fn is_path_ignored(root: &Path, changed: &Path) -> bool {
     let Ok(rel) = canon_changed.strip_prefix(&canon_root) else {
         return false;
     };
+    if rel.as_os_str().is_empty() {
+        return true;
+    }
     rel.components().any(|c| match c {
         std::path::Component::Normal(seg) => seg
             .to_str()
@@ -1542,6 +1556,22 @@ mod tests {
     }
 
     #[test]
+    fn is_path_ignored_treats_root_event_as_ignored() {
+        // FSEvents on macOS coalesces concurrent writes spanning
+        // multiple subdirectories into a single parent-dir event at
+        // the watched root level. We can't tell from the bare root
+        // path which subtree changed, so the safer call is to skip
+        // and rely on subsequent finer-grained events. This catches
+        // the common production hazard: concurrent `.git/` index
+        // updates plus a real source-file edit get coalesced; the
+        // root-only event would otherwise pass the ignore filter
+        // and fire-loop the schedule.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(is_path_ignored(root, root));
+    }
+
+    #[test]
     fn is_path_ignored_outside_root_returns_false() {
         let root = std::path::Path::new("/work/proj");
         // Path outside the watched root: nothing to do — return
@@ -1608,8 +1638,16 @@ mod tests {
             // Give the watcher a beat to bind before mutating.
             tokio::time::sleep(Duration::from_millis(300)).await;
 
-            // Touch a file inside the watched workspace.
-            let triggered = work.path().join("hello.txt");
+            // Touch a file inside a subdirectory, not at the root.
+            // macOS FSEvents may coalesce a single root-level write
+            // into a parent-dir event whose path equals the watched
+            // root — `is_path_ignored` (correctly) treats those as
+            // "can't tell what changed → skip." Writing into `notes/`
+            // ensures the reported path is at least one segment deep
+            // so the test doesn't depend on FSEvents granularity.
+            let sub = work.path().join("notes");
+            std::fs::create_dir_all(&sub).unwrap();
+            let triggered = sub.join("hello.txt");
             std::fs::write(&triggered, b"hi").unwrap();
 
             // Wait for: debounce window (2s) + dispatcher + child
