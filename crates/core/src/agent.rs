@@ -702,6 +702,16 @@ pub struct Agent {
     /// permissions. The factory chain (ProductionAgentFactory) and
     /// the side-channel spawner set this at construction time.
     pub(crate) origin: crate::permissions::AgentOrigin,
+    /// Per-iteration model override. Read fresh inside `run_turn` for
+    /// every `provider.stream` call, so a side channel (e.g. the
+    /// SkillTool firing `skill_state::request_model`) can swap the
+    /// active model mid-turn without rebuilding the agent. The model
+    /// captured at run_turn start serves as the baseline; this slot,
+    /// when `Some`, takes precedence. Cleared at the end of run_turn
+    /// so a follow-up turn starts with a clean baseline. Wrapping in
+    /// Arc<Mutex> lets external state (the worker's skill resolver)
+    /// hold a clone and write into it from outside the agent loop.
+    pub(crate) model_override: Arc<Mutex<Option<String>>>,
 }
 
 impl Agent {
@@ -734,7 +744,17 @@ impl Agent {
             cancel: None,
             hooks: None,
             origin: crate::permissions::AgentOrigin::Main,
+            model_override: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Hand out a clone of the model-override slot so an external
+    /// component (the worker's skill-state resolver) can write a
+    /// recommended model into it. The agent reads this slot at the
+    /// top of every iteration's request build, so a write between
+    /// iterations takes effect on the very next provider.stream call.
+    pub fn model_override_handle(&self) -> Arc<Mutex<Option<String>>> {
+        self.model_override.clone()
     }
 
     /// Set the agent's origin (Main / SideChannel / Subagent). Drives
@@ -831,6 +851,7 @@ impl Agent {
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let model = self.model.clone();
+        let model_override = self.model_override.clone();
         // Compose the per-turn system prompt: base + dynamic plan-mode
         // reminder + dynamic todos reminder so the model sees fresh
         // state every turn (plan mode active? plan submitted but not
@@ -948,8 +969,17 @@ impl Agent {
                 };
                 let tool_defs = tools.tool_defs();
 
+                // Read the override slot fresh every iteration. When a
+                // SkillTool invocation between iterations writes a
+                // recommended model into the slot, the very next
+                // provider.stream call uses it. Cleared at end of
+                // run_turn so subsequent turns start clean.
+                let active_model = {
+                    let g = model_override.lock().expect("model_override lock");
+                    g.as_ref().cloned().unwrap_or_else(|| model.clone())
+                };
                 let req = StreamRequest {
-                    model: model.clone(),
+                    model: active_model,
                     system: if system.is_empty() { None } else { Some(system.clone()) },
                     messages,
                     tools: tool_defs,
@@ -1114,6 +1144,21 @@ impl Agent {
                             role: Role::Assistant,
                             content: assistant_content,
                         });
+                        // Image-redaction pass. The provider.stream call
+                        // above just consumed any image blocks present in
+                        // tool_results — the model has seen the bytes once
+                        // and produced its response. Strip the base64
+                        // payloads from history so subsequent iterations
+                        // don't re-ship them. The text summary block that
+                        // the Read tool emits alongside each image
+                        // ("image: foo.jpg · 234 KB · image/jpeg") stays
+                        // intact, so the model retains a textual handle on
+                        // what it saw earlier. Without this, a single
+                        // 2 MB screenshot would inflate every subsequent
+                        // turn's request body, blow past the model's
+                        // context window, and trigger compaction far
+                        // earlier than necessary.
+                        redact_consumed_images_from_history(&mut h);
                     }
                 }
 
@@ -1136,6 +1181,14 @@ impl Agent {
                         // non-empty content").
                         continue;
                     } else {
+                        // Clear any skill-recommended model override
+                        // before signaling Done so the next run_turn
+                        // starts from the baseline model. Worker
+                        // observes Done separately and emits a chat
+                        // status line if a swap was active this turn.
+                        if let Ok(mut g) = model_override.lock() {
+                            *g = None;
+                        }
                         yield AgentEvent::Done { stop_reason: turn_stop_reason, usage: cumulative_usage.clone() };
                         return;
                     }
@@ -1454,11 +1507,61 @@ impl Agent {
                 }
             }
 
-            // Hit the iteration cap without a natural stop.
+            // Hit the iteration cap without a natural stop. Same
+            // override-clear pass as the natural-stop site so a turn
+            // that capped out doesn't leak its skill recommendation
+            // forward.
+            if let Ok(mut g) = model_override.lock() {
+                *g = None;
+            }
             yield AgentEvent::Done {
                 stop_reason: Some("max_iterations".to_string()),
                 usage: cumulative_usage,
             };
+        }
+    }
+}
+
+/// Strip `Image` blocks out of every `ToolResult`'s nested-blocks
+/// content in history, replacing each with a short text marker so the
+/// surrounding sequence stays well-formed. Called immediately after
+/// the assistant message has been appended for an iteration — the
+/// provider.stream call that produced that response already consumed
+/// the bytes once, and re-shipping them on every subsequent iteration
+/// is the dominant cause of premature compaction when an agent reads
+/// even one large screenshot. Idempotent — already-redacted entries
+/// are no-ops.
+fn redact_consumed_images_from_history(history: &mut Vec<Message>) {
+    use crate::types::{ContentBlock, ImageSource, Role, ToolResultBlock, ToolResultContent};
+    for msg in history.iter_mut() {
+        if msg.role != Role::User {
+            continue;
+        }
+        for block in msg.content.iter_mut() {
+            let ContentBlock::ToolResult { content, .. } = block else {
+                continue;
+            };
+            let ToolResultContent::Blocks(blocks) = content else {
+                continue;
+            };
+            let had_image = blocks
+                .iter()
+                .any(|b| matches!(b, ToolResultBlock::Image { .. }));
+            if !had_image {
+                continue;
+            }
+            let new_blocks: Vec<ToolResultBlock> = blocks
+                .drain(..)
+                .map(|b| match b {
+                    ToolResultBlock::Image {
+                        source: ImageSource::Base64 { media_type, .. },
+                    } => ToolResultBlock::Text {
+                        text: format!("[{media_type} redacted from history to save context]"),
+                    },
+                    other => other,
+                })
+                .collect();
+            *blocks = new_blocks;
         }
     }
 }
@@ -1582,6 +1685,109 @@ mod tests {
     use futures::stream;
     use std::collections::VecDeque;
     use tempfile::tempdir;
+
+    // ── Image redaction ────────────────────────────────────────────────
+
+    /// Single Read of an image lands a base64 blob inside a ToolResult's
+    /// `Blocks` content. After the model has consumed that blob (i.e.
+    /// produced a response based on the history that contained it), we
+    /// strip the bytes so subsequent iterations don't re-ship them.
+    /// The text summary block alongside it ("image: foo.jpg · …") must
+    /// stay intact so the model retains a textual handle on what it saw.
+    #[test]
+    fn redact_consumed_images_strips_base64_keeps_summary() {
+        use crate::types::{ContentBlock, ImageSource, Role, ToolResultBlock, ToolResultContent};
+        let mut history = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "id-1".into(),
+                content: ToolResultContent::Blocks(vec![
+                    ToolResultBlock::Image {
+                        source: ImageSource::Base64 {
+                            media_type: "image/jpeg".into(),
+                            data: "BIG_BASE64_PAYLOAD".into(),
+                        },
+                    },
+                    ToolResultBlock::Text {
+                        text: "image: foo.jpg · 234 KB · image/jpeg".into(),
+                    },
+                ]),
+                is_error: false,
+            }],
+        }];
+        redact_consumed_images_from_history(&mut history);
+
+        let ContentBlock::ToolResult { content, .. } = &history[0].content[0] else {
+            panic!("expected ToolResult");
+        };
+        let ToolResultContent::Blocks(blocks) = content else {
+            panic!("expected Blocks content");
+        };
+        assert_eq!(blocks.len(), 2);
+        // Image was replaced by a short text marker that names the
+        // media_type so the model can tell what kind of file it was.
+        match &blocks[0] {
+            ToolResultBlock::Text { text } => {
+                assert!(
+                    text.contains("image/jpeg"),
+                    "marker should name media_type: {text}"
+                );
+                assert!(
+                    text.contains("redacted"),
+                    "marker should say redacted: {text}"
+                );
+            }
+            _ => panic!("expected redacted Text marker, got {:?}", blocks[0]),
+        }
+        // Original summary must still be there.
+        match &blocks[1] {
+            ToolResultBlock::Text { text } => assert!(text.contains("foo.jpg")),
+            _ => panic!("expected original summary text"),
+        }
+    }
+
+    /// Idempotent: walking again on already-redacted history must not
+    /// touch anything. Otherwise a long-running agent loop would keep
+    /// rewriting the same blocks every iteration.
+    #[test]
+    fn redact_consumed_images_is_idempotent() {
+        use crate::types::{ContentBlock, ImageSource, Role, ToolResultBlock, ToolResultContent};
+        let mut history = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "id-1".into(),
+                content: ToolResultContent::Blocks(vec![ToolResultBlock::Image {
+                    source: ImageSource::Base64 {
+                        media_type: "image/png".into(),
+                        data: "X".into(),
+                    },
+                }]),
+                is_error: false,
+            }],
+        }];
+        redact_consumed_images_from_history(&mut history);
+        let snapshot = history.clone();
+        redact_consumed_images_from_history(&mut history);
+        assert_eq!(history, snapshot, "second pass should be a no-op");
+    }
+
+    /// Plain-text tool results pass through unchanged — only Blocks
+    /// containing Image entries are touched.
+    #[test]
+    fn redact_consumed_images_leaves_text_only_results_alone() {
+        use crate::types::{ContentBlock, Role, ToolResultContent};
+        let original = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "id-1".into(),
+                content: ToolResultContent::Text("plain output, no images".into()),
+                is_error: false,
+            }],
+        }];
+        let mut history = original.clone();
+        redact_consumed_images_from_history(&mut history);
+        assert_eq!(history, original);
+    }
 
     // ── Builder semantics ──────────────────────────────────────────────
 

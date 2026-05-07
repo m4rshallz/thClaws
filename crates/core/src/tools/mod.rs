@@ -34,6 +34,7 @@ pub mod read;
 pub mod search;
 pub mod tasks;
 pub mod todo;
+pub mod todo_state;
 pub mod update_goal;
 pub mod web;
 pub mod write;
