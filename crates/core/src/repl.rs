@@ -434,6 +434,15 @@ pub enum SlashCommand {
     /// side channel. The agent's `cancelled().await` wakes and the
     /// spawn task emits `SideChannelError { error: "cancelled" }`.
     AgentCancel(String),
+    /// `/dream [focus]` — dispatch the built-in `dream` agent as a
+    /// side channel to consolidate the project's KMS by mining recent
+    /// sessions. `focus` is optional free-text passed as the user
+    /// message (e.g. `/dream auth`); empty falls back to a default
+    /// "consolidate everything" prompt. GUI-only — REPL prints a
+    /// hint pointing at the desktop tab.
+    Dream {
+        focus: String,
+    },
     Unknown(String),
 }
 
@@ -944,6 +953,9 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "schedule" | "sched" => parse_schedule_subcommand(args),
         "agent" => parse_agent_subcommand(args),
         "agents" => SlashCommand::AgentsList,
+        "dream" => SlashCommand::Dream {
+            focus: args.to_string(),
+        },
         _ => SlashCommand::Unknown(cmd.to_string()),
     })
 }
@@ -2066,7 +2078,10 @@ pub fn render_help() -> &'static str {
      \x20                   Runs concurrently with main, doesn't touch\n  \
      \x20                   main's history. Result lands as a side bubble.\n  \
      /agents              List active background agents (id, name, elapsed)\n  \
-     /agent cancel ID     Cancel a running background agent by id\n\n  \
+     /agent cancel ID     Cancel a running background agent by id\n  \
+     /dream [FOCUS]       Consolidate KMS by mining recent sessions (GUI-only)\n  \
+     \x20                   Built-in side-channel agent. Optional FOCUS biases\n  \
+     \x20                   the consolidation toward a topic (e.g. /dream auth).\n\n  \
      ! <command>       Run a shell command directly (e.g. ! git status)"
 }
 
@@ -2509,6 +2524,7 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
         // M6.25 BUG #1: write tools alongside read tools.
         tool_registry.register(Arc::new(crate::tools::KmsWriteTool));
         tool_registry.register(Arc::new(crate::tools::KmsAppendTool));
+        tool_registry.register(Arc::new(crate::tools::KmsDeleteTool));
     }
     // M6.26 BUG #1: Memory tools always-on (model can create first entry).
     tool_registry.register(Arc::new(crate::tools::MemoryReadTool));
@@ -2611,6 +2627,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         // M6.25 BUG #1: write tools alongside read tools.
         tool_registry.register(Arc::new(crate::tools::KmsWriteTool));
         tool_registry.register(Arc::new(crate::tools::KmsAppendTool));
+        tool_registry.register(Arc::new(crate::tools::KmsDeleteTool));
     }
     // M6.26 BUG #1: Memory tools always-on (model can create first entry).
     tool_registry.register(Arc::new(crate::tools::MemoryReadTool));
@@ -6484,6 +6501,24 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         );
                     }
                 }
+                SlashCommand::Dream { focus } => {
+                    let _ = focus;
+                    #[cfg(feature = "gui")]
+                    {
+                        println!(
+                            "{COLOR_YELLOW}/dream is only available in GUI mode \
+                             (thclaws or thclaws --serve). It dispatches the \
+                             built-in dream agent as a side channel.{COLOR_RESET}"
+                        );
+                    }
+                    #[cfg(not(feature = "gui"))]
+                    {
+                        println!(
+                            "{COLOR_YELLOW}/dream is not available in thclaws-cli \
+                             (rebuild with --features gui or use thclaws --gui).{COLOR_RESET}"
+                        );
+                    }
+                }
                 SlashCommand::Unknown(what) => {
                     println!("{COLOR_YELLOW}unknown command: {what}{COLOR_RESET}");
                 }
@@ -7655,6 +7690,34 @@ mod tests {
         assert_eq!(
             parse_slash("/agent cancel side-abc123"),
             Some(SlashCommand::AgentCancel("side-abc123".into())),
+        );
+    }
+
+    #[test]
+    fn parse_slash_dream_with_focus() {
+        assert_eq!(
+            parse_slash("/dream auth"),
+            Some(SlashCommand::Dream {
+                focus: "auth".into(),
+            }),
+        );
+        assert_eq!(
+            parse_slash("/dream consolidate the marketplace KMS"),
+            Some(SlashCommand::Dream {
+                focus: "consolidate the marketplace KMS".into(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_slash_dream_bare() {
+        // Bare /dream is valid — the dispatch fills in a default
+        // "consolidate everything" prompt.
+        assert_eq!(
+            parse_slash("/dream"),
+            Some(SlashCommand::Dream {
+                focus: String::new(),
+            }),
         );
     }
 

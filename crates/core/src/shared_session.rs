@@ -838,6 +838,7 @@ async fn run_worker(
         // wiki maintainer (not just a passive reader).
         tools.register(std::sync::Arc::new(crate::tools::KmsWriteTool));
         tools.register(std::sync::Arc::new(crate::tools::KmsAppendTool));
+        tools.register(std::sync::Arc::new(crate::tools::KmsDeleteTool));
     }
 
     // M6.26 BUG #1: Memory tools always-on. The model needs them even
