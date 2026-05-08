@@ -115,6 +115,7 @@ const MANAGED: &[ProviderKind] = &[
 pub const SERVICE_KEYS: &[(&str, &str)] = &[
     ("tavily", "TAVILY_API_KEY"),
     ("brave-search", "BRAVE_SEARCH_API_KEY"),
+    ("hal", "HAL_API_KEY"),
 ];
 
 /// Look up the env var for a non-LLM service key by account name.

@@ -47,6 +47,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   "openai-compat": "OpenAI-Compatible (custom endpoint)",
   tavily: "Tavily Search",
   "brave-search": "Brave Search",
+  hal: "HAL Public API (YouTube transcript + Web scrape)",
 };
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
@@ -298,7 +299,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                 className="text-[10px] uppercase tracking-wider mt-2"
                 style={{ color: "var(--text-secondary)" }}
               >
-                Web search backends
+                Service keys
               </div>
               {serviceEntries.map(([provider, row]) =>
                 renderProviderCard(
