@@ -2056,62 +2056,33 @@ pub async fn dispatch(
                 headers: Default::default(),
                 trusted: false,
             };
-            // 1. Persist to disk (so restarts keep the server).
-            let saved_to = match crate::config::save_mcp_server(&cfg, user) {
-                Ok(p) => p,
-                Err(e) => {
-                    emit(events_tx, format!("write failed: {e}"));
-                    return;
-                }
+            persist_and_register_mcp(state, events_tx, cfg, user).await;
+        }
+        SlashCommand::McpAddStdio {
+            name,
+            command,
+            args,
+            user,
+        } => {
+            // Stdio sibling of McpAdd. Same persist + spawn + register
+            // flow — the only differences are transport and where the
+            // address lives in the struct (command/args vs url). Env
+            // vars are not settable from the slash command in v1; if a
+            // server needs them (LDR_*, GITHUB_TOKEN, ...) the user
+            // edits mcp.json after the add. The first spawn happens
+            // here, so missing-env failures surface immediately
+            // through the existing error path.
+            let cfg = crate::mcp::McpServerConfig {
+                name: name.clone(),
+                transport: "stdio".into(),
+                command,
+                args,
+                env: Default::default(),
+                url: String::new(),
+                headers: Default::default(),
+                trusted: false,
             };
-            // 2. Spawn the client + list tools + register them.
-            match crate::mcp::McpClient::spawn_with_approver(
-                cfg.clone(),
-                Some(state.approver.clone()),
-            )
-            .await
-            {
-                Ok(client) => match client.list_tools().await {
-                    Ok(tool_infos) => {
-                        let names: Vec<String> =
-                            tool_infos.iter().map(|t| t.name.clone()).collect();
-                        for info in tool_infos {
-                            let tool = crate::mcp::McpTool::new(client.clone(), info);
-                            state.tool_registry.register(std::sync::Arc::new(tool));
-                        }
-                        state.mcp_clients.push(client);
-                        if let Err(e) = state.rebuild_agent(true) {
-                            emit(events_tx, format!("rebuild failed: {e}"));
-                            return;
-                        }
-                        emit(
-                            events_tx,
-                            format!(
-                                "mcp '{name}' added ({}, {} tool(s)) → {}\nTools: {}",
-                                if user { "user" } else { "project" },
-                                names.len(),
-                                saved_to.display(),
-                                names.join(", "),
-                            ),
-                        );
-                        broadcast_mcp_update(events_tx);
-                    }
-                    Err(e) => emit(
-                        events_tx,
-                        format!(
-                            "saved '{name}' to {} but list_tools failed: {e}",
-                            saved_to.display()
-                        ),
-                    ),
-                },
-                Err(e) => emit(
-                    events_tx,
-                    format!(
-                        "saved '{name}' to {} but connect failed: {e}",
-                        saved_to.display()
-                    ),
-                ),
-            }
+            persist_and_register_mcp(state, events_tx, cfg, user).await;
         }
         SlashCommand::McpRemove { name, user } => {
             match crate::config::remove_mcp_server(&name, user) {
@@ -3236,6 +3207,71 @@ fn sanitize_alias_for_dispatch(raw: &str) -> String {
 fn broadcast_mcp_update(events_tx: &broadcast::Sender<ViewEvent>) {
     let payload = crate::gui::build_mcp_update_payload();
     let _ = events_tx.send(ViewEvent::McpUpdate(payload.to_string()));
+}
+
+/// Shared persist + spawn + tool-registration flow used by both
+/// `/mcp add <url>` (HTTP) and `/mcp add <command> [args...]` (stdio).
+/// Caller builds the right [`McpServerConfig`] (transport, url-or-cmd);
+/// this function handles writing to mcp.json, spawning the live client,
+/// listing its tools, registering them in the session, rebuilding the
+/// agent, and emitting the user-facing result message.
+async fn persist_and_register_mcp(
+    state: &mut crate::shared_session::WorkerState,
+    events_tx: &broadcast::Sender<ViewEvent>,
+    cfg: crate::mcp::McpServerConfig,
+    user: bool,
+) {
+    let name = cfg.name.clone();
+    let saved_to = match crate::config::save_mcp_server(&cfg, user) {
+        Ok(p) => p,
+        Err(e) => {
+            emit(events_tx, format!("write failed: {e}"));
+            return;
+        }
+    };
+    match crate::mcp::McpClient::spawn_with_approver(cfg.clone(), Some(state.approver.clone()))
+        .await
+    {
+        Ok(client) => match client.list_tools().await {
+            Ok(tool_infos) => {
+                let names: Vec<String> = tool_infos.iter().map(|t| t.name.clone()).collect();
+                for info in tool_infos {
+                    let tool = crate::mcp::McpTool::new(client.clone(), info);
+                    state.tool_registry.register(std::sync::Arc::new(tool));
+                }
+                state.mcp_clients.push(client);
+                if let Err(e) = state.rebuild_agent(true) {
+                    emit(events_tx, format!("rebuild failed: {e}"));
+                    return;
+                }
+                emit(
+                    events_tx,
+                    format!(
+                        "mcp '{name}' added ({}, {} tool(s)) → {}\nTools: {}",
+                        if user { "user" } else { "project" },
+                        names.len(),
+                        saved_to.display(),
+                        names.join(", "),
+                    ),
+                );
+                broadcast_mcp_update(events_tx);
+            }
+            Err(e) => emit(
+                events_tx,
+                format!(
+                    "saved '{name}' to {} but list_tools failed: {e}",
+                    saved_to.display()
+                ),
+            ),
+        },
+        Err(e) => emit(
+            events_tx,
+            format!(
+                "saved '{name}' to {} but connect failed: {e}",
+                saved_to.display()
+            ),
+        ),
+    }
 }
 
 /// M6.16 BUG H1 helper: refresh skill_store + rebuild system prompt

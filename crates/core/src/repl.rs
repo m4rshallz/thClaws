@@ -252,6 +252,15 @@ pub enum SlashCommand {
         url: String,
         user: bool,
     },
+    /// `/mcp add <name> <command> [args...]` — stdio transport, sibling
+    /// of `McpAdd` (HTTP). Routed by `parse_mcp_subcommand` based on
+    /// whether the first positional arg looks like a URL.
+    McpAddStdio {
+        name: String,
+        command: String,
+        args: Vec<String>,
+        user: bool,
+    },
     McpRemove {
         name: String,
         user: bool,
@@ -717,6 +726,7 @@ fn parse_schedule_preset_subcommand(args: &str) -> SlashCommand {
 /// Parse `/mcp [add|remove ...]` into the right SlashCommand.
 /// - `/mcp` → list
 /// - `/mcp add [--user] <name> <url>` → register an HTTP MCP server
+/// - `/mcp add [--user] <name> <command> [args...]` → register a stdio MCP server
 /// - `/mcp remove [--user] <name>` → delete a server from mcp.json
 fn parse_mcp_subcommand(args: &str) -> SlashCommand {
     let args = args.trim();
@@ -734,13 +744,39 @@ fn parse_mcp_subcommand(args: &str) -> SlashCommand {
             } else if parts.first().copied() == Some("--project") {
                 parts.remove(0);
             }
-            match parts.as_slice() {
-                [name, url] => SlashCommand::McpAdd {
-                    name: (*name).to_string(),
-                    url: (*url).to_string(),
+            // Need at least <name> <url-or-command>.
+            if parts.len() < 2 {
+                return SlashCommand::Unknown(
+                    "usage: /mcp add [--user] <name> <url>\n   or: /mcp add [--user] <name> <command> [args...]"
+                        .into(),
+                );
+            }
+            let name = parts[0].to_string();
+            let target = parts[1];
+            // Route by shape: a URL means HTTP transport; anything
+            // else is treated as a stdio command. We don't probe the
+            // command — first spawn happens in the dispatch arm and
+            // surfaces any failure (missing binary, missing env, etc.)
+            // via the existing error path.
+            if target.starts_with("http://") || target.starts_with("https://") {
+                if parts.len() != 2 {
+                    return SlashCommand::Unknown(
+                        "usage: /mcp add [--user] <name> <url> (HTTP transport takes no extra args)"
+                            .into(),
+                    );
+                }
+                SlashCommand::McpAdd {
+                    name,
+                    url: target.to_string(),
                     user,
-                },
-                _ => SlashCommand::Unknown("usage: /mcp add [--user] <name> <url>".into()),
+                }
+            } else {
+                SlashCommand::McpAddStdio {
+                    name,
+                    command: target.to_string(),
+                    args: parts[2..].iter().map(|s| (*s).to_string()).collect(),
+                    user,
+                }
             }
         }
         "remove" | "rm" => {
@@ -2210,7 +2246,7 @@ pub async fn install_mcp_from_marketplace(
     let entry = mp
         .find_mcp(name)
         .ok_or_else(|| format!(
-            "no MCP named '{name}' in marketplace — try /mcp search <query> or /mcp add <name> <url> for a custom server"
+            "no MCP named '{name}' in marketplace — try /mcp search <query>, /mcp add <name> <url> (HTTP), or /mcp add <name> <command> [args...] (stdio) for a custom server"
         ))?
         .clone();
 
@@ -2364,6 +2400,11 @@ pub fn render_help() -> &'static str {
                        Register a remote (HTTP) MCP server. Writes to\n  \
                        .thclaws/mcp.json (or ~/.config/thclaws/mcp.json\n  \
                        with --user), then connects and registers tools.\n  \
+     /mcp add [--user] <name> <command> [args...]\n  \
+                       Register a local (stdio) MCP server. Same persist\n  \
+                       + spawn flow; first arg is the binary, remaining\n  \
+                       tokens are passed as args. Edit mcp.json to add env\n  \
+                       vars if the server needs them (LDR, GitHub MCP, ...).\n  \
      /mcp remove [--user] <name>\n  \
                        Remove an MCP server from the config file.\n  \
      /plugins          List installed plugins\n  \
@@ -5272,6 +5313,81 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         }
                     }
                 }
+                SlashCommand::McpAddStdio {
+                    name,
+                    command,
+                    args,
+                    user,
+                } => {
+                    let scope = if user { "user" } else { "project" };
+                    // Stdio sibling of McpAdd. Same persist + spawn +
+                    // register flow; only the transport / address fields
+                    // differ. Env vars not settable from the slash form
+                    // in v1 — users edit mcp.json after the add if the
+                    // server needs them.
+                    let cfg = crate::mcp::McpServerConfig {
+                        name: name.clone(),
+                        transport: "stdio".into(),
+                        command,
+                        args,
+                        env: Default::default(),
+                        url: String::new(),
+                        headers: Default::default(),
+                        trusted: false,
+                    };
+                    let saved_to = match crate::config::save_mcp_server(&cfg, user) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}write failed: {e}{COLOR_RESET}");
+                            continue;
+                        }
+                    };
+                    match crate::mcp::McpClient::spawn(cfg.clone()).await {
+                        Ok(client) => match client.list_tools().await {
+                            Ok(tools) => {
+                                let names: Vec<String> =
+                                    tools.iter().map(|t| t.name.clone()).collect();
+                                for info in tools {
+                                    let tool = crate::mcp::McpTool::new(client.clone(), info);
+                                    tool_registry.register(Arc::new(tool));
+                                }
+                                mcp_summary.push((name.clone(), names.clone()));
+                                mcp_clients.push(client);
+                                let prev_history = agent.history_snapshot();
+                                agent = Agent::new(
+                                    build_provider(&config)?,
+                                    tool_registry.clone(),
+                                    config.model.clone(),
+                                    system.clone(),
+                                )
+                                .with_max_iterations(config.max_iterations)
+                                .with_max_tokens(config.max_tokens)
+                                .with_permission_mode(perm_mode)
+                                .with_approver(approver.clone())
+                                .with_hooks(std::sync::Arc::new(config.hooks.clone()));
+                                agent.set_history(prev_history);
+                                println!(
+                                    "{COLOR_DIM}mcp '{name}' added ({scope}, stdio, {} tool(s)) → {}{COLOR_RESET}",
+                                    names.len(),
+                                    saved_to.display()
+                                );
+                            }
+                            Err(e) => {
+                                println!(
+                                    "{COLOR_YELLOW}saved '{name}' to {} but list_tools failed: {e}{COLOR_RESET}",
+                                    saved_to.display()
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            println!(
+                                "{COLOR_YELLOW}saved '{name}' to {} but connect failed: {e} (edit {} to add env vars if the server needs them){COLOR_RESET}",
+                                saved_to.display(),
+                                saved_to.display(),
+                            );
+                        }
+                    }
+                }
                 SlashCommand::McpRemove { name, user } => {
                     match crate::config::remove_mcp_server(&name, user) {
                         Ok((true, path)) => {
@@ -7458,6 +7574,46 @@ mod tests {
         // Missing url → Unknown with usage hint.
         assert!(matches!(
             parse_slash("/mcp add weather"),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn parse_slash_mcp_add_stdio() {
+        // Single-binary command (no args).
+        assert_eq!(
+            parse_slash("/mcp add ldr ldr-mcp"),
+            Some(SlashCommand::McpAddStdio {
+                name: "ldr".into(),
+                command: "ldr-mcp".into(),
+                args: vec![],
+                user: false,
+            })
+        );
+        // Command + multi-arg (npx flow).
+        assert_eq!(
+            parse_slash("/mcp add gh-mcp npx -y @modelcontextprotocol/server-github"),
+            Some(SlashCommand::McpAddStdio {
+                name: "gh-mcp".into(),
+                command: "npx".into(),
+                args: vec!["-y".into(), "@modelcontextprotocol/server-github".into(),],
+                user: false,
+            })
+        );
+        // --user flag composes with stdio routing.
+        assert_eq!(
+            parse_slash("/mcp add --user ldr ldr-mcp"),
+            Some(SlashCommand::McpAddStdio {
+                name: "ldr".into(),
+                command: "ldr-mcp".into(),
+                args: vec![],
+                user: true,
+            })
+        );
+        // URL still routes to HTTP variant — extra args after URL are
+        // rejected (HTTP transport takes no positional args).
+        assert!(matches!(
+            parse_slash("/mcp add weather https://example.com/mcp extra-arg"),
             Some(SlashCommand::Unknown(_))
         ));
     }
