@@ -249,6 +249,43 @@ pub fn req_str<'a>(input: &'a Value, field: &str) -> Result<&'a str> {
         .ok_or_else(|| Error::Tool(format!("missing or non-string field: {field}")))
 }
 
+/// M6.38.9: parse a tool result body for a leading `Source: <engine>`
+/// line. Returns the engine name with trailing parenthetical /
+/// fallback annotations stripped. Used by the CLI + chat tool-call
+/// indicator to surface the source next to the ✓ checkmark,
+/// independent of whether the model carries it through into its
+/// natural-language summary.
+///
+/// Example inputs / outputs:
+///
+/// - `"Source: Tavily (web search)\n\n1. ...".`     → `Some("Tavily")`
+/// - `"Source: DuckDuckGo (web search) — fallback after tavily: HTTP 429\n\n..."`
+///   → `Some("DuckDuckGo")`
+/// - `"1. some result"` → `None`
+/// - `""` → `None`
+///
+/// The contract is one-line + colon-prefixed, deliberately strict —
+/// false positives in the indicator are worse than misses, and any
+/// tool that opts in just leads its output with that line.
+pub fn extract_tool_source(body: &str) -> Option<&str> {
+    let first = body.lines().next()?;
+    let rest = first.strip_prefix("Source: ")?;
+    // Strip trailing parenthetical (`(web search)`) and/or fallback
+    // annotation (`— fallback after ...`). Both are dropped so the
+    // indicator stays compact: `(via Tavily)`, not
+    // `(via Tavily (web search) — fallback after ...)`.
+    let end = rest
+        .find(" (")
+        .or_else(|| rest.find(" —"))
+        .unwrap_or(rest.len());
+    let name = rest[..end].trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,6 +497,51 @@ mod tests {
         let s = format!("{err}");
         assert!(s.contains("FAKE_TEST_KEY_CALL"), "got: {s}");
         assert!(s.contains("requires env var"), "got: {s}");
+    }
+
+    #[test]
+    fn extract_tool_source_finds_engine_in_first_line() {
+        // Happy path — WebSearch's exact M6.38.8 shape.
+        assert_eq!(
+            extract_tool_source("Source: Tavily (web search)\n\n1. result"),
+            Some("Tavily")
+        );
+        assert_eq!(
+            extract_tool_source("Source: Brave Search (web search)\n\n1. result"),
+            Some("Brave Search")
+        );
+        // Fallback annotation — strip the trailing — clause.
+        assert_eq!(
+            extract_tool_source(
+                "Source: DuckDuckGo (web search) — fallback after tavily: HTTP 429\n\n1. r"
+            ),
+            Some("DuckDuckGo")
+        );
+        // No parenthetical, no fallback — engine is the whole rest.
+        assert_eq!(extract_tool_source("Source: Tavily"), Some("Tavily"));
+        // Trailing — without parenthetical.
+        assert_eq!(extract_tool_source("Source: Tavily — note"), Some("Tavily"));
+    }
+
+    #[test]
+    fn extract_tool_source_returns_none_when_absent() {
+        assert_eq!(extract_tool_source(""), None);
+        assert_eq!(extract_tool_source("1. some result"), None);
+        // Wrong prefix (case-sensitive on purpose — matches the
+        // M6.38.8 emit format exactly).
+        assert_eq!(extract_tool_source("source: Tavily"), None);
+        assert_eq!(extract_tool_source("SOURCE: Tavily"), None);
+        // Empty engine name → None (don't render `(via )`).
+        assert_eq!(extract_tool_source("Source: "), None);
+        assert_eq!(extract_tool_source("Source:  "), None);
+    }
+
+    #[test]
+    fn extract_tool_source_only_inspects_first_line() {
+        // A `Source:` further down in the body shouldn't match —
+        // false positives are worse than misses.
+        let body = "Some content\nSource: Tavily\nmore";
+        assert_eq!(extract_tool_source(body), None);
     }
 
     #[test]

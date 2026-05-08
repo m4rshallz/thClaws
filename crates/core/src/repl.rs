@@ -7287,9 +7287,17 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 }
                 Ok(AgentEvent::ToolCallResult { name, output, .. }) => {
                     match output {
-                        Ok(_) => {
-                            print!(" {COLOR_DIM}✓{COLOR_RESET}");
-                            lead_log!(" {COLOR_DIM}✓{COLOR_RESET}\n{COLOR_GREEN}");
+                        Ok(ref body) => {
+                            // M6.38.9: surface the upstream source
+                            // next to the ✓ when the tool emits a
+                            // `Source: <engine>` line. The model can
+                            // drop it from its summary; the indicator
+                            // shows it regardless.
+                            let src_suffix = crate::tools::extract_tool_source(body)
+                                .map(|s| format!(" {COLOR_DIM}(via {s}){COLOR_RESET}"))
+                                .unwrap_or_default();
+                            print!(" {COLOR_DIM}✓{COLOR_RESET}{src_suffix}");
+                            lead_log!(" {COLOR_DIM}✓{COLOR_RESET}{src_suffix}\n{COLOR_GREEN}");
                         }
                         Err(ref e) => {
                             print!(" {COLOR_YELLOW}✗ {e}{COLOR_RESET}");
