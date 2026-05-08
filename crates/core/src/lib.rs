@@ -46,6 +46,7 @@ pub mod prompts;
 pub mod providers;
 pub mod recent_dirs;
 pub mod repl;
+pub mod research;
 pub mod sandbox;
 pub mod schedule;
 pub mod schedule_presets;
