@@ -42,11 +42,24 @@ enum Backend {
 }
 
 impl Backend {
+    /// Short identifier used in error chains and tests
+    /// (`tavily: HTTP 429`).
     fn name(&self) -> &'static str {
         match self {
             Backend::Tavily(_) => "tavily",
             Backend::Brave(_) => "brave",
             Backend::Ddg => "duckduckgo",
+        }
+    }
+
+    /// Human-friendly display name used in the tool result body —
+    /// readable enough that the model carries it through into its
+    /// summary instead of paraphrasing it away.
+    fn display_name(&self) -> &'static str {
+        match self {
+            Backend::Tavily(_) => "Tavily",
+            Backend::Brave(_) => "Brave Search",
+            Backend::Ddg => "DuckDuckGo",
         }
     }
 }
@@ -272,7 +285,10 @@ impl Tool for WebSearchTool {
     fn description(&self) -> &'static str {
         "Search the web for information. Auto-selects the best available \
          backend: Tavily (TAVILY_API_KEY), Brave (BRAVE_SEARCH_API_KEY), \
-         or DuckDuckGo (no key needed). Returns titles, URLs, and snippets."
+         or DuckDuckGo (no key needed). Returns titles, URLs, and snippets. \
+         The result begins with a `Source: <engine>` line — when summarizing \
+         results to the user, mention which engine answered (e.g. \"via Tavily\" \
+         or \"ผ่าน Tavily\"); cite the source so they understand the result quality."
     }
 
     fn input_schema(&self) -> Value {
@@ -321,18 +337,22 @@ impl Tool for WebSearchTool {
             };
             match result {
                 Ok(body) => {
-                    let prefix = if errors.is_empty() {
-                        format!("[{}]", backend.name())
+                    // M6.38.8: full-line "Source:" header on its own
+                    // line. The previous inline `[tavily]` prefix was
+                    // small enough that the model paraphrased it away
+                    // when summarizing — especially when answering in
+                    // Thai, where bracketed Latin tokens read like
+                    // noise. A dedicated label survives translation.
+                    let header = if errors.is_empty() {
+                        format!("Source: {} (web search)", backend.display_name())
                     } else {
-                        // Surface the fallback chain so the user knows
-                        // their pinned/preferred backend didn't answer.
                         format!(
-                            "[{}] (after fallback — {})",
-                            backend.name(),
+                            "Source: {} (web search) — fallback after {}",
+                            backend.display_name(),
                             errors.join("; ")
                         )
                     };
-                    return Ok(format!("{prefix} {body}"));
+                    return Ok(format!("{header}\n\n{body}"));
                 }
                 Err(e) => errors.push(format!("{}: {e}", backend.name())),
             }
@@ -505,5 +525,23 @@ mod tests {
         let tool = WebSearchTool::new("tavlily");
         let chain: Vec<&'static str> = tool.resolve_candidates().iter().map(|b| b.name()).collect();
         assert_eq!(chain, vec!["duckduckgo"]);
+    }
+
+    /// M6.38.8: backend display names are part of the user-visible
+    /// contract. The Source: header in the tool result body uses
+    /// these names, and the model is told (in the description) to
+    /// surface them. Pin them so a future "let's lowercase
+    /// everything" refactor can't silently break what the user sees.
+    #[test]
+    fn backend_display_names_are_human_readable() {
+        assert_eq!(Backend::Tavily(String::new()).display_name(), "Tavily");
+        assert_eq!(Backend::Brave(String::new()).display_name(), "Brave Search");
+        assert_eq!(Backend::Ddg.display_name(), "DuckDuckGo");
+        // The short `name()` form is what we emit in error chains
+        // (e.g. `tavily: HTTP 429`); keep it lowercase + dash-free
+        // so it matches existing user-visible error strings.
+        assert_eq!(Backend::Tavily(String::new()).name(), "tavily");
+        assert_eq!(Backend::Brave(String::new()).name(), "brave");
+        assert_eq!(Backend::Ddg.name(), "duckduckgo");
     }
 }
