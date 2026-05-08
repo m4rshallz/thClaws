@@ -130,6 +130,29 @@ pub fn render_description(preset: &SchedulePreset, kms: &str) -> String {
     preset.description.replace("{kms}", kms)
 }
 
+/// Render the list of registered presets as the user-facing table
+/// emitted by `/schedule preset list`. Three columns: ID / CRON /
+/// DESCRIPTION (description shows the template's `{kms}` literally
+/// since no KMS is bound at list time). Lives here, not in
+/// `shell_dispatch`, because the CLI binary is built without the
+/// `gui` feature gate. (M6.38.3 audit fix.)
+pub fn format_preset_list() -> String {
+    let presets = presets();
+    if presets.is_empty() {
+        return "no schedule presets registered".into();
+    }
+    let mut out = String::from("schedule presets:\n");
+    out.push_str("  ID                     CRON           DESCRIPTION\n");
+    for preset in presets {
+        out.push_str(&format!(
+            "  {:<22} {:<14} {}\n",
+            preset.id, preset.cron, preset.description
+        ));
+    }
+    out.push_str("\nadd via: /schedule preset add <id> --kms <name> [--cwd <path>]\n");
+    out
+}
+
 /// Instantiate a preset for a specific KMS, persist it to the default
 /// store (`~/.config/thclaws/schedules.json`), and return the resulting
 /// `Schedule`. The schedule id is `<preset.id>-<kms>` so the same preset
@@ -291,13 +314,9 @@ mod tests {
         let store_path = dir.path().join("schedules.json");
         let cwd = dir.path().to_path_buf();
 
-        let schedule = add_from_preset_with_store(
-            "nightly-close",
-            "mynotes",
-            cwd.clone(),
-            Some(&store_path),
-        )
-        .unwrap();
+        let schedule =
+            add_from_preset_with_store("nightly-close", "mynotes", cwd.clone(), Some(&store_path))
+                .unwrap();
 
         // ID format is `<preset.id>-<kms>`.
         assert_eq!(schedule.id, "nightly-close-mynotes");
@@ -343,13 +362,9 @@ mod tests {
 
         add_from_preset_with_store("nightly-close", "notes", cwd.clone(), Some(&store_path))
             .unwrap();
-        let err = add_from_preset_with_store(
-            "nightly-close",
-            "notes",
-            cwd.clone(),
-            Some(&store_path),
-        )
-        .unwrap_err();
+        let err =
+            add_from_preset_with_store("nightly-close", "notes", cwd.clone(), Some(&store_path))
+                .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("nightly-close-notes") || msg.contains("already exists"),

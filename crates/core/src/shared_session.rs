@@ -2056,9 +2056,7 @@ async fn handle_line(
         crate::repl::parse_slash(trimmed)
     {
         if crate::kms::resolve(&name).is_none() {
-            let _ = events_tx.send(ViewEvent::SlashOutput(format!(
-                "no KMS named '{name}'"
-            )));
+            let _ = events_tx.send(ViewEvent::SlashOutput(format!("no KMS named '{name}'")));
             let _ = events_tx.send(ViewEvent::TurnDone);
             return;
         }
@@ -2090,9 +2088,7 @@ async fn handle_line(
         crate::repl::parse_slash(trimmed)
     {
         if crate::kms::resolve(&name).is_none() {
-            let _ = events_tx.send(ViewEvent::SlashOutput(format!(
-                "no KMS named '{name}'"
-            )));
+            let _ = events_tx.send(ViewEvent::SlashOutput(format!("no KMS named '{name}'")));
             let _ = events_tx.send(ViewEvent::TurnDone);
             return;
         }

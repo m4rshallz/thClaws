@@ -675,9 +675,7 @@ fn parse_schedule_preset_subcommand(args: &str) -> SlashCommand {
     if args.is_empty() {
         return SlashCommand::SchedulePresetList;
     }
-    let (sub, rest) = args
-        .split_once(char::is_whitespace)
-        .unwrap_or((args, ""));
+    let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
     match sub {
         "list" | "ls" => SlashCommand::SchedulePresetList,
         "add" | "create" => {
@@ -706,8 +704,7 @@ fn parse_schedule_preset_subcommand(args: &str) -> SlashCommand {
                     cwd,
                 },
                 _ => SlashCommand::Unknown(
-                    "usage: /schedule preset add <preset-id> --kms <name> [--cwd <path>]"
-                        .into(),
+                    "usage: /schedule preset add <preset-id> --kms <name> [--cwd <path>]".into(),
                 ),
             }
         }
@@ -6438,7 +6435,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     };
                     println!(
                         "{}",
-                        crate::shell_dispatch::format_wrap_up_report(&name, &lint, &stale)
+                        crate::kms::format_wrap_up_report(&name, &lint, &stale)
                     );
                     if fix {
                         println!(
@@ -6457,7 +6454,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         Ok(report) => {
                             println!(
                                 "{}",
-                                crate::shell_dispatch::format_migration_report(&name, &report)
+                                crate::kms::format_migration_report(&name, &report)
                             );
                         }
                         Err(e) => {
@@ -6942,7 +6939,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 SlashCommand::SchedulePresetList => {
                     println!(
                         "{}",
-                        crate::shell_dispatch::format_schedule_preset_list()
+                        crate::schedule_presets::format_preset_list()
                     );
                 }
                 SlashCommand::SchedulePresetAdd { preset_id, kms, cwd } => {
@@ -7969,10 +7966,7 @@ mod tests {
 
     #[test]
     fn build_kms_challenge_prompt_embeds_position_and_search_steps() {
-        let p = build_kms_challenge_prompt(
-            "notes",
-            "I should ship feature X this week",
-        );
+        let p = build_kms_challenge_prompt("notes", "I should ship feature X this week");
         assert!(p.contains("notes"));
         assert!(p.contains("I should ship feature X this week"));
         // Structured analysis sections.
@@ -8076,7 +8070,11 @@ mod tests {
     #[test]
     fn parse_slash_schedule_preset_add_basic() {
         match parse_slash("/schedule preset add nightly-close --kms notes") {
-            Some(SlashCommand::SchedulePresetAdd { preset_id, kms, cwd }) => {
+            Some(SlashCommand::SchedulePresetAdd {
+                preset_id,
+                kms,
+                cwd,
+            }) => {
                 assert_eq!(preset_id, "nightly-close");
                 assert_eq!(kms, "notes");
                 assert!(cwd.is_none());
@@ -8088,7 +8086,11 @@ mod tests {
     #[test]
     fn parse_slash_schedule_preset_add_with_cwd() {
         match parse_slash("/schedule preset add nightly-close --kms notes --cwd /tmp/foo") {
-            Some(SlashCommand::SchedulePresetAdd { preset_id, kms, cwd }) => {
+            Some(SlashCommand::SchedulePresetAdd {
+                preset_id,
+                kms,
+                cwd,
+            }) => {
                 assert_eq!(preset_id, "nightly-close");
                 assert_eq!(kms, "notes");
                 assert_eq!(cwd, Some(std::path::PathBuf::from("/tmp/foo")));

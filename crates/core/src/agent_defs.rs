@@ -226,7 +226,10 @@ impl AgentDefsConfig {
             ("dream", include_str!("default_prompts/dream.md")),
             ("translator", include_str!("default_prompts/translator.md")),
             ("kms-linker", include_str!("default_prompts/kms-linker.md")),
-            ("kms-reconcile", include_str!("default_prompts/kms-reconcile.md")),
+            (
+                "kms-reconcile",
+                include_str!("default_prompts/kms-reconcile.md"),
+            ),
         ];
         for (fallback_name, raw) in BUILTINS {
             if let Some(agent) = Self::parse_agent_md_str(raw, fallback_name) {

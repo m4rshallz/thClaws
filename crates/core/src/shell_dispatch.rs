@@ -1885,7 +1885,7 @@ pub async fn dispatch(
             };
             match crate::kms::lint(&k) {
                 Ok(report) => {
-                    emit(events_tx, format_lint_report(&name, &report));
+                    emit(events_tx, crate::kms::format_lint_report(&name, &report));
                 }
                 Err(e) => emit(events_tx, format!("lint failed: {e}")),
             }
@@ -1909,12 +1909,16 @@ pub async fn dispatch(
                     return;
                 }
             };
-            emit(events_tx, format_wrap_up_report(&name, &lint, &stale));
+            emit(
+                events_tx,
+                crate::kms::format_wrap_up_report(&name, &lint, &stale),
+            );
             if fix {
                 if !has_actionable_issues(&lint, &stale) {
                     emit(
                         events_tx,
-                        "/kms wrap-up --fix: nothing actionable for kms-linker; skipping dispatch.".into(),
+                        "/kms wrap-up --fix: nothing actionable for kms-linker; skipping dispatch."
+                            .into(),
                     );
                 } else if state.config.kms_active.is_empty() {
                     // Subagent inherits the parent's tool registry (see
@@ -1939,14 +1943,8 @@ pub async fn dispatch(
                     )
                     .await
                     {
-                        Ok(id) => emit(
-                            events_tx,
-                            format!("✓ kms-linker dispatched (id: {id})"),
-                        ),
-                        Err(e) => emit(
-                            events_tx,
-                            format!("/kms wrap-up --fix: {e}"),
-                        ),
+                        Ok(id) => emit(events_tx, format!("✓ kms-linker dispatched (id: {id})")),
+                        Err(e) => emit(events_tx, format!("/kms wrap-up --fix: {e}")),
                     }
                 }
             }
@@ -1958,7 +1956,10 @@ pub async fn dispatch(
             };
             match crate::kms::migrate(&k, !apply) {
                 Ok(report) => {
-                    emit(events_tx, format_migration_report(&name, &report));
+                    emit(
+                        events_tx,
+                        crate::kms::format_migration_report(&name, &report),
+                    );
                     if apply {
                         broadcast_kms_update(events_tx);
                     }
@@ -2555,9 +2556,13 @@ pub async fn dispatch(
             }
         }
         SlashCommand::SchedulePresetList => {
-            emit(events_tx, format_schedule_preset_list());
+            emit(events_tx, crate::schedule_presets::format_preset_list());
         }
-        SlashCommand::SchedulePresetAdd { preset_id, kms, cwd } => {
+        SlashCommand::SchedulePresetAdd {
+            preset_id,
+            kms,
+            cwd,
+        } => {
             let resolved_cwd = cwd.unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });
@@ -3082,108 +3087,11 @@ fn truncate_inline(s: &str, max: usize) -> String {
     }
 }
 
-fn format_lint_report(name: &str, report: &crate::kms::LintReport) -> String {
-    let total = report.total_issues();
-    if total == 0 {
-        return format!("KMS '{name}': clean — no issues found.");
-    }
-    let mut out = format!("KMS '{name}': {total} issue(s)\n");
-    if !report.broken_links.is_empty() {
-        out.push_str(&format!(
-            "\nbroken links ({}):\n",
-            report.broken_links.len()
-        ));
-        for (page, target) in &report.broken_links {
-            out.push_str(&format!("  - {page} → pages/{target}.md (missing)\n"));
-        }
-    }
-    if !report.index_orphans.is_empty() {
-        out.push_str(&format!(
-            "\nindex entries with no underlying file ({}):\n",
-            report.index_orphans.len()
-        ));
-        for stem in &report.index_orphans {
-            out.push_str(&format!("  - {stem}\n"));
-        }
-    }
-    if !report.missing_in_index.is_empty() {
-        out.push_str(&format!(
-            "\npages missing from index ({}):\n",
-            report.missing_in_index.len()
-        ));
-        for stem in &report.missing_in_index {
-            out.push_str(&format!("  - {stem}\n"));
-        }
-    }
-    if !report.orphan_pages.is_empty() {
-        out.push_str(&format!(
-            "\norphan pages (no inbound links from other pages, {}):\n",
-            report.orphan_pages.len()
-        ));
-        for stem in &report.orphan_pages {
-            out.push_str(&format!("  - {stem}\n"));
-        }
-    }
-    if !report.missing_frontmatter.is_empty() {
-        out.push_str(&format!(
-            "\npages without YAML frontmatter ({}):\n",
-            report.missing_frontmatter.len()
-        ));
-        for stem in &report.missing_frontmatter {
-            out.push_str(&format!("  - {stem}\n"));
-        }
-    }
-    if !report.missing_required_fields.is_empty() {
-        out.push_str(&format!(
-            "\nmissing required frontmatter fields ({}):\n",
-            report.missing_required_fields.len()
-        ));
-        for (page, source_key, field) in &report.missing_required_fields {
-            out.push_str(&format!("  - {page}: '{field}' (required by {source_key})\n"));
-        }
-    }
-    out
-}
-
-/// Session-end review: lint output plus any STALE markers left behind by
-/// re-ingest cascades. Both are pure-read; the user (or agent) acts on
-/// them via KmsWrite. The "next step" hints surface what's most actionable.
-pub(crate) fn format_wrap_up_report(
-    name: &str,
-    lint: &crate::kms::LintReport,
-    stale: &[crate::kms::StaleEntry],
-) -> String {
-    let lint_total = lint.total_issues();
-    let stale_count = stale.len();
-    if lint_total == 0 && stale_count == 0 {
-        return format!("KMS '{name}': clean — nothing to wrap up.");
-    }
-    let mut out = format!(
-        "KMS '{name}': wrap-up — {lint_total} lint issue(s), {stale_count} stale marker(s)\n"
-    );
-    if lint_total > 0 {
-        // Reuse the lint formatter so both surfaces stay consistent.
-        let lint_body = format_lint_report(name, lint);
-        // Drop the lint formatter's own header line; we already wrote one.
-        if let Some((_, rest)) = lint_body.split_once('\n') {
-            out.push_str(rest);
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
-        }
-    }
-    if stale_count > 0 {
-        out.push_str(&format!("\nstale pages awaiting refresh ({stale_count}):\n"));
-        for entry in stale {
-            out.push_str(&format!(
-                "  - {}: source `{}` re-ingested on {} (page not yet refreshed)\n",
-                entry.page_stem, entry.source_alias, entry.date
-            ));
-        }
-    }
-    out.push_str("\nnext steps: ask the agent to refresh stale pages and fix lint issues, or run `/kms lint <name>` again after edits.\n");
-    out
-}
+// `format_lint_report` and `format_wrap_up_report` were moved to
+// `crate::kms` in M6.38.3 — they need to be reachable from CLI dispatch
+// (repl.rs) which builds without the `gui` feature, but `shell_dispatch`
+// is `#[cfg(feature = "gui")]`-gated. Pure functions, so co-locating
+// with the data types they format keeps the cfg surface narrower.
 
 /// True if the lint report or stale list contains anything the
 /// `kms-linker` subagent can sensibly act on. Orphan pages and missing
@@ -3216,10 +3124,7 @@ pub(crate) fn compose_kms_linker_prompt(
     if lint.broken_links.is_empty() {
         out.push_str("- broken links: none\n");
     } else {
-        out.push_str(&format!(
-            "- broken links ({}):\n",
-            lint.broken_links.len()
-        ));
+        out.push_str(&format!("- broken links ({}):\n", lint.broken_links.len()));
         for (page, target) in &lint.broken_links {
             out.push_str(&format!("  - on `{page}` → missing `pages/{target}.md`\n"));
         }
@@ -3282,11 +3187,7 @@ pub(crate) fn compose_kms_linker_prompt(
 /// target KMS, the optional focus topic, and whether the agent should
 /// dry-run (just propose) or apply (actually rewrite). The subagent's
 /// own body declares the four-pass procedure.
-pub(crate) fn compose_kms_reconcile_prompt(
-    name: &str,
-    focus: Option<&str>,
-    apply: bool,
-) -> String {
+pub(crate) fn compose_kms_reconcile_prompt(name: &str, focus: Option<&str>, apply: bool) -> String {
     let mode_clause = if apply {
         "**Apply mode** — rewrite outdated pages with `## History` sections, write `Conflict — <topic>.md` pages for ambiguous cases. Every write must preserve the original claim somewhere."
     } else {
@@ -3307,57 +3208,9 @@ pub(crate) fn compose_kms_reconcile_prompt(
     )
 }
 
-pub(crate) fn format_schedule_preset_list() -> String {
-    let presets = crate::schedule_presets::presets();
-    if presets.is_empty() {
-        return "no schedule presets registered".into();
-    }
-    let mut out = String::from("schedule presets:\n");
-    out.push_str("  ID                     CRON           DESCRIPTION\n");
-    for preset in presets {
-        out.push_str(&format!(
-            "  {:<22} {:<14} {}\n",
-            preset.id, preset.cron, preset.description
-        ));
-    }
-    out.push_str(
-        "\nadd via: /schedule preset add <id> --kms <name> [--cwd <path>]\n",
-    );
-    out
-}
-
-pub(crate) fn format_migration_report(
-    name: &str,
-    report: &crate::kms::MigrationReport,
-) -> String {
-    let mode = if report.dry_run { "plan" } else { "applied" };
-    if report.steps.is_empty() {
-        return format!(
-            "KMS '{name}': already at schema version {} — nothing to migrate.",
-            report.target_version
-        );
-    }
-    let mut out = format!(
-        "KMS '{name}': migration {mode} ({} → {}, {} step(s))\n",
-        report.current_version,
-        report.target_version,
-        report.steps.len()
-    );
-    for step in &report.steps {
-        out.push_str(&format!("\n{} → {}:\n", step.from, step.to));
-        for action in &step.actions {
-            out.push_str(&format!("  - {action}\n"));
-        }
-    }
-    if report.dry_run {
-        out.push_str(
-            "\nthis was a dry-run preview. re-run with `--apply` to execute.\n",
-        );
-    } else {
-        out.push_str("\nlogged to log.md. /kms lint to verify.\n");
-    }
-    out
-}
+// `format_schedule_preset_list` and `format_migration_report` moved to
+// their data-owning modules (schedule_presets / kms) in M6.38.3. See
+// the comment above `format_lint_report`'s removal for rationale.
 
 /// M6.25 BUG #4: alias-sanitizer used by /kms file-answer. Same rules
 /// as `kms::sanitize_alias` (which is private to that module).

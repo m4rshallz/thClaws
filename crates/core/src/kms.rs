@@ -580,10 +580,8 @@ pub fn scan_stale_markers(kref: &KmsRef) -> Result<Vec<StaleEntry>> {
     // format is `crate::usage::today_str()` (YYYY-MM-DD); regex stays loose
     // on the date so a future format change in one place doesn't silently
     // break detection in the other.
-    let re = regex::Regex::new(
-        r"> ⚠ STALE: source `([^`]+)` was re-ingested on ([^.\s]+)",
-    )
-    .unwrap();
+    let re =
+        regex::Regex::new(r"> ⚠ STALE: source `([^`]+)` was re-ingested on ([^.\s]+)").unwrap();
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let Ok(ft) = entry.file_type() else { continue };
@@ -1583,6 +1581,150 @@ pub fn migrate(kref: &KmsRef, dry_run: bool) -> Result<MigrationReport> {
     Ok(report)
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// User-facing report formatters. Live here (not in shell_dispatch.rs)
+// because the CLI binary `thclaws-cli` is built without the `gui`
+// feature — and `shell_dispatch` is gated behind `gui`. Pure functions:
+// `&LintReport` / `&MigrationReport` / `&[StaleEntry]` → `String`.
+// (M6.38.3 audit fix.)
+
+/// Render a `LintReport` as the user-facing summary block emitted by
+/// `/kms lint <name>`. Six issue categories; clean state returns a
+/// short "no issues found" line.
+pub fn format_lint_report(name: &str, report: &LintReport) -> String {
+    let total = report.total_issues();
+    if total == 0 {
+        return format!("KMS '{name}': clean — no issues found.");
+    }
+    let mut out = format!("KMS '{name}': {total} issue(s)\n");
+    if !report.broken_links.is_empty() {
+        out.push_str(&format!(
+            "\nbroken links ({}):\n",
+            report.broken_links.len()
+        ));
+        for (page, target) in &report.broken_links {
+            out.push_str(&format!("  - {page} → pages/{target}.md (missing)\n"));
+        }
+    }
+    if !report.index_orphans.is_empty() {
+        out.push_str(&format!(
+            "\nindex entries with no underlying file ({}):\n",
+            report.index_orphans.len()
+        ));
+        for stem in &report.index_orphans {
+            out.push_str(&format!("  - {stem}\n"));
+        }
+    }
+    if !report.missing_in_index.is_empty() {
+        out.push_str(&format!(
+            "\npages missing from index ({}):\n",
+            report.missing_in_index.len()
+        ));
+        for stem in &report.missing_in_index {
+            out.push_str(&format!("  - {stem}\n"));
+        }
+    }
+    if !report.orphan_pages.is_empty() {
+        out.push_str(&format!(
+            "\norphan pages (no inbound links from other pages, {}):\n",
+            report.orphan_pages.len()
+        ));
+        for stem in &report.orphan_pages {
+            out.push_str(&format!("  - {stem}\n"));
+        }
+    }
+    if !report.missing_frontmatter.is_empty() {
+        out.push_str(&format!(
+            "\npages without YAML frontmatter ({}):\n",
+            report.missing_frontmatter.len()
+        ));
+        for stem in &report.missing_frontmatter {
+            out.push_str(&format!("  - {stem}\n"));
+        }
+    }
+    if !report.missing_required_fields.is_empty() {
+        out.push_str(&format!(
+            "\nmissing required frontmatter fields ({}):\n",
+            report.missing_required_fields.len()
+        ));
+        for (page, source_key, field) in &report.missing_required_fields {
+            out.push_str(&format!(
+                "  - {page}: '{field}' (required by {source_key})\n"
+            ));
+        }
+    }
+    out
+}
+
+/// Session-end review: lint output plus any STALE markers left behind
+/// by re-ingest cascades. Both are pure-read; the user (or agent) acts
+/// on them via KmsWrite. The "next step" hints surface what's most
+/// actionable.
+pub fn format_wrap_up_report(name: &str, lint: &LintReport, stale: &[StaleEntry]) -> String {
+    let lint_total = lint.total_issues();
+    let stale_count = stale.len();
+    if lint_total == 0 && stale_count == 0 {
+        return format!("KMS '{name}': clean — nothing to wrap up.");
+    }
+    let mut out = format!(
+        "KMS '{name}': wrap-up — {lint_total} lint issue(s), {stale_count} stale marker(s)\n"
+    );
+    if lint_total > 0 {
+        // Reuse the lint formatter so both surfaces stay consistent.
+        let lint_body = format_lint_report(name, lint);
+        // Drop the lint formatter's own header line; we already wrote one.
+        if let Some((_, rest)) = lint_body.split_once('\n') {
+            out.push_str(rest);
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    if stale_count > 0 {
+        out.push_str(&format!(
+            "\nstale pages awaiting refresh ({stale_count}):\n"
+        ));
+        for entry in stale {
+            out.push_str(&format!(
+                "  - {}: source `{}` re-ingested on {} (page not yet refreshed)\n",
+                entry.page_stem, entry.source_alias, entry.date
+            ));
+        }
+    }
+    out.push_str("\nnext steps: ask the agent to refresh stale pages and fix lint issues, or run `/kms lint <name>` again after edits.\n");
+    out
+}
+
+/// Render a `MigrationReport` from `kms::migrate`. Three shapes —
+/// empty steps (already at latest), dry-run preview, applied summary.
+pub fn format_migration_report(name: &str, report: &MigrationReport) -> String {
+    let mode = if report.dry_run { "plan" } else { "applied" };
+    if report.steps.is_empty() {
+        return format!(
+            "KMS '{name}': already at schema version {} — nothing to migrate.",
+            report.target_version
+        );
+    }
+    let mut out = format!(
+        "KMS '{name}': migration {mode} ({} → {}, {} step(s))\n",
+        report.current_version,
+        report.target_version,
+        report.steps.len()
+    );
+    for step in &report.steps {
+        out.push_str(&format!("\n{} → {}:\n", step.from, step.to));
+        for action in &step.actions {
+            out.push_str(&format!("  - {action}\n"));
+        }
+    }
+    if report.dry_run {
+        out.push_str("\nthis was a dry-run preview. re-run with `--apply` to execute.\n");
+    } else {
+        out.push_str("\nlogged to log.md. /kms lint to verify.\n");
+    }
+    out
+}
+
 /// Build the `kms_update` envelope the frontend's KMS sidebar
 /// consumes. M6.36 SERVE9c — moved from `gui.rs` to an always-on
 /// module so the WS transport's `kms_list` IPC arm can call it from
@@ -2206,11 +2348,7 @@ mod tests {
             schema_version: "1.0".into(),
             frontmatter_required: required,
         };
-        std::fs::write(
-            k.manifest_path(),
-            serde_json::to_string_pretty(&m).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(k.manifest_path(), serde_json::to_string_pretty(&m).unwrap()).unwrap();
         let read = k.read_manifest().unwrap();
         assert_eq!(read.schema_version, "1.0");
         assert_eq!(
@@ -2229,11 +2367,7 @@ mod tests {
         // behave identically to legacy KMSes for required-field reporting.
         let _home = scoped_home();
         let k = create("nb", KmsScope::Project).unwrap();
-        std::fs::write(
-            k.pages_dir().join("a.md"),
-            "---\ncategory: x\n---\nbody\n",
-        )
-        .unwrap();
+        std::fs::write(k.pages_dir().join("a.md"), "---\ncategory: x\n---\nbody\n").unwrap();
         let report = lint(&k).unwrap();
         assert!(report.missing_required_fields.is_empty());
     }
@@ -2243,11 +2377,7 @@ mod tests {
         let _home = scoped_home();
         let k = create("nb", KmsScope::Project).unwrap();
         std::fs::remove_file(k.manifest_path()).unwrap();
-        std::fs::write(
-            k.pages_dir().join("a.md"),
-            "---\ncategory: x\n---\nbody\n",
-        )
-        .unwrap();
+        std::fs::write(k.pages_dir().join("a.md"), "---\ncategory: x\n---\nbody\n").unwrap();
         let report = lint(&k).unwrap();
         assert!(report.missing_required_fields.is_empty());
     }
@@ -2262,16 +2392,8 @@ mod tests {
             schema_version: "1.0".into(),
             frontmatter_required: required,
         };
-        std::fs::write(
-            k.manifest_path(),
-            serde_json::to_string_pretty(&m).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            k.pages_dir().join("a.md"),
-            "---\ncategory: x\n---\nbody\n",
-        )
-        .unwrap();
+        std::fs::write(k.manifest_path(), serde_json::to_string_pretty(&m).unwrap()).unwrap();
+        std::fs::write(k.pages_dir().join("a.md"), "---\ncategory: x\n---\nbody\n").unwrap();
         let report = lint(&k).unwrap();
         assert!(
             report
@@ -2298,11 +2420,7 @@ mod tests {
             schema_version: "1.0".into(),
             frontmatter_required: required,
         };
-        std::fs::write(
-            k.manifest_path(),
-            serde_json::to_string_pretty(&m).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(k.manifest_path(), serde_json::to_string_pretty(&m).unwrap()).unwrap();
         // Research page without `sources:` → flagged.
         std::fs::write(
             k.pages_dir().join("paper.md"),
@@ -2345,11 +2463,7 @@ mod tests {
             schema_version: "1.0".into(),
             frontmatter_required: required,
         };
-        std::fs::write(
-            k.manifest_path(),
-            serde_json::to_string_pretty(&m).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(k.manifest_path(), serde_json::to_string_pretty(&m).unwrap()).unwrap();
         std::fs::write(k.pages_dir().join("bare.md"), "no frontmatter\n").unwrap();
         let report = lint(&k).unwrap();
         assert!(report.missing_frontmatter.contains(&"bare".to_string()));
@@ -2553,11 +2667,7 @@ mod tests {
             schema_version: "1.0".into(),
             frontmatter_required: required,
         };
-        std::fs::write(
-            k.manifest_path(),
-            serde_json::to_string_pretty(&m).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(k.manifest_path(), serde_json::to_string_pretty(&m).unwrap()).unwrap();
         // Self-linked pages so we don't trip orphan/broken-link checks.
         std::fs::write(
             k.pages_dir().join("a.md"),
