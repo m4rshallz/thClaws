@@ -246,6 +246,43 @@ pub enum SlashCommand {
     },
     /// M6.29: show the goal's full text + budgets.
     GoalShow,
+    /// M6.39.2: spawn a background research job. Pipeline runs outside
+    /// the agent loop, writes synthesized result to KMS as a permanent
+    /// note. Optional knobs (kms target, min/max iter, score threshold,
+    /// budgets) override `JobConfig::default()`.
+    ResearchStart {
+        query: String,
+        kms_target: Option<String>,
+        min_iter: Option<u32>,
+        max_iter: Option<u32>,
+        /// Score threshold as integer percent (0-100). Stored this way
+        /// because `SlashCommand` derives `Eq`, which `f32` can't satisfy
+        /// (NaN). Converted to `f32` at dispatch time when applying to
+        /// `JobConfig`.
+        score_threshold_pct: Option<u32>,
+        budget_tokens: Option<u64>,
+        budget_time_secs: Option<u64>,
+    },
+    /// `/research list` — show all running + recently completed jobs.
+    ResearchList,
+    /// `/research status <id>` — detailed view of one job.
+    ResearchStatus {
+        id: String,
+    },
+    /// `/research show <id>` — print the synthesized result if done,
+    /// or current phase if still running.
+    ResearchShow {
+        id: String,
+    },
+    /// `/research cancel <id>` — signal cancel to the job.
+    ResearchCancel {
+        id: String,
+    },
+    /// `/research wait <id>` — block REPL until the job is terminal
+    /// (Done/Cancelled/Failed). Useful for scripting.
+    ResearchWait {
+        id: String,
+    },
     Mcp,
     McpAdd {
         name: String,
@@ -723,6 +760,161 @@ fn parse_schedule_preset_subcommand(args: &str) -> SlashCommand {
     }
 }
 
+/// Parse `/research [list|status|show|cancel|wait <id> | <query>]` into
+/// the right SlashCommand. Bare `/research <query>` (or `/research` with
+/// any args that don't match a subcommand keyword) starts a new job.
+///
+/// Flags accepted on the start path:
+///   --kms <name>           — explicit KMS target (default: auto-derive)
+///   --min-iter N           — hard floor (default 2)
+///   --max-iter K           — hard ceiling (default 8)
+///   --score-threshold 0.X  — early-stop threshold (default 0.75)
+///   --budget-tokens N      — token budget (informational; deferred)
+///   --budget-time SEC      — wall-clock budget seconds (default 900)
+fn parse_research_subcommand(args: &str) -> SlashCommand {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed == "list" {
+        return SlashCommand::ResearchList;
+    }
+    let (sub, rest) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
+    match sub {
+        "status" => {
+            if rest.trim().is_empty() {
+                SlashCommand::Unknown("usage: /research status <id>".into())
+            } else {
+                SlashCommand::ResearchStatus {
+                    id: rest.trim().to_string(),
+                }
+            }
+        }
+        "show" => {
+            if rest.trim().is_empty() {
+                SlashCommand::Unknown("usage: /research show <id>".into())
+            } else {
+                SlashCommand::ResearchShow {
+                    id: rest.trim().to_string(),
+                }
+            }
+        }
+        "cancel" | "stop" | "kill" => {
+            if rest.trim().is_empty() {
+                SlashCommand::Unknown("usage: /research cancel <id>".into())
+            } else {
+                SlashCommand::ResearchCancel {
+                    id: rest.trim().to_string(),
+                }
+            }
+        }
+        "wait" => {
+            if rest.trim().is_empty() {
+                SlashCommand::Unknown("usage: /research wait <id>".into())
+            } else {
+                SlashCommand::ResearchWait {
+                    id: rest.trim().to_string(),
+                }
+            }
+        }
+        _ => parse_research_start(trimmed),
+    }
+}
+
+/// Parse `/research [flags...] <query>` into a ResearchStart command.
+/// Flags eaten greedily from the head of the arg list; the remainder is
+/// the query. Unknown `--flag` tokens fall through into the query (so
+/// `/research --opinion of the user` still researches that string).
+fn parse_research_start(args: &str) -> SlashCommand {
+    let mut tokens = args.split_whitespace().collect::<Vec<&str>>();
+    let mut kms_target: Option<String> = None;
+    let mut min_iter: Option<u32> = None;
+    let mut max_iter: Option<u32> = None;
+    let mut score_threshold_pct: Option<u32> = None;
+    let mut budget_tokens: Option<u64> = None;
+    let mut budget_time_secs: Option<u64> = None;
+
+    while let Some(t) = tokens.first().copied() {
+        match t {
+            "--kms" if tokens.len() >= 2 => {
+                kms_target = Some(tokens[1].to_string());
+                tokens.drain(0..2);
+            }
+            "--min-iter" if tokens.len() >= 2 => {
+                if let Ok(v) = tokens[1].parse::<u32>() {
+                    min_iter = Some(v);
+                    tokens.drain(0..2);
+                } else {
+                    break;
+                }
+            }
+            "--max-iter" if tokens.len() >= 2 => {
+                if let Ok(v) = tokens[1].parse::<u32>() {
+                    max_iter = Some(v);
+                    tokens.drain(0..2);
+                } else {
+                    break;
+                }
+            }
+            "--score-threshold" if tokens.len() >= 2 => {
+                // Accept `0.75` (decimal) or `75` (percent integer).
+                // Stored as Option<u32> percent because the variant
+                // derives Eq.
+                let raw = tokens[1];
+                let pct = if let Ok(f) = raw.parse::<f32>() {
+                    if (0.0..=1.0).contains(&f) {
+                        Some((f * 100.0).round() as u32)
+                    } else if (0.0..=100.0).contains(&f) {
+                        Some(f.round() as u32)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(p) = pct {
+                    score_threshold_pct = Some(p);
+                    tokens.drain(0..2);
+                } else {
+                    break;
+                }
+            }
+            "--budget-tokens" if tokens.len() >= 2 => {
+                if let Ok(v) = tokens[1].parse::<u64>() {
+                    budget_tokens = Some(v);
+                    tokens.drain(0..2);
+                } else {
+                    break;
+                }
+            }
+            "--budget-time" if tokens.len() >= 2 => {
+                if let Some(secs) = parse_duration_secs(tokens[1]) {
+                    budget_time_secs = Some(secs);
+                    tokens.drain(0..2);
+                } else {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    let query = tokens.join(" ").trim().to_string();
+    if query.is_empty() {
+        return SlashCommand::Unknown(
+            "usage: /research [--kms <name>] [--min-iter N] [--max-iter K] [--score-threshold 0.X] [--budget-time SEC] <query>"
+                .into(),
+        );
+    }
+    SlashCommand::ResearchStart {
+        query,
+        kms_target,
+        min_iter,
+        max_iter,
+        score_threshold_pct,
+        budget_tokens,
+        budget_time_secs,
+    }
+}
+
 /// Parse `/mcp [add|remove ...]` into the right SlashCommand.
 /// - `/mcp` → list
 /// - `/mcp add [--user] <name> <url>` → register an HTTP MCP server
@@ -982,6 +1174,7 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         }
         "sessions" => SlashCommand::Sessions,
         "rename" => SlashCommand::Rename(args.to_string()),
+        "research" => parse_research_subcommand(args),
         "mcp" => parse_mcp_subcommand(args),
         "plugin" | "plugins" => parse_plugin_subcommand(cmd, args),
         "tasks" | "todo" => SlashCommand::Tasks,
@@ -2347,6 +2540,9 @@ pub fn built_in_commands() -> &'static [BuiltInCommand] {
         BuiltInCommand { name: "team",     description: "Show team agent status",                     category: "Team", usage: "" },
         BuiltInCommand { name: "tasks",    description: "List current tasks/todos",                   category: "Team", usage: "" },
 
+        // Research
+        BuiltInCommand { name: "research", description: "Background research → KMS",                  category: "Research", usage: "<query> | list | status <id> | show <id> | cancel <id> | wait <id>" },
+
         // System
         BuiltInCommand { name: "help",     description: "Show this help",                             category: "System", usage: "" },
         BuiltInCommand { name: "version",  description: "Show version",                               category: "System", usage: "" },
@@ -2356,6 +2552,17 @@ pub fn built_in_commands() -> &'static [BuiltInCommand] {
         BuiltInCommand { name: "config",   description: "Set a config value (session-only)",          category: "System", usage: "key=value" },
         BuiltInCommand { name: "quit",     description: "Exit",                                       category: "System", usage: "" },
     ]
+}
+
+/// Truncate a string for one-line REPL display, with character-aware
+/// boundary so multi-byte (Thai, Japanese) doesn't split mid-grapheme.
+fn truncate_for_repl(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
 }
 
 /// Helper for `/schedule pause` and `/schedule resume` — flips the
@@ -3773,6 +3980,12 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     rl.set_helper(Some(crate::cli_completer::SlashCompleter));
     let rl_mutex = std::sync::Arc::new(std::sync::Mutex::new(rl));
 
+    // M6.39.2: track which research jobs we've already announced as
+    // complete, so the auto-notification on the next REPL prompt fires
+    // exactly once per job. Cleared only by process restart — terminal
+    // jobs stay in the manager until pruned, but each is announced once.
+    let mut notified_research: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     // Helper: process team inbox messages and run agent turn.
     macro_rules! process_team_messages {
         ($msgs:expr) => {{
@@ -3930,6 +4143,41 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     // Uses select! to race user input against team inbox messages so the
     // lead can respond to teammates without the user needing to press Enter.
     loop {
+        // M6.39.2: announce any research jobs that finished since the
+        // last prompt (Done / Cancelled / Failed). Each id announced
+        // once; subsequent prompts skip already-notified jobs.
+        for j in crate::research::manager().list() {
+            if !j.status.is_terminal() {
+                continue;
+            }
+            if notified_research.contains(&j.id) {
+                continue;
+            }
+            notified_research.insert(j.id.clone());
+            match j.status {
+                crate::research::JobStatus::Done => {
+                    let path = j.result_page.as_deref().unwrap_or("(no path)");
+                    println!(
+                        "{COLOR_DIM}[research done: id={} → {}] {COLOR_RESET}query: {}",
+                        j.id,
+                        path,
+                        truncate_for_repl(&j.query, 60),
+                    );
+                }
+                crate::research::JobStatus::Cancelled => {
+                    println!("{COLOR_DIM}[research cancelled: id={}]{COLOR_RESET}", j.id)
+                }
+                crate::research::JobStatus::Failed => {
+                    let err = j.error.as_deref().unwrap_or("unknown");
+                    println!(
+                        "{COLOR_YELLOW}[research failed: id={}] {err}{COLOR_RESET}",
+                        j.id
+                    );
+                }
+                _ => {}
+            }
+        }
+
         // Spawn readline on a blocking thread so it doesn't block tokio.
         let rl_clone = rl_mutex.clone();
         let readline_task = tokio::task::spawn_blocking(move || {
@@ -6748,6 +6996,149 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     Some(g) => println!("{:#?}", g),
                     None => println!("{COLOR_YELLOW}no active goal{COLOR_RESET}"),
                 },
+                SlashCommand::ResearchStart {
+                    query,
+                    kms_target,
+                    min_iter,
+                    max_iter,
+                    score_threshold_pct,
+                    budget_tokens: _,
+                    budget_time_secs,
+                } => {
+                    let mut cfg = crate::research::JobConfig::default();
+                    cfg.kms_target = kms_target;
+                    if let Some(v) = min_iter {
+                        cfg.min_iter = v;
+                    }
+                    if let Some(v) = max_iter {
+                        cfg.max_iter = v;
+                    }
+                    if let Some(pct) = score_threshold_pct {
+                        cfg.score_threshold = (pct as f32 / 100.0).clamp(0.0, 1.0);
+                    }
+                    if let Some(secs) = budget_time_secs {
+                        cfg.time_budget = std::time::Duration::from_secs(secs);
+                    }
+                    let provider = match build_provider(&config) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}/research: provider unavailable: {e}{COLOR_RESET}");
+                            continue;
+                        }
+                    };
+                    let model = config.model.clone();
+                    match crate::research::start(query.clone(), cfg, provider, model).await {
+                        Ok(id) => {
+                            println!(
+                                "{COLOR_DIM}[research started: id={id}] {COLOR_RESET}query: {query}\n  \
+                                 check progress: /research status {id}\n  \
+                                 stream result:  /research show {id}\n  \
+                                 block till done: /research wait {id}\n  \
+                                 cancel:         /research cancel {id}"
+                            );
+                        }
+                        Err(e) => println!("{COLOR_YELLOW}/research start failed: {e}{COLOR_RESET}"),
+                    }
+                }
+                SlashCommand::ResearchList => {
+                    let jobs = crate::research::manager().list();
+                    if jobs.is_empty() {
+                        println!("{COLOR_DIM}no research jobs (try /research <query>){COLOR_RESET}");
+                    } else {
+                        for j in jobs {
+                            println!(
+                                "{}  {} {}  iter={}/{}  src={}  score={}  query={}",
+                                j.id,
+                                j.status.as_str(),
+                                j.phase,
+                                j.iterations_done,
+                                j.kms_target.as_deref().unwrap_or("(auto)"),
+                                j.source_count,
+                                j.last_score.map(|s| format!("{s:.2}")).unwrap_or_else(|| "—".into()),
+                                truncate_for_repl(&j.query, 60),
+                            );
+                        }
+                    }
+                }
+                SlashCommand::ResearchStatus { id } => {
+                    match crate::research::manager().get(&id) {
+                        Some(j) => println!("{:#?}", j),
+                        None => println!("{COLOR_YELLOW}no research job '{id}'{COLOR_RESET}"),
+                    }
+                }
+                SlashCommand::ResearchShow { id } => {
+                    match crate::research::manager().get(&id) {
+                        Some(j) => match (j.status, &j.result_page) {
+                            (crate::research::JobStatus::Done, Some(path)) => {
+                                println!("{COLOR_DIM}[result at {path}]{COLOR_RESET}");
+                                // Resolve `<kms-name>/<filename>.md` to the actual page.
+                                let parts: Vec<&str> = path.splitn(2, '/').collect();
+                                if parts.len() == 2 {
+                                    if let Some(kref) = crate::kms::resolve(parts[0]) {
+                                        let page_path = kref
+                                            .pages_dir()
+                                            .join(parts[1]);
+                                        match std::fs::read_to_string(&page_path) {
+                                            Ok(body) => println!("{body}"),
+                                            Err(e) => println!(
+                                                "{COLOR_YELLOW}cannot read {}: {e}{COLOR_RESET}",
+                                                page_path.display()
+                                            ),
+                                        }
+                                    }
+                                }
+                            }
+                            (status, _) => println!(
+                                "{COLOR_DIM}status: {} — phase: {}  (iter {}, src {}, score {}){COLOR_RESET}",
+                                status.as_str(),
+                                j.phase,
+                                j.iterations_done,
+                                j.source_count,
+                                j.last_score.map(|s| format!("{s:.2}")).unwrap_or_else(|| "—".into()),
+                            ),
+                        },
+                        None => println!("{COLOR_YELLOW}no research job '{id}'{COLOR_RESET}"),
+                    }
+                }
+                SlashCommand::ResearchCancel { id } => {
+                    if crate::research::manager().cancel(&id) {
+                        println!("{COLOR_DIM}[research cancel signaled: {id}]{COLOR_RESET}");
+                    } else {
+                        println!("{COLOR_YELLOW}cannot cancel '{id}' (unknown id or already terminal){COLOR_RESET}");
+                    }
+                }
+                SlashCommand::ResearchWait { id } => {
+                    let mgr = crate::research::manager();
+                    if mgr.get(&id).is_none() {
+                        println!("{COLOR_YELLOW}no research job '{id}'{COLOR_RESET}");
+                        continue;
+                    }
+                    println!("{COLOR_DIM}[waiting for {id} ...]{COLOR_RESET}");
+                    loop {
+                        match mgr.get(&id) {
+                            Some(j) if j.status.is_terminal() => {
+                                println!(
+                                    "{COLOR_DIM}[{id} → {}]{COLOR_RESET}",
+                                    j.status.as_str()
+                                );
+                                if let Some(p) = j.result_page {
+                                    println!("  → {p}");
+                                }
+                                if let Some(e) = j.error {
+                                    println!("  error: {e}");
+                                }
+                                break;
+                            }
+                            Some(_) => {
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            }
+                            None => {
+                                println!("{COLOR_YELLOW}job vanished from registry{COLOR_RESET}");
+                                break;
+                            }
+                        }
+                    }
+                }
                 SlashCommand::GoalContinue => {
                     // Handled as a rewrite-before-match below — see
                     // the rewrite block earlier in the loop.
@@ -7584,6 +7975,139 @@ mod tests {
             parse_slash("/mcp add weather"),
             Some(SlashCommand::Unknown(_))
         ));
+    }
+
+    #[test]
+    fn parse_slash_research_subcommands() {
+        // bare /research with no args → list
+        assert_eq!(parse_slash("/research"), Some(SlashCommand::ResearchList));
+        assert_eq!(
+            parse_slash("/research list"),
+            Some(SlashCommand::ResearchList)
+        );
+
+        // start with bare query
+        assert_eq!(
+            parse_slash("/research what is OBON"),
+            Some(SlashCommand::ResearchStart {
+                query: "what is OBON".into(),
+                kms_target: None,
+                min_iter: None,
+                max_iter: None,
+                score_threshold_pct: None,
+                budget_tokens: None,
+                budget_time_secs: None,
+            })
+        );
+
+        // start with --kms flag
+        assert_eq!(
+            parse_slash("/research --kms japanese-festivals what is OBON"),
+            Some(SlashCommand::ResearchStart {
+                query: "what is OBON".into(),
+                kms_target: Some("japanese-festivals".into()),
+                min_iter: None,
+                max_iter: None,
+                score_threshold_pct: None,
+                budget_tokens: None,
+                budget_time_secs: None,
+            })
+        );
+
+        // multiple flags + query
+        assert_eq!(
+            parse_slash(
+                "/research --min-iter 3 --max-iter 10 --score-threshold 0.85 deep dive query"
+            ),
+            Some(SlashCommand::ResearchStart {
+                query: "deep dive query".into(),
+                kms_target: None,
+                min_iter: Some(3),
+                max_iter: Some(10),
+                score_threshold_pct: Some(85),
+                budget_tokens: None,
+                budget_time_secs: None,
+            })
+        );
+
+        // score-threshold accepts integer percent too
+        assert_eq!(
+            parse_slash("/research --score-threshold 75 query"),
+            Some(SlashCommand::ResearchStart {
+                query: "query".into(),
+                kms_target: None,
+                min_iter: None,
+                max_iter: None,
+                score_threshold_pct: Some(75),
+                budget_tokens: None,
+                budget_time_secs: None,
+            })
+        );
+
+        // --budget-time uses duration parser
+        assert_eq!(
+            parse_slash("/research --budget-time 5m short query"),
+            Some(SlashCommand::ResearchStart {
+                query: "short query".into(),
+                kms_target: None,
+                min_iter: None,
+                max_iter: None,
+                score_threshold_pct: None,
+                budget_tokens: None,
+                budget_time_secs: Some(300),
+            })
+        );
+
+        // status / show / cancel / wait
+        assert_eq!(
+            parse_slash("/research status research-abc123"),
+            Some(SlashCommand::ResearchStatus {
+                id: "research-abc123".into(),
+            })
+        );
+        assert_eq!(
+            parse_slash("/research show research-abc123"),
+            Some(SlashCommand::ResearchShow {
+                id: "research-abc123".into(),
+            })
+        );
+        assert_eq!(
+            parse_slash("/research cancel research-abc123"),
+            Some(SlashCommand::ResearchCancel {
+                id: "research-abc123".into(),
+            })
+        );
+        assert_eq!(
+            parse_slash("/research wait research-abc123"),
+            Some(SlashCommand::ResearchWait {
+                id: "research-abc123".into(),
+            })
+        );
+
+        // empty subcommand args → Unknown with usage
+        assert!(matches!(
+            parse_slash("/research status"),
+            Some(SlashCommand::Unknown(_))
+        ));
+        assert!(matches!(
+            parse_slash("/research cancel"),
+            Some(SlashCommand::Unknown(_))
+        ));
+
+        // empty query (only flags, no positional) → Unknown
+        assert!(matches!(
+            parse_slash("/research --kms foo"),
+            Some(SlashCommand::Unknown(_))
+        ));
+
+        // Unicode query (Thai) preserved
+        if let Some(SlashCommand::ResearchStart { query, .. }) =
+            parse_slash("/research ค้นหาข่าว OBON")
+        {
+            assert_eq!(query, "ค้นหาข่าว OBON");
+        } else {
+            panic!("expected ResearchStart");
+        }
     }
 
     #[test]

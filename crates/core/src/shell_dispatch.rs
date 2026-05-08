@@ -1072,6 +1072,139 @@ pub async fn dispatch(
             Some(g) => emit(events_tx, format_goal_show(&g)),
             None => emit(events_tx, "no active goal".into()),
         },
+        // ─── /research (M6.39.2) ────────────────────────────────────
+        // Research jobs run as background tokio tasks via
+        // `crate::research::start`. The GUI sees status updates by
+        // polling `crate::research::manager().list()` (M6.39.3 will
+        // wire a sidebar panel + ViewEvent broadcast). Until then,
+        // these arms emit a one-line acknowledgement and the user
+        // queries status via `/research list / status / show`.
+        SlashCommand::ResearchStart {
+            query,
+            kms_target,
+            min_iter,
+            max_iter,
+            score_threshold_pct,
+            budget_tokens: _,
+            budget_time_secs,
+        } => {
+            let mut cfg = crate::research::JobConfig::default();
+            cfg.kms_target = kms_target;
+            if let Some(v) = min_iter {
+                cfg.min_iter = v;
+            }
+            if let Some(v) = max_iter {
+                cfg.max_iter = v;
+            }
+            if let Some(pct) = score_threshold_pct {
+                cfg.score_threshold = (pct as f32 / 100.0).clamp(0.0, 1.0);
+            }
+            if let Some(secs) = budget_time_secs {
+                cfg.time_budget = std::time::Duration::from_secs(secs);
+            }
+            let provider = match crate::repl::build_provider(&state.config) {
+                Ok(p) => p,
+                Err(e) => {
+                    emit(events_tx, format!("/research: provider unavailable: {e}"));
+                    return;
+                }
+            };
+            let model = state.config.model.clone();
+            match crate::research::start(query.clone(), cfg, provider, model).await {
+                Ok(id) => emit(
+                    events_tx,
+                    format!(
+                        "[research started: id={id}] query: {query}\n  \
+                         /research status {id}     check progress\n  \
+                         /research show {id}       stream result\n  \
+                         /research cancel {id}     cancel"
+                    ),
+                ),
+                Err(e) => emit(events_tx, format!("/research start failed: {e}")),
+            }
+        }
+        SlashCommand::ResearchList => {
+            let jobs = crate::research::manager().list();
+            if jobs.is_empty() {
+                emit(events_tx, "no research jobs (try /research <query>)".into());
+            } else {
+                let mut out = String::new();
+                for j in jobs {
+                    out.push_str(&format!(
+                        "{}  {}  iter={}  src={}  score={}  query={}\n",
+                        j.id,
+                        j.status.as_str(),
+                        j.iterations_done,
+                        j.source_count,
+                        j.last_score
+                            .map(|s| format!("{s:.2}"))
+                            .unwrap_or_else(|| "—".into()),
+                        truncate_chars(&j.query, 60),
+                    ));
+                }
+                emit(events_tx, out);
+            }
+        }
+        SlashCommand::ResearchStatus { id } => match crate::research::manager().get(&id) {
+            Some(j) => emit(events_tx, format!("{:#?}", j)),
+            None => emit(events_tx, format!("no research job '{id}'")),
+        },
+        SlashCommand::ResearchShow { id } => match crate::research::manager().get(&id) {
+            Some(j) => match (j.status, &j.result_page) {
+                (crate::research::JobStatus::Done, Some(path)) => {
+                    let parts: Vec<&str> = path.splitn(2, '/').collect();
+                    if parts.len() == 2 {
+                        if let Some(kref) = crate::kms::resolve(parts[0]) {
+                            let p = kref.pages_dir().join(parts[1]);
+                            match std::fs::read_to_string(&p) {
+                                Ok(body) => emit(events_tx, body),
+                                Err(e) => {
+                                    emit(events_tx, format!("cannot read {}: {e}", p.display()))
+                                }
+                            }
+                        } else {
+                            emit(events_tx, format!("KMS '{}' not found", parts[0]));
+                        }
+                    } else {
+                        emit(events_tx, format!("malformed result_page: {path}"));
+                    }
+                }
+                (status, _) => emit(
+                    events_tx,
+                    format!(
+                        "status: {} — phase: {} (iter {}, src {}, score {})",
+                        status.as_str(),
+                        j.phase,
+                        j.iterations_done,
+                        j.source_count,
+                        j.last_score
+                            .map(|s| format!("{s:.2}"))
+                            .unwrap_or_else(|| "—".into()),
+                    ),
+                ),
+            },
+            None => emit(events_tx, format!("no research job '{id}'")),
+        },
+        SlashCommand::ResearchCancel { id } => {
+            if crate::research::manager().cancel(&id) {
+                emit(events_tx, format!("[research cancel signaled: {id}]"));
+            } else {
+                emit(
+                    events_tx,
+                    format!("cannot cancel '{id}' (unknown id or already terminal)"),
+                );
+            }
+        }
+        SlashCommand::ResearchWait { id } => {
+            // GUI doesn't block — emit a one-line note so the user
+            // knows to check status. CLI's `/research wait` polls; GUI
+            // surfaces the same info via the future sidebar panel
+            // (M6.39.3) + auto-notification on completion.
+            emit(
+                events_tx,
+                format!("/research wait is CLI-only — use /research show {id} from chat to poll"),
+            );
+        }
         SlashCommand::GoalContinue => {
             // Handled in shared_session.rs::handle_line as a turn-rewrite
             // BEFORE this dispatch is called (mirrors the
@@ -2915,6 +3048,18 @@ fn doctor_report(state: &WorkerState) -> String {
 
 fn emit(events_tx: &broadcast::Sender<ViewEvent>, text: String) {
     let _ = events_tx.send(ViewEvent::SlashOutput(text));
+}
+
+/// Multi-byte-aware truncation for one-line research-job display.
+/// Mirrors `repl::truncate_for_repl`; both modules need it but they
+/// don't currently share a string-utils home.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
 }
 
 /// GUI-side mirror of `repl::resolve_skill_install_target` so the Chat

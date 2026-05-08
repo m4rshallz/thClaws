@@ -334,28 +334,152 @@ fn simple_slug(s: &str) -> String {
     }
 }
 
-/// Production wiring — wraps the real `WebSearchTool` and `WebFetchTool`.
-/// In M6.39.1 this is a stub returning a "tools not wired" error so
-/// the pipeline module compiles; M6.39.2 fills it in alongside the
-/// `/research` slash dispatch.
+/// Production wiring (M6.39.2). Wraps the real `WebSearchTool` +
+/// `WebFetchTool` from the agent's tool registry, parsing
+/// WebSearch's Markdown response back into structured hits.
 pub fn production_tools() -> Arc<dyn ResearchTools> {
-    Arc::new(NotWiredTools)
+    Arc::new(ProductionTools::new())
 }
 
-struct NotWiredTools;
+pub struct ProductionTools {
+    search: crate::tools::WebSearchTool,
+    fetch: crate::tools::WebFetchTool,
+}
+
+impl ProductionTools {
+    pub fn new() -> Self {
+        Self {
+            search: crate::tools::WebSearchTool::default(),
+            fetch: crate::tools::WebFetchTool::new(),
+        }
+    }
+}
+
+impl Default for ProductionTools {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait::async_trait]
-impl ResearchTools for NotWiredTools {
-    async fn search(&self, _query: &str, _max_results: u32) -> Result<Vec<SearchHit>> {
-        Err(Error::Tool(
-            "research tools not yet wired — production impl lands in M6.39.2".into(),
-        ))
+impl ResearchTools for ProductionTools {
+    async fn search(&self, query: &str, max_results: u32) -> Result<Vec<SearchHit>> {
+        use crate::tools::Tool;
+        let raw = self
+            .search
+            .call(serde_json::json!({
+                "query": query,
+                "max_results": max_results,
+            }))
+            .await?;
+        Ok(parse_websearch_markdown(&raw))
     }
-    async fn fetch(&self, _url: &str) -> Result<String> {
-        Err(Error::Tool(
-            "research tools not yet wired — production impl lands in M6.39.2".into(),
-        ))
+    async fn fetch(&self, url: &str) -> Result<String> {
+        use crate::tools::Tool;
+        // 8 KB cap per page is a budget tradeoff: the LLM gets enough
+        // body to verify claims, but the source list doesn't blow up
+        // the synthesis prompt across 30+ accumulated sources.
+        self.fetch
+            .call(serde_json::json!({
+                "url": url,
+                "max_bytes": 8192,
+            }))
+            .await
     }
+}
+
+/// Parse `WebSearchTool`'s Markdown output back into structured hits.
+/// Output shape (M6.38.8):
+/// ```text
+/// Source: Tavily (web search)
+///
+/// Answer: ...
+///
+/// 1. Title (https://url)
+///    snippet text
+/// 2. Title (https://url)
+///    snippet text
+/// ```
+///
+/// We skip the leading `Source:` header + optional `Answer:` block,
+/// then walk numbered entries. A line like `12. Some title (https://x)`
+/// starts a new hit; subsequent indented lines are appended as snippet
+/// body.
+fn parse_websearch_markdown(body: &str) -> Vec<SearchHit> {
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut current: Option<SearchHit> = None;
+    let mut snippet_buf = String::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        // Skip header / empty lines / "Answer:" preamble.
+        if trimmed.starts_with("Source:") || trimmed.starts_with("Answer:") {
+            continue;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((title, url)) = parse_numbered_entry(trimmed) {
+            if let Some(mut prev) = current.take() {
+                prev.snippet = std::mem::take(&mut snippet_buf).trim().to_string();
+                hits.push(prev);
+            }
+            current = Some(SearchHit {
+                title,
+                url,
+                snippet: String::new(),
+            });
+            snippet_buf.clear();
+        } else if current.is_some() {
+            // Indented continuation = snippet body.
+            if !snippet_buf.is_empty() {
+                snippet_buf.push(' ');
+            }
+            snippet_buf.push_str(trimmed);
+        }
+    }
+    if let Some(mut last) = current {
+        last.snippet = snippet_buf.trim().to_string();
+        hits.push(last);
+    }
+    hits
+}
+
+/// Recognize `<number>. <title> (<url>)` — the WebSearch entry shape.
+/// Returns `(title, url)` on a hit, `None` otherwise. `url` validated
+/// loosely (must look like http(s)).
+fn parse_numbered_entry(line: &str) -> Option<(String, String)> {
+    let mut iter = line.char_indices();
+    // Consume leading digits + dot.
+    let mut last_digit_end = 0;
+    let mut saw_digit = false;
+    for (i, c) in iter.by_ref() {
+        if c.is_ascii_digit() {
+            last_digit_end = i + c.len_utf8();
+            saw_digit = true;
+        } else if c == '.' && saw_digit {
+            break;
+        } else {
+            return None;
+        }
+    }
+    if !saw_digit {
+        return None;
+    }
+    let after_dot = line[last_digit_end + 1..].trim_start();
+    // Find the last `(http...)` — title is everything before, URL is
+    // inside the parens.
+    let open = after_dot.rfind(" (http")?;
+    let title = after_dot[..open].trim().to_string();
+    let url_with_close = &after_dot[open + 2..];
+    if !url_with_close.ends_with(')') {
+        return None;
+    }
+    let url = url_with_close[..url_with_close.len() - 1].to_string();
+    if title.is_empty() {
+        return None;
+    }
+    Some((title, url))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -740,14 +864,80 @@ mod tests {
     }
 
     #[test]
-    fn production_tools_returns_not_wired_error() {
-        let t = production_tools();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let err = rt.block_on(t.search("q", 5)).unwrap_err();
-        assert!(format!("{err}").contains("not yet wired"));
+    fn production_tools_constructs() {
+        // Smoke test only — actual search/fetch require network +
+        // configured keys, exercised via end-to-end manual testing.
+        let _t = production_tools();
+    }
+
+    #[test]
+    fn parse_numbered_entry_basic() {
+        let (t, u) = parse_numbered_entry("1. Hello world (https://example.com/a)").unwrap();
+        assert_eq!(t, "Hello world");
+        assert_eq!(u, "https://example.com/a");
+    }
+
+    #[test]
+    fn parse_numbered_entry_multidigit_index() {
+        let (t, u) = parse_numbered_entry("12. Title (https://x.example)").unwrap();
+        assert_eq!(t, "Title");
+        assert_eq!(u, "https://x.example");
+    }
+
+    #[test]
+    fn parse_numbered_entry_url_with_path_and_query() {
+        let (t, u) = parse_numbered_entry(
+            "3. Some long title with parens (extra) (https://example.com/path?q=1&r=2)",
+        )
+        .unwrap();
+        assert_eq!(t, "Some long title with parens (extra)");
+        assert_eq!(u, "https://example.com/path?q=1&r=2");
+    }
+
+    #[test]
+    fn parse_numbered_entry_rejects_non_numbered() {
+        assert!(parse_numbered_entry("Hello world").is_none());
+        assert!(parse_numbered_entry("- bullet (https://x.example)").is_none());
+        assert!(parse_numbered_entry("1. no url here").is_none());
+    }
+
+    #[test]
+    fn parse_websearch_markdown_full_output() {
+        let body = "Source: Tavily (web search)\n\
+                    \n\
+                    Answer: Some synthesized answer.\n\
+                    \n\
+                    1. First title (https://a.example)\n   \
+                    First snippet line\n   \
+                    second snippet line\n\
+                    2. Second title (https://b.example)\n   \
+                    Second snippet";
+        let hits = parse_websearch_markdown(body);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "First title");
+        assert_eq!(hits[0].url, "https://a.example");
+        assert!(hits[0].snippet.contains("First snippet line"));
+        assert!(hits[0].snippet.contains("second snippet line"));
+        assert_eq!(hits[1].title, "Second title");
+        assert_eq!(hits[1].url, "https://b.example");
+    }
+
+    #[test]
+    fn parse_websearch_markdown_no_results() {
+        let body = "Source: DuckDuckGo (web search)\n\nNo results found.";
+        let hits = parse_websearch_markdown(body);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn parse_websearch_markdown_after_fallback() {
+        let body = "Source: DuckDuckGo (web search) — fallback after tavily: HTTP 429\n\
+                    \n\
+                    1. Only title (https://x.example)\n   \
+                    snippet";
+        let hits = parse_websearch_markdown(body);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Only title");
     }
 
     #[allow(dead_code)]
