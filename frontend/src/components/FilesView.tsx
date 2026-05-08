@@ -10,31 +10,36 @@ import { CodeEditor } from "./CodeEditor";
 // `window.confirm` (which wry WebViews don't implement consistently).
 // The backend shows the dialog on its IPC worker thread and replies
 // with a `confirm_result` message keyed by `id`.
-function confirmNative(opts: {
+function platformConfirm(opts: {
   title: string;
   message: string;
   yesLabel?: string;
   noLabel?: string;
 }): Promise<boolean> {
   return new Promise((resolve) => {
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `cf-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const unsub = subscribe((msg) => {
-      if (msg.type === "confirm_result" && msg.id === id) {
-        unsub();
-        resolve(Boolean(msg.ok));
-      }
-    });
-    send({
-      type: "confirm",
-      id,
-      title: opts.title,
-      message: opts.message,
-      yes_label: opts.yesLabel ?? "OK",
-      no_label: opts.noLabel ?? "Cancel",
-    });
+    if(typeof window < `u` && !window.ipc && window.confirm) {
+      resolve(Boolean(window.confirm(`${opts.title}\n\n${opts.message}`)));
+    }
+    else {
+      const id =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `cf-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const unsub = subscribe((msg) => {
+        if (msg.type === "confirm_result" && msg.id === id) {
+          unsub();
+          resolve(Boolean(msg.ok));
+        }
+      });
+      send({
+        type: "confirm",
+        id,
+        title: opts.title,
+        message: opts.message,
+        yes_label: opts.yesLabel ?? "OK",
+        no_label: opts.noLabel ?? "Cancel",
+      });
+    }
   });
 }
 
@@ -259,7 +264,7 @@ export function FilesView({ active }: Props) {
   const onSidebarClick = async (name: string) => {
     const path = currentPath === "." ? name : `${currentPath}/${name}`;
     if (mode === "edit" && editorDirty) {
-      const ok = await confirmNative({
+      const ok = await platformConfirm({
         title: "Unsaved changes",
         message: `You have unsaved edits to ${preview?.path ?? "this file"}. Discard them and open the new file?`,
         yesLabel: "Discard",
@@ -273,7 +278,7 @@ export function FilesView({ active }: Props) {
 
   const closePreview = async () => {
     if (mode === "edit" && editorDirty) {
-      const ok = await confirmNative({
+      const ok = await platformConfirm({
         title: "Discard unsaved changes",
         message: `Discard unsaved edits to ${preview?.path ?? "this file"} and close?`,
         yesLabel: "Discard",
@@ -325,7 +330,7 @@ export function FilesView({ active }: Props) {
     // user can abort a misclick. When the editor is already clean
     // ("Preview" button label), skip the prompt and go straight back.
     if (editorDirty) {
-      const ok = await confirmNative({
+      const ok = await platformConfirm({
         title: "Discard unsaved changes",
         message: `Discard unsaved edits to ${preview?.path ?? "this file"} and return to preview?`,
         yesLabel: "Discard",
