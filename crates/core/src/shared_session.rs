@@ -207,6 +207,14 @@ pub enum ViewEvent {
     /// renders a compact indicator (objective, iterations, tokens
     /// used/budget, status) above the plan sidebar.
     GoalUpdate(Option<crate::goal_state::GoalState>),
+    /// Research jobs sidebar refresh (M6.39.3). Pre-built JSON payload
+    /// shaped like `{type: "research_update", jobs: [{id, status,
+    /// phase, query, iterations_done, source_count, last_score,
+    /// kms_target, result_page, error}, ...]}`. Emitted after every
+    /// phase change inside the pipeline driver, plus on terminal
+    /// transitions, so the sidebar panel reflects live progress
+    /// without polling.
+    ResearchUpdate(String),
     /// Open the GUI's interactive model picker — pre-built JSON payload
     /// shaped like `{type: "model_picker_open", provider, current,
     /// models: [{id, context, max_output}, ...]}`. Emitted by the
@@ -866,6 +874,19 @@ async fn run_worker(
                     let _ = crate::session::append_goal_snapshot(p, goal_opt);
                 }
             }
+        });
+    }
+
+    // M6.39.3: research-jobs sidebar broadcaster. Pipeline driver
+    // calls update_phase / record_iteration / finalize / cancel which
+    // each fire this once with a fresh snapshot of all jobs. Frontend
+    // gets a `research_update` IPC envelope with the JSON shape from
+    // `gui::build_research_update_payload`.
+    {
+        let research_tx = events_tx.clone();
+        crate::research::manager().set_broadcaster(move |_jobs| {
+            let payload = crate::gui::build_research_update_payload();
+            let _ = research_tx.send(ViewEvent::ResearchUpdate(payload.to_string()));
         });
     }
 

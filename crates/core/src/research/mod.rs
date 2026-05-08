@@ -35,7 +35,7 @@ pub(crate) mod test_helpers;
 use crate::cancel::CancelToken;
 use crate::error::Result;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 /// Stable ID for a background research job. Format `research-<8-hex>`.
@@ -148,6 +148,13 @@ pub struct JobView {
 /// per-job, not global.
 pub struct ResearchManager {
     jobs: RwLock<HashMap<JobId, Arc<RwLock<JobInner>>>>,
+    /// Broadcaster wired by `gui.rs` at session bootstrap (M6.39.3).
+    /// Each phase change / iteration record / finalize fires this
+    /// with a JSON payload shape identical to what
+    /// `build_research_update_payload()` produces. CLI uses are no-op
+    /// (broadcaster unset) — phases are visible via `/research list`
+    /// and the auto-print on next REPL prompt.
+    broadcaster: Mutex<Option<Box<dyn Fn(&[JobView]) + Send + Sync>>>,
 }
 
 #[derive(Debug)]
@@ -170,6 +177,25 @@ impl ResearchManager {
     pub fn new() -> Self {
         Self {
             jobs: RwLock::new(HashMap::new()),
+            broadcaster: Mutex::new(None),
+        }
+    }
+
+    /// Install a broadcaster called after every state-mutating method
+    /// (update_phase, record_iteration, finalize, cancel). The closure
+    /// receives a fresh snapshot of all jobs in newest-first order.
+    /// Same pattern as `goal_state::set_broadcaster`.
+    pub fn set_broadcaster<F>(&self, f: F)
+    where
+        F: Fn(&[JobView]) + Send + Sync + 'static,
+    {
+        *self.broadcaster.lock().unwrap() = Some(Box::new(f));
+    }
+
+    fn broadcast(&self) {
+        if let Some(cb) = self.broadcaster.lock().unwrap().as_ref() {
+            let snapshot = self.list();
+            cb(&snapshot);
         }
     }
 
@@ -209,14 +235,21 @@ impl ResearchManager {
             .write()
             .unwrap()
             .insert(id.clone(), Arc::new(RwLock::new(inner)));
+        self.broadcast();
         (id, cancel)
     }
 
     pub fn update_phase(&self, id: &str, phase: impl Into<String>) {
-        if let Some(j) = self.jobs.read().unwrap().get(id).cloned() {
+        let changed = if let Some(j) = self.jobs.read().unwrap().get(id).cloned() {
             let mut g = j.write().unwrap();
             g.view.phase = phase.into();
             g.view.status = JobStatus::Running;
+            true
+        } else {
+            false
+        };
+        if changed {
+            self.broadcast();
         }
     }
 
@@ -227,13 +260,19 @@ impl ResearchManager {
         source_count: u32,
         score: Option<f32>,
     ) {
-        if let Some(j) = self.jobs.read().unwrap().get(id).cloned() {
+        let changed = if let Some(j) = self.jobs.read().unwrap().get(id).cloned() {
             let mut g = j.write().unwrap();
             g.view.iterations_done = iteration;
             g.view.source_count = source_count;
             if let Some(s) = score {
                 g.view.last_score = Some(s);
             }
+            true
+        } else {
+            false
+        };
+        if changed {
+            self.broadcast();
         }
     }
 
@@ -251,21 +290,28 @@ impl ResearchManager {
             status.is_terminal(),
             "finalize called with non-terminal status"
         );
-        if let Some(j) = self.jobs.read().unwrap().get(id).cloned() {
+        let changed = if let Some(j) = self.jobs.read().unwrap().get(id).cloned() {
             let mut g = j.write().unwrap();
             if g.view.status.is_terminal() {
-                return;
+                false
+            } else {
+                g.view.status = status;
+                g.view.result_page = result_page;
+                g.view.error = error;
+                g.view.finished_at = Some(std::time::SystemTime::now());
+                g.view.phase = match status {
+                    JobStatus::Done => "done".into(),
+                    JobStatus::Cancelled => "cancelled".into(),
+                    JobStatus::Failed => "failed".into(),
+                    _ => g.view.phase.clone(),
+                };
+                true
             }
-            g.view.status = status;
-            g.view.result_page = result_page;
-            g.view.error = error;
-            g.view.finished_at = Some(std::time::SystemTime::now());
-            g.view.phase = match status {
-                JobStatus::Done => "done".into(),
-                JobStatus::Cancelled => "cancelled".into(),
-                JobStatus::Failed => "failed".into(),
-                _ => g.view.phase.clone(),
-            };
+        } else {
+            false
+        };
+        if changed {
+            self.broadcast();
         }
     }
 

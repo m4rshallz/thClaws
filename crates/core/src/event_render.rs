@@ -105,6 +105,7 @@ pub fn render_chat_dispatches(ev: &ViewEvent) -> Vec<String> {
         ViewEvent::ProviderUpdate(json) => vec![json.clone()],
         ViewEvent::KmsUpdate(json) => vec![json.clone()],
         ViewEvent::McpUpdate(json) => vec![json.clone()],
+        ViewEvent::ResearchUpdate(json) => vec![json.clone()],
         ViewEvent::ModelPickerOpen(json) => vec![json.clone()],
         ViewEvent::ScheduleAddOpen(json) => vec![json.clone()],
         ViewEvent::ContextWarning { file_size_mb } => vec![serde_json::json!({
@@ -439,6 +440,7 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
         ViewEvent::ProviderUpdate(_) => None,
         ViewEvent::KmsUpdate(_) => None,
         ViewEvent::McpUpdate(_) => None,
+        ViewEvent::ResearchUpdate(_) => None,
         ViewEvent::ModelPickerOpen(_) => None,
         ViewEvent::ScheduleAddOpen(_) => None,
         ViewEvent::ContextWarning { file_size_mb } => Some(format!(

@@ -335,6 +335,41 @@ pub(crate) fn build_kms_update_payload() -> serde_json::Value {
     crate::kms::build_update_payload()
 }
 
+/// Build the `research_update` IPC payload (M6.39.3). Snapshot of every
+/// research job in newest-first order, shaped for the sidebar panel.
+/// Called by the `ResearchManager` broadcaster on every state-mutating
+/// method, plus once at session bootstrap so a fresh frontend gets a
+/// non-empty payload if jobs survived a soft refresh.
+pub(crate) fn build_research_update_payload() -> serde_json::Value {
+    let jobs = crate::research::manager().list();
+    serde_json::json!({
+        "type": "research_update",
+        "jobs": jobs.iter().map(research_job_to_json).collect::<Vec<_>>(),
+    })
+}
+
+fn research_job_to_json(j: &crate::research::JobView) -> serde_json::Value {
+    serde_json::json!({
+        "id": j.id,
+        "status": j.status.as_str(),
+        "phase": j.phase,
+        "query": j.query,
+        "iterations_done": j.iterations_done,
+        "source_count": j.source_count,
+        "last_score": j.last_score,
+        "kms_target": j.kms_target,
+        "result_page": j.result_page,
+        "error": j.error,
+        "started_at": j.started_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .ok(),
+        "finished_at": j.finished_at
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs()),
+    })
+}
+
 fn escape_for_js(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('\'', "\\'")
