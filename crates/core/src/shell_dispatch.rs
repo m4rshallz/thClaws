@@ -1654,6 +1654,12 @@ pub async fn dispatch(
                     state.tool_registry.remove("KmsSearch");
                     state.tool_registry.remove("KmsWrite");
                     state.tool_registry.remove("KmsAppend");
+                    // M6.38.2 audit fix (Bug A): KmsDelete was added in
+                    // M6.27 (`/dream` work) but never paired with a remove
+                    // here. After the last /kms off it lingered in the
+                    // registry — model saw the affordance but every call
+                    // failed because no KMS was active.
+                    state.tool_registry.remove("KmsDelete");
                 }
                 state.rebuild_system_prompt();
                 if let Err(e) = state.rebuild_agent(true) {
@@ -1802,6 +1808,75 @@ pub async fn dispatch(
                 ),
             );
         }
+        SlashCommand::KmsDump { name, .. } => {
+            // Same shape as KmsIngestSession: handled by the
+            // handle_line turn-rewrite. This arm only fires for
+            // direct dispatch, or when the KMS doesn't resolve.
+            if crate::kms::resolve(&name).is_none() {
+                emit(events_tx, format!("no KMS named '{name}'"));
+            } else {
+                emit(
+                    events_tx,
+                    format!(
+                        "/kms dump {name} requires the agent loop — invoke from chat / CLI, \
+                         not via shell_dispatch::dispatch directly."
+                    ),
+                );
+            }
+        }
+        SlashCommand::KmsChallenge { name, .. } => {
+            // Same shape as KmsDump — handled in shared_session.rs's
+            // turn-rewrite. This arm fires only when the KMS doesn't
+            // resolve, or when dispatch is called directly.
+            if crate::kms::resolve(&name).is_none() {
+                emit(events_tx, format!("no KMS named '{name}'"));
+            } else {
+                emit(
+                    events_tx,
+                    format!(
+                        "/kms challenge {name} requires the agent loop — invoke from chat / CLI, \
+                         not via shell_dispatch::dispatch directly."
+                    ),
+                );
+            }
+        }
+        SlashCommand::KmsReconcile { name, focus, apply } => {
+            let Some(_k) = crate::kms::resolve(&name) else {
+                emit(events_tx, format!("no KMS named '{name}'"));
+                return;
+            };
+            if state.config.kms_active.is_empty() {
+                // Subagent inherits parent's tool registry; KMS tools
+                // register only when kms_active is non-empty.
+                emit(
+                    events_tx,
+                    format!(
+                        "/kms reconcile {name}: no KMS attached to this session. \
+                         Run `/kms use {name}` first so KMS tools are registered."
+                    ),
+                );
+                return;
+            }
+            let prompt = compose_kms_reconcile_prompt(&name, focus.as_deref(), apply);
+            match crate::side_channel::spawn_side_channel(
+                "kms-reconcile".to_string(),
+                prompt,
+                state.agent_factory.clone(),
+                state.agent_defs.clone(),
+                events_tx.clone(),
+            )
+            .await
+            {
+                Ok(id) => emit(
+                    events_tx,
+                    format!(
+                        "✓ kms-reconcile dispatched (id: {id}, {})",
+                        if apply { "--apply" } else { "dry-run" }
+                    ),
+                ),
+                Err(e) => emit(events_tx, format!("/kms reconcile: {e}")),
+            }
+        }
         SlashCommand::KmsLint(name) => {
             // M6.25 BUG #3: pure-read health check.
             let Some(k) = crate::kms::resolve(&name) else {
@@ -1813,6 +1888,82 @@ pub async fn dispatch(
                     emit(events_tx, format_lint_report(&name, &report));
                 }
                 Err(e) => emit(events_tx, format!("lint failed: {e}")),
+            }
+        }
+        SlashCommand::KmsWrapUp { name, fix } => {
+            let Some(k) = crate::kms::resolve(&name) else {
+                emit(events_tx, format!("no KMS named '{name}'"));
+                return;
+            };
+            let lint = match crate::kms::lint(&k) {
+                Ok(r) => r,
+                Err(e) => {
+                    emit(events_tx, format!("wrap-up failed (lint): {e}"));
+                    return;
+                }
+            };
+            let stale = match crate::kms::scan_stale_markers(&k) {
+                Ok(s) => s,
+                Err(e) => {
+                    emit(events_tx, format!("wrap-up failed (stale scan): {e}"));
+                    return;
+                }
+            };
+            emit(events_tx, format_wrap_up_report(&name, &lint, &stale));
+            if fix {
+                if !has_actionable_issues(&lint, &stale) {
+                    emit(
+                        events_tx,
+                        "/kms wrap-up --fix: nothing actionable for kms-linker; skipping dispatch.".into(),
+                    );
+                } else if state.config.kms_active.is_empty() {
+                    // Subagent inherits the parent's tool registry (see
+                    // ProductionAgentFactory::build). KMS tools register
+                    // only when kms_active is non-empty — without that,
+                    // the subagent spawns with no usable tools.
+                    emit(
+                        events_tx,
+                        format!(
+                            "/kms wrap-up {name} --fix: no KMS attached to this session. \
+                             Run `/kms use {name}` first so KMS tools are registered."
+                        ),
+                    );
+                } else {
+                    let prompt = compose_kms_linker_prompt(&name, &lint, &stale);
+                    match crate::side_channel::spawn_side_channel(
+                        "kms-linker".to_string(),
+                        prompt,
+                        state.agent_factory.clone(),
+                        state.agent_defs.clone(),
+                        events_tx.clone(),
+                    )
+                    .await
+                    {
+                        Ok(id) => emit(
+                            events_tx,
+                            format!("✓ kms-linker dispatched (id: {id})"),
+                        ),
+                        Err(e) => emit(
+                            events_tx,
+                            format!("/kms wrap-up --fix: {e}"),
+                        ),
+                    }
+                }
+            }
+        }
+        SlashCommand::KmsMigrate { name, apply } => {
+            let Some(k) = crate::kms::resolve(&name) else {
+                emit(events_tx, format!("no KMS named '{name}'"));
+                return;
+            };
+            match crate::kms::migrate(&k, !apply) {
+                Ok(report) => {
+                    emit(events_tx, format_migration_report(&name, &report));
+                    if apply {
+                        broadcast_kms_update(events_tx);
+                    }
+                }
+                Err(e) => emit(events_tx, format!("migrate failed: {e}")),
             }
         }
         SlashCommand::KmsFileAnswer { name, title } => {
@@ -2403,6 +2554,31 @@ pub async fn dispatch(
                 Err(e) => emit(events_tx, format!("/schedule uninstall: join error: {e}")),
             }
         }
+        SlashCommand::SchedulePresetList => {
+            emit(events_tx, format_schedule_preset_list());
+        }
+        SlashCommand::SchedulePresetAdd { preset_id, kms, cwd } => {
+            let resolved_cwd = cwd.unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+            match crate::schedule_presets::add_from_preset(&preset_id, &kms, resolved_cwd) {
+                Ok(schedule) => {
+                    let preset = crate::schedule_presets::find(&preset_id);
+                    let desc = preset
+                        .map(|p| crate::schedule_presets::render_description(p, &kms))
+                        .unwrap_or_default();
+                    emit(
+                        events_tx,
+                        format!(
+                            "✓ schedule '{id}' created from preset '{preset_id}' (cron: {cron})\n  {desc}",
+                            id = schedule.id,
+                            cron = schedule.cron,
+                        ),
+                    );
+                }
+                Err(e) => emit(events_tx, format!("/schedule preset add: {e}")),
+            }
+        }
         SlashCommand::Agent { name, prompt } => {
             // Spawn user-driven side channel. Returns immediately
             // with the assigned id; the agent runs concurrently on
@@ -2956,6 +3132,229 @@ fn format_lint_report(name: &str, report: &crate::kms::LintReport) -> String {
         for stem in &report.missing_frontmatter {
             out.push_str(&format!("  - {stem}\n"));
         }
+    }
+    if !report.missing_required_fields.is_empty() {
+        out.push_str(&format!(
+            "\nmissing required frontmatter fields ({}):\n",
+            report.missing_required_fields.len()
+        ));
+        for (page, source_key, field) in &report.missing_required_fields {
+            out.push_str(&format!("  - {page}: '{field}' (required by {source_key})\n"));
+        }
+    }
+    out
+}
+
+/// Session-end review: lint output plus any STALE markers left behind by
+/// re-ingest cascades. Both are pure-read; the user (or agent) acts on
+/// them via KmsWrite. The "next step" hints surface what's most actionable.
+pub(crate) fn format_wrap_up_report(
+    name: &str,
+    lint: &crate::kms::LintReport,
+    stale: &[crate::kms::StaleEntry],
+) -> String {
+    let lint_total = lint.total_issues();
+    let stale_count = stale.len();
+    if lint_total == 0 && stale_count == 0 {
+        return format!("KMS '{name}': clean — nothing to wrap up.");
+    }
+    let mut out = format!(
+        "KMS '{name}': wrap-up — {lint_total} lint issue(s), {stale_count} stale marker(s)\n"
+    );
+    if lint_total > 0 {
+        // Reuse the lint formatter so both surfaces stay consistent.
+        let lint_body = format_lint_report(name, lint);
+        // Drop the lint formatter's own header line; we already wrote one.
+        if let Some((_, rest)) = lint_body.split_once('\n') {
+            out.push_str(rest);
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    if stale_count > 0 {
+        out.push_str(&format!("\nstale pages awaiting refresh ({stale_count}):\n"));
+        for entry in stale {
+            out.push_str(&format!(
+                "  - {}: source `{}` re-ingested on {} (page not yet refreshed)\n",
+                entry.page_stem, entry.source_alias, entry.date
+            ));
+        }
+    }
+    out.push_str("\nnext steps: ask the agent to refresh stale pages and fix lint issues, or run `/kms lint <name>` again after edits.\n");
+    out
+}
+
+/// True if the lint report or stale list contains anything the
+/// `kms-linker` subagent can sensibly act on. Orphan pages and missing
+/// frontmatter are excluded — orphans are often intentional, and a
+/// missing-frontmatter page is something the subagent's prompt tells
+/// it to leave alone (it can't safely invent a category).
+pub(crate) fn has_actionable_issues(
+    lint: &crate::kms::LintReport,
+    stale: &[crate::kms::StaleEntry],
+) -> bool {
+    !lint.broken_links.is_empty()
+        || !lint.missing_in_index.is_empty()
+        || !lint.missing_required_fields.is_empty()
+        || !stale.is_empty()
+}
+
+/// Build the initial prompt for the `kms-linker` subagent. Embeds the
+/// KMS name, the lint report (only the actionable categories — see
+/// `has_actionable_issues`), and the stale-marker list as a structured
+/// brief the subagent can iterate over with TodoWrite.
+pub(crate) fn compose_kms_linker_prompt(
+    name: &str,
+    lint: &crate::kms::LintReport,
+    stale: &[crate::kms::StaleEntry],
+) -> String {
+    let mut out = format!(
+        "You are fixing the KMS named `{name}`. Pass `kms: \"{name}\"` to every tool call.\n\n"
+    );
+    out.push_str("## Lint report\n\n");
+    if lint.broken_links.is_empty() {
+        out.push_str("- broken links: none\n");
+    } else {
+        out.push_str(&format!(
+            "- broken links ({}):\n",
+            lint.broken_links.len()
+        ));
+        for (page, target) in &lint.broken_links {
+            out.push_str(&format!("  - on `{page}` → missing `pages/{target}.md`\n"));
+        }
+    }
+    if lint.missing_in_index.is_empty() {
+        out.push_str("- pages missing from index: none\n");
+    } else {
+        out.push_str(&format!(
+            "- pages missing from index ({}):\n",
+            lint.missing_in_index.len()
+        ));
+        for stem in &lint.missing_in_index {
+            out.push_str(&format!("  - `{stem}`\n"));
+        }
+    }
+    if lint.missing_required_fields.is_empty() {
+        out.push_str("- missing required frontmatter fields: none\n");
+    } else {
+        out.push_str(&format!(
+            "- missing required frontmatter fields ({}):\n",
+            lint.missing_required_fields.len()
+        ));
+        for (page, source_key, field) in &lint.missing_required_fields {
+            out.push_str(&format!(
+                "  - `{page}`: '{field}' (required by {source_key})\n"
+            ));
+        }
+    }
+    if !lint.orphan_pages.is_empty() {
+        out.push_str(&format!(
+            "- orphan pages ({}, do NOT modify — list in final report):\n",
+            lint.orphan_pages.len()
+        ));
+        for stem in &lint.orphan_pages {
+            out.push_str(&format!("  - `{stem}`\n"));
+        }
+    }
+
+    out.push_str("\n## Stale markers\n\n");
+    if stale.is_empty() {
+        out.push_str("- none\n");
+    } else {
+        out.push_str(&format!("- pages awaiting refresh ({}):\n", stale.len()));
+        for entry in stale {
+            out.push_str(&format!(
+                "  - `{}`: source `{}` re-ingested on {}\n",
+                entry.page_stem, entry.source_alias, entry.date
+            ));
+        }
+    }
+    out.push_str(
+        "\nWork through the categories in the order from your operating procedure. \
+         Use TodoWrite to track progress. Stop after one pass and produce the final \
+         **Fixed** / **Skipped** report.\n",
+    );
+    out
+}
+
+/// Build the initial prompt for the `kms-reconcile` subagent. Names the
+/// target KMS, the optional focus topic, and whether the agent should
+/// dry-run (just propose) or apply (actually rewrite). The subagent's
+/// own body declares the four-pass procedure.
+pub(crate) fn compose_kms_reconcile_prompt(
+    name: &str,
+    focus: Option<&str>,
+    apply: bool,
+) -> String {
+    let mode_clause = if apply {
+        "**Apply mode** — rewrite outdated pages with `## History` sections, write `Conflict — <topic>.md` pages for ambiguous cases. Every write must preserve the original claim somewhere."
+    } else {
+        "**Dry-run mode** — DO NOT write to the KMS. Produce the same final report you would in apply mode, listing what you *would* change, but make no `KmsWrite` or `KmsAppend` calls. The user re-runs with `--apply` to execute."
+    };
+    let focus_clause = match focus {
+        Some(f) => format!(
+            "\n\n## Focus\n\nNarrow this pass to the topic / entity: `{f}`. Skip pages unrelated to this focus.",
+        ),
+        None => String::new(),
+    };
+    format!(
+        "You are reconciling contradictions in the KMS named `{name}`. Pass `kms: \"{name}\"` to every tool call.\n\
+         \n\
+         {mode_clause}{focus_clause}\n\
+         \n\
+         Work through the four-pass procedure from your operating manual (claims, entities, decisions, source-freshness). Use TodoWrite to track progress. Stop after one pass and produce the final **Auto-resolved** / **Flagged for user** / **Stale pages updated** report."
+    )
+}
+
+pub(crate) fn format_schedule_preset_list() -> String {
+    let presets = crate::schedule_presets::presets();
+    if presets.is_empty() {
+        return "no schedule presets registered".into();
+    }
+    let mut out = String::from("schedule presets:\n");
+    out.push_str("  ID                     CRON           DESCRIPTION\n");
+    for preset in presets {
+        out.push_str(&format!(
+            "  {:<22} {:<14} {}\n",
+            preset.id, preset.cron, preset.description
+        ));
+    }
+    out.push_str(
+        "\nadd via: /schedule preset add <id> --kms <name> [--cwd <path>]\n",
+    );
+    out
+}
+
+pub(crate) fn format_migration_report(
+    name: &str,
+    report: &crate::kms::MigrationReport,
+) -> String {
+    let mode = if report.dry_run { "plan" } else { "applied" };
+    if report.steps.is_empty() {
+        return format!(
+            "KMS '{name}': already at schema version {} — nothing to migrate.",
+            report.target_version
+        );
+    }
+    let mut out = format!(
+        "KMS '{name}': migration {mode} ({} → {}, {} step(s))\n",
+        report.current_version,
+        report.target_version,
+        report.steps.len()
+    );
+    for step in &report.steps {
+        out.push_str(&format!("\n{} → {}:\n", step.from, step.to));
+        for action in &step.actions {
+            out.push_str(&format!("  - {action}\n"));
+        }
+    }
+    if report.dry_run {
+        out.push_str(
+            "\nthis was a dry-run preview. re-run with `--apply` to execute.\n",
+        );
+    } else {
+        out.push_str("\nlogged to log.md. /kms lint to verify.\n");
     }
     out
 }

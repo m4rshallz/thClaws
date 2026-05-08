@@ -382,9 +382,48 @@ pub enum SlashCommand {
         alias: Option<String>,
         force: bool,
     },
+    /// Freeform dump — captures `<text>` and hands it to the main agent
+    /// with routing instructions. The agent classifies into chunks,
+    /// announces its plan in plain text, then executes via KmsWrite /
+    /// KmsAppend / etc. Same agent-loop rewrite path as KmsIngestSession.
+    KmsDump {
+        name: String,
+        text: String,
+    },
+    /// Pre-decision red-team — searches the KMS for past failures, reversed
+    /// decisions, and contradictions on the topic of `<idea>`, produces a
+    /// structured Red Team analysis with citations. Read-only; runs in main
+    /// agent. Same agent-loop rewrite path as KmsDump.
+    KmsChallenge {
+        name: String,
+        idea: String,
+    },
+    /// Auto-resolve contradictions across pages. Dispatches the built-in
+    /// `kms-reconcile` subagent which rewrites outdated pages with History
+    /// sections, flags ambiguous cases as Conflict pages. Dry-run by default;
+    /// `--apply` executes writes. GUI-only.
+    KmsReconcile {
+        name: String,
+        focus: Option<String>,
+        apply: bool,
+    },
     /// M6.25 BUG #3: lint a KMS for orphans / broken links / index drift /
     /// missing frontmatter. Pure-read; no mutation.
     KmsLint(String),
+    /// Session-end review: lint + stale-marker scan rolled into one
+    /// summary so the user closes the loop before quitting. Pure-read
+    /// by default; `--fix` dispatches the built-in `kms-linker`
+    /// subagent to act on the issues (GUI-only).
+    KmsWrapUp {
+        name: String,
+        fix: bool,
+    },
+    /// Schema migration. Defaults to dry-run (prints the plan) so the
+    /// user can review before any writes; `--apply` executes the chain.
+    KmsMigrate {
+        name: String,
+        apply: bool,
+    },
     /// M6.25 BUG #4: file the latest assistant message into a KMS as a
     /// new page. Compounds explorations into the wiki.
     KmsFileAnswer {
@@ -418,6 +457,15 @@ pub enum SlashCommand {
     /// `/schedule uninstall` — stop and remove the daemon's
     /// supervisor entry.
     ScheduleUninstall,
+    /// `/schedule preset list` — list pre-packaged schedule templates.
+    SchedulePresetList,
+    /// `/schedule preset add <preset-id> --kms <name> [--cwd <path>]` —
+    /// instantiate a preset for a specific KMS, persist to the store.
+    SchedulePresetAdd {
+        preset_id: String,
+        kms: String,
+        cwd: Option<std::path::PathBuf>,
+    },
     /// `/agent <name> <prompt>` — spawn a user-driven side-channel
     /// agent that runs concurrently with main. Result lands as a
     /// chat-side bubble (GUI) or a one-line ANSI marker (CLI) when
@@ -612,8 +660,59 @@ fn parse_schedule_subcommand(args: &str) -> SlashCommand {
         "install" => SlashCommand::ScheduleInstall,
         "uninstall" => SlashCommand::ScheduleUninstall,
         "add" | "new" | "create" => SlashCommand::ScheduleAdd,
+        "preset" | "presets" => parse_schedule_preset_subcommand(rest),
         other => SlashCommand::Unknown(format!(
-            "unknown schedule subcommand: '{other}' (try: /schedule, /schedule add, /schedule show, /schedule run, /schedule status, /schedule pause, /schedule resume, /schedule rm, /schedule install, /schedule uninstall)"
+            "unknown schedule subcommand: '{other}' (try: /schedule, /schedule add, /schedule show, /schedule run, /schedule status, /schedule pause, /schedule resume, /schedule rm, /schedule install, /schedule uninstall, /schedule preset list, /schedule preset add)"
+        )),
+    }
+}
+
+/// Parse `/schedule preset [list|add ...]` into the right SlashCommand.
+/// - `/schedule preset` (or `list` / `ls`) → list all presets
+/// - `/schedule preset add <preset-id> --kms <name> [--cwd <path>]`
+fn parse_schedule_preset_subcommand(args: &str) -> SlashCommand {
+    let args = args.trim();
+    if args.is_empty() {
+        return SlashCommand::SchedulePresetList;
+    }
+    let (sub, rest) = args
+        .split_once(char::is_whitespace)
+        .unwrap_or((args, ""));
+    match sub {
+        "list" | "ls" => SlashCommand::SchedulePresetList,
+        "add" | "create" => {
+            let mut preset_id: Option<String> = None;
+            let mut kms: Option<String> = None;
+            let mut cwd: Option<std::path::PathBuf> = None;
+            let mut tokens = rest.split_whitespace();
+            while let Some(tok) = tokens.next() {
+                match tok {
+                    "--kms" => kms = tokens.next().map(String::from),
+                    "--cwd" => cwd = tokens.next().map(std::path::PathBuf::from),
+                    other if !other.starts_with("--") && preset_id.is_none() => {
+                        preset_id = Some(other.to_string());
+                    }
+                    other => {
+                        return SlashCommand::Unknown(format!(
+                            "unknown flag '{other}' — usage: /schedule preset add <preset-id> --kms <name> [--cwd <path>]"
+                        ));
+                    }
+                }
+            }
+            match (preset_id, kms) {
+                (Some(p), Some(k)) => SlashCommand::SchedulePresetAdd {
+                    preset_id: p,
+                    kms: k,
+                    cwd,
+                },
+                _ => SlashCommand::Unknown(
+                    "usage: /schedule preset add <preset-id> --kms <name> [--cwd <path>]"
+                        .into(),
+                ),
+            }
+        }
+        other => SlashCommand::Unknown(format!(
+            "unknown preset subcommand: '{other}' (try: list, add)"
         )),
     }
 }
@@ -956,6 +1055,24 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "dream" => SlashCommand::Dream {
             focus: args.to_string(),
         },
+        // Parse-time alias: `/translate xxx` → `/agent translator xxx`.
+        // Same dispatch path as /agent, so behavior, permissions, and
+        // settings.json model overrides (translator_subagent_model)
+        // already apply.
+        "translate" => {
+            let prompt = args.trim();
+            if prompt.is_empty() {
+                SlashCommand::Unknown(
+                    "usage: /translate <text or file path>   (alias for /agent translator …)"
+                        .into(),
+                )
+            } else {
+                SlashCommand::Agent {
+                    name: "translator".into(),
+                    prompt: prompt.to_string(),
+                }
+            }
+        }
         _ => SlashCommand::Unknown(cmd.to_string()),
     })
 }
@@ -1323,6 +1440,107 @@ pub fn build_kms_ingest_session_prompt(
     )
 }
 
+/// Compose the agent-facing prompt for `/kms dump <name> <text>`. The
+/// agent receives the dump verbatim plus routing rules, announces its
+/// plan in plain text first, then executes via the KMS tools. Inline-
+/// composed (no template file) to match `build_kms_ingest_session_prompt`.
+pub fn build_kms_dump_prompt(kms_name: &str, dump_text: &str) -> String {
+    format!(
+        "The user ran `/kms dump {kms_name} <text>` to capture unstructured content into KMS '{kms_name}'. \
+         Your job is to route the dump into appropriate pages.\n\
+         \n\
+         === DUMP CONTENT ===\n\
+         {dump_text}\n\
+         === END DUMP ===\n\
+         \n\
+         ## Routing procedure\n\
+         \n\
+         1. **Scan the dump for distinct chunks.** A chunk is one coherent piece — one decision, \
+         one observation, one meeting takeaway, one new source reference, one person update. \
+         A single dump usually contains 1–6 chunks.\n\
+         \n\
+         2. **For each chunk, pick a destination:**\n\
+         - `append-to-existing`: chunk extends an existing page. `KmsSearch` first to find the \
+         right page, then `KmsAppend`.\n\
+         - `create-new-page`: chunk is a new topic. Pick a descriptive page stem (kebab-case), \
+         use `KmsWrite` with frontmatter (`category`, `created`, `updated`, optionally `tags` and \
+         `sources`).\n\
+         - `defer`: chunk is too ambiguous to route confidently, or would require inventing \
+         sources. Skip and report.\n\
+         \n\
+         3. **Announce-then-execute.** BEFORE making any tool calls, print your routing plan in \
+         plain text — one bullet per chunk:\n\
+         - \"Append to `existing-page` — <one-line summary of what's being added>\"\n\
+         - \"Create new page `new-page-stem` — <one-line summary>\"\n\
+         - \"Skip <chunk topic> — <reason>\"\n\
+         \n\
+         The user reads this plan and can ⌃C to abort. Only after the plan, fire the tool calls.\n\
+         \n\
+         4. **Hard rules** (every chunk):\n\
+         - Don't invent sources, URLs, file paths, or person names that aren't in the dump.\n\
+         - Don't use `KmsDelete`.\n\
+         - Preserve existing frontmatter on appends.\n\
+         - Every new page must reference at least one existing page (markdown link \
+         `[text](pages/other.md)`) — if you can't link it to anything, downgrade to `defer`.\n\
+         - For `KmsWrite`, always pass `kms: \"{kms_name}\"`.\n\
+         \n\
+         5. **Final report.** End with a single message:\n\
+         ```\n\
+         **Created**: <list of new pages>\n\
+         **Appended**: <list of (page, what was added)>\n\
+         **Skipped**: <list of (chunk topic, reason)>\n\
+         ```\n\
+         \n\
+         Stop after one pass. Do not loop or wait for further input."
+    )
+}
+
+/// Compose the agent-facing prompt for `/kms challenge <name> <idea>`. The
+/// agent searches the vault for counter-evidence to the user's position
+/// and produces a structured Red Team analysis. Read-only — no writes.
+pub fn build_kms_challenge_prompt(kms_name: &str, idea: &str) -> String {
+    format!(
+        "The user ran `/kms challenge {kms_name}` to red-team a current idea against \
+         their own vault history. Search KMS '{kms_name}' for counter-evidence and \
+         produce a structured Red Team analysis.\n\
+         \n\
+         === USER'S CURRENT POSITION ===\n\
+         {idea}\n\
+         === END POSITION ===\n\
+         \n\
+         ## Procedure\n\
+         \n\
+         1. Extract the key premises behind the position.\n\
+         2. Search the vault — run `KmsSearch(kms: \"{kms_name}\", pattern: ...)` for each premise. \
+         Try multiple patterns: synonyms, related concepts, names of stakeholders. Look for:\n\
+         - Past failures or regrets on this topic\n\
+         - Reversed decisions (where the user previously decided differently)\n\
+         - Notes flagging risks about this exact approach\n\
+         - Contradictions where the user held the opposite position\n\
+         3. `KmsRead` every match that looks substantive — read the full page, not just the matched line.\n\
+         4. Produce a structured analysis:\n\
+         \n\
+         **Your position:** <restate the user's claim clearly>\n\
+         \n\
+         **Counter-evidence from your vault:**\n\
+         - <citation> (page: `<stem>`, date: <date>): <quote or paraphrase>\n\
+         - ...\n\
+         \n\
+         **Blind spots:** what the user may be ignoring based on their own history\n\
+         \n\
+         **Verdict:** is this position consistent with past experience, or does the vault suggest caution?\n\
+         \n\
+         ## Hard rules\n\
+         \n\
+         - **Don't be agreeable.** The point is to pressure-test. Push back if the vault gives you ammunition.\n\
+         - **Cite specific pages** with their stems so the user can re-read.\n\
+         - **If you find no counter-evidence** after a thorough search, say so honestly — but search broadly first (try synonyms, alternative phrasings, related concept names).\n\
+         - **Don't write to the vault.** This command is read-only. End with the analysis, no `KmsWrite` / `KmsAppend` calls.\n\
+         \n\
+         Stop after one pass. The analysis is your final message."
+    )
+}
+
 /// M6.26 BUG #2: scaffold body for `/memory write` / `/memory edit`.
 /// When `existing` is `Some`, pre-fills with that entry's frontmatter +
 /// body for editing. When `None`, builds a fresh template.
@@ -1683,6 +1901,128 @@ fn parse_kms_subcommand(args: &str) -> SlashCommand {
                 SlashCommand::KmsLint(rest.to_string())
             }
         }
+        "wrap-up" | "wrapup" | "wrap" => {
+            // `/kms wrap-up <name> [--fix]` — pure-read by default,
+            // --fix hands the report to the kms-linker subagent.
+            let mut name: Option<String> = None;
+            let mut fix = false;
+            for tok in rest.split_whitespace() {
+                match tok {
+                    "--fix" => fix = true,
+                    other if !other.starts_with("--") => {
+                        if name.is_none() {
+                            name = Some(other.to_string());
+                        }
+                    }
+                    other => {
+                        return SlashCommand::Unknown(format!(
+                            "unknown flag '{other}' — usage: /kms wrap-up <name> [--fix]"
+                        ));
+                    }
+                }
+            }
+            match name {
+                Some(n) => SlashCommand::KmsWrapUp { name: n, fix },
+                None => SlashCommand::Unknown(
+                    "usage: /kms wrap-up <name> [--fix]".into(),
+                ),
+            }
+        }
+        "dump" | "capture" => {
+            // `/kms dump <name> <text...>` — rest of the line after the
+            // KMS name is the dump body. Multi-line paste is fine.
+            let mut parts = rest.splitn(2, char::is_whitespace);
+            match (parts.next(), parts.next()) {
+                (Some(name), Some(text))
+                    if !name.is_empty() && !text.trim().is_empty() =>
+                {
+                    SlashCommand::KmsDump {
+                        name: name.to_string(),
+                        text: text.trim().to_string(),
+                    }
+                }
+                _ => SlashCommand::Unknown(
+                    "usage: /kms dump <name> <text...>".into(),
+                ),
+            }
+        }
+        "challenge" | "redteam" => {
+            // `/kms challenge <name> <idea...>` — searches the vault for
+            // counter-evidence to the user's current position. Read-only.
+            let mut parts = rest.splitn(2, char::is_whitespace);
+            match (parts.next(), parts.next()) {
+                (Some(name), Some(idea))
+                    if !name.is_empty() && !idea.trim().is_empty() =>
+                {
+                    SlashCommand::KmsChallenge {
+                        name: name.to_string(),
+                        idea: idea.trim().to_string(),
+                    }
+                }
+                _ => SlashCommand::Unknown(
+                    "usage: /kms challenge <name> <idea...>".into(),
+                ),
+            }
+        }
+        "reconcile" | "resolve" => {
+            // `/kms reconcile <name> [<focus>] [--apply]` — finds and
+            // resolves contradictions; dry-run by default.
+            let mut name: Option<String> = None;
+            let mut focus: Option<String> = None;
+            let mut apply = false;
+            for tok in rest.split_whitespace() {
+                match tok {
+                    "--apply" | "--execute" => apply = true,
+                    "--dry-run" | "--plan" => apply = false,
+                    other if !other.starts_with("--") => {
+                        if name.is_none() {
+                            name = Some(other.to_string());
+                        } else if focus.is_none() {
+                            focus = Some(other.to_string());
+                        }
+                    }
+                    other => {
+                        return SlashCommand::Unknown(format!(
+                            "unknown flag '{other}' — usage: /kms reconcile <name> [<focus>] [--apply]"
+                        ));
+                    }
+                }
+            }
+            match name {
+                Some(n) => SlashCommand::KmsReconcile { name: n, focus, apply },
+                None => SlashCommand::Unknown(
+                    "usage: /kms reconcile <name> [<focus>] [--apply]".into(),
+                ),
+            }
+        }
+        "migrate" | "upgrade" => {
+            // `/kms migrate <name> [--apply]` — dry-run by default, --apply
+            // to execute. Order-insensitive so `--apply <name>` also works.
+            let mut name: Option<String> = None;
+            let mut apply = false;
+            for tok in rest.split_whitespace() {
+                match tok {
+                    "--apply" | "--execute" | "--run" => apply = true,
+                    "--dry-run" | "--plan" => apply = false,
+                    other if !other.starts_with("--") => {
+                        if name.is_none() {
+                            name = Some(other.to_string());
+                        }
+                    }
+                    other => {
+                        return SlashCommand::Unknown(format!(
+                            "unknown flag '{other}' — usage: /kms migrate <name> [--apply]"
+                        ));
+                    }
+                }
+            }
+            match name {
+                Some(n) => SlashCommand::KmsMigrate { name: n, apply },
+                None => SlashCommand::Unknown(
+                    "usage: /kms migrate <name> [--apply]".into(),
+                ),
+            }
+        }
         "file-answer" | "file" => {
             // M6.25 BUG #4: file the latest assistant message as a new
             // KMS page. Syntax: /kms file-answer <kms-name> <title>
@@ -1701,7 +2041,7 @@ fn parse_kms_subcommand(args: &str) -> SlashCommand {
             }
         }
         other => SlashCommand::Unknown(format!(
-            "unknown kms subcommand: '{other}' (try: /kms, /kms new …, /kms use …, /kms off …, /kms show …, /kms ingest …, /kms lint …, /kms file-answer …)"
+            "unknown kms subcommand: '{other}' (try: /kms, /kms new …, /kms use …, /kms off …, /kms show …, /kms ingest …, /kms dump …, /kms challenge …, /kms lint …, /kms wrap-up …, /kms reconcile …, /kms migrate …, /kms file-answer …)"
         )),
     }
 }
@@ -2081,7 +2421,11 @@ pub fn render_help() -> &'static str {
      /agent cancel ID     Cancel a running background agent by id\n  \
      /dream [FOCUS]       Consolidate KMS by mining recent sessions (GUI-only)\n  \
      \x20                   Built-in side-channel agent. Optional FOCUS biases\n  \
-     \x20                   the consolidation toward a topic (e.g. /dream auth).\n\n  \
+     \x20                   the consolidation toward a topic (e.g. /dream auth).\n  \
+     /translate PROMPT    Alias for /agent translator PROMPT (GUI-only).\n  \
+     \x20                   Runs the built-in translator subagent in the\n  \
+     \x20                   background. Override its model via settings.json\n  \
+     \x20                   `translator_subagent_model`.\n\n  \
      ! <command>       Run a shell command directly (e.g. ! git status)"
 }
 
@@ -2912,7 +3256,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     // forbidden from using).
     {
         let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
-        let agent_defs = crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+        let mut agent_defs =
+            crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+        agent_defs.apply_builtin_subagent_overrides(&config);
         let base_tools = tool_registry.clone();
         let factory = Arc::new(ProductionAgentFactory {
             provider: provider.clone(),
@@ -3033,7 +3379,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         // Load agent definition from .thclaws/agents/ + plugin-contributed
         // dirs if available.
         let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
-        let agent_defs = crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+        let mut agent_defs =
+            crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+        agent_defs.apply_builtin_subagent_overrides(&config);
         if let Some(def) = agent_defs.get(agent_name) {
             if !def.instructions.is_empty() {
                 agent.append_system(&format!(
@@ -3723,6 +4071,48 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 // If the KMS doesn't exist, leave `line` as the
                 // original slash command — the slash match's
                 // `KmsIngestSession` arm will print a clear error.
+            }
+
+            // `/kms dump <name> <text>` — same agent-loop rewrite.
+            if let Some(SlashCommand::KmsDump { name, text }) = parse_slash(&line) {
+                if crate::kms::resolve(&name).is_none() {
+                    // KMS-not-found falls through to the slash dispatch
+                    // arm which prints the error.
+                } else if config.kms_active.is_empty() {
+                    // KMS tools register only when kms_active is non-empty.
+                    // Without that, the dump prompt's KmsWrite/KmsAppend
+                    // calls would fail with "tool not found."
+                    println!(
+                        "{COLOR_YELLOW}/kms dump {name}: no KMS attached to this session. \
+                         Run `/kms use {name}` first.{COLOR_RESET}"
+                    );
+                    continue;
+                } else {
+                    println!(
+                        "{COLOR_DIM}(/kms dump {name} → routing {} char(s)){COLOR_RESET}",
+                        text.len()
+                    );
+                    line = build_kms_dump_prompt(&name, &text);
+                }
+            }
+
+            // `/kms challenge <name> <idea>` — same agent-loop rewrite.
+            if let Some(SlashCommand::KmsChallenge { name, idea }) = parse_slash(&line) {
+                if crate::kms::resolve(&name).is_none() {
+                    // falls through to dispatch arm
+                } else if config.kms_active.is_empty() {
+                    println!(
+                        "{COLOR_YELLOW}/kms challenge {name}: no KMS attached to this session. \
+                         Run `/kms use {name}` first.{COLOR_RESET}"
+                    );
+                    continue;
+                } else {
+                    println!(
+                        "{COLOR_DIM}(/kms challenge {name} → red-team {} char(s)){COLOR_RESET}",
+                        idea.len()
+                    );
+                    line = build_kms_challenge_prompt(&name, &idea);
+                }
             }
         }
 
@@ -5926,6 +6316,37 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                          (try /kms list){COLOR_RESET}"
                     );
                 }
+                // `/kms dump` only reaches the dispatch arm when the
+                // KMS name didn't resolve. The successful path is the
+                // turn-rewrite earlier in the loop body.
+                SlashCommand::KmsDump { name, .. } => {
+                    println!(
+                        "{COLOR_YELLOW}/kms dump {name} — no KMS named '{name}' \
+                         (try /kms list or /kms new {name}){COLOR_RESET}"
+                    );
+                }
+                // Same posture as KmsDump — only fires on missing KMS;
+                // happy path is the turn-rewrite above.
+                SlashCommand::KmsChallenge { name, .. } => {
+                    println!(
+                        "{COLOR_YELLOW}/kms challenge {name} — no KMS named '{name}' \
+                         (try /kms list or /kms new {name}){COLOR_RESET}"
+                    );
+                }
+                // `/kms reconcile` is GUI-only (dispatches kms-reconcile
+                // subagent as a side channel). CLI prints the standard
+                // GUI-only message, same as /dream.
+                SlashCommand::KmsReconcile { name, .. } => {
+                    let Some(_k) = crate::kms::resolve(&name) else {
+                        println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
+                        continue;
+                    };
+                    println!(
+                        "{COLOR_YELLOW}/kms reconcile is only available in GUI mode \
+                         (thclaws or thclaws --serve). It dispatches the built-in \
+                         kms-reconcile agent as a side channel.{COLOR_RESET}"
+                    );
+                }
                 // M6.25 BUG #3: lint (CLI).
                 SlashCommand::KmsLint(name) => {
                     let Some(k) = crate::kms::resolve(&name) else {
@@ -5980,10 +6401,67 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                         println!("    {stem}");
                                     }
                                 }
+                                if !report.missing_required_fields.is_empty() {
+                                    println!(
+                                        "  missing required frontmatter fields ({}):",
+                                        report.missing_required_fields.len()
+                                    );
+                                    for (page, source_key, field) in &report.missing_required_fields {
+                                        println!("    {page}: '{field}' (required by {source_key})");
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
                             println!("{COLOR_YELLOW}lint failed: {e}{COLOR_RESET}");
+                        }
+                    }
+                }
+                SlashCommand::KmsWrapUp { name, fix } => {
+                    let Some(k) = crate::kms::resolve(&name) else {
+                        println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
+                        continue;
+                    };
+                    let lint = match crate::kms::lint(&k) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}wrap-up failed (lint): {e}{COLOR_RESET}");
+                            continue;
+                        }
+                    };
+                    let stale = match crate::kms::scan_stale_markers(&k) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}wrap-up failed (stale scan): {e}{COLOR_RESET}");
+                            continue;
+                        }
+                    };
+                    println!(
+                        "{}",
+                        crate::shell_dispatch::format_wrap_up_report(&name, &lint, &stale)
+                    );
+                    if fix {
+                        println!(
+                            "{COLOR_YELLOW}/kms wrap-up --fix is only available in GUI mode \
+                             (thclaws or thclaws --serve). It dispatches the built-in kms-linker \
+                             agent as a side channel.{COLOR_RESET}"
+                        );
+                    }
+                }
+                SlashCommand::KmsMigrate { name, apply } => {
+                    let Some(k) = crate::kms::resolve(&name) else {
+                        println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
+                        continue;
+                    };
+                    match crate::kms::migrate(&k, !apply) {
+                        Ok(report) => {
+                            println!(
+                                "{}",
+                                crate::shell_dispatch::format_migration_report(&name, &report)
+                            );
+                        }
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}migrate failed: {e}{COLOR_RESET}");
                         }
                     }
                 }
@@ -6458,6 +6936,38 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             println!(
                                 "{COLOR_YELLOW}/schedule uninstall: join error: {e}{COLOR_RESET}"
                             );
+                        }
+                    }
+                }
+                SlashCommand::SchedulePresetList => {
+                    println!(
+                        "{}",
+                        crate::shell_dispatch::format_schedule_preset_list()
+                    );
+                }
+                SlashCommand::SchedulePresetAdd { preset_id, kms, cwd } => {
+                    let resolved_cwd = cwd.unwrap_or_else(|| {
+                        std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
+                    match crate::schedule_presets::add_from_preset(
+                        &preset_id,
+                        &kms,
+                        resolved_cwd,
+                    ) {
+                        Ok(schedule) => {
+                            let preset = crate::schedule_presets::find(&preset_id);
+                            let desc = preset
+                                .map(|p| crate::schedule_presets::render_description(p, &kms))
+                                .unwrap_or_default();
+                            println!(
+                                "{COLOR_DIM}✓ schedule '{id}' created from preset '{preset_id}' (cron: {cron}){COLOR_RESET}\n  {desc}",
+                                id = schedule.id,
+                                cron = schedule.cron,
+                            );
+                        }
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}/schedule preset add: {e}{COLOR_RESET}");
                         }
                     }
                 }
@@ -7354,6 +7864,255 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_slash_kms_dump_captures_text() {
+        // The text after the KMS name is the dump body. Whitespace is
+        // trimmed but internal multi-word content is preserved verbatim.
+        match parse_slash("/kms dump notes Big meeting today. Decisions: ship X by Friday.") {
+            Some(SlashCommand::KmsDump { name, text }) => {
+                assert_eq!(name, "notes");
+                assert_eq!(text, "Big meeting today. Decisions: ship X by Friday.");
+            }
+            other => panic!("expected KmsDump, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_kms_capture_alias() {
+        // `capture` is an alias for `dump`.
+        assert!(matches!(
+            parse_slash("/kms capture notes anything"),
+            Some(SlashCommand::KmsDump { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_slash_kms_dump_rejects_missing_text() {
+        assert!(matches!(
+            parse_slash("/kms dump notes"),
+            Some(SlashCommand::Unknown(_))
+        ));
+        assert!(matches!(
+            parse_slash("/kms dump notes   "),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn parse_slash_kms_dump_rejects_missing_name() {
+        assert!(matches!(
+            parse_slash("/kms dump"),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn build_kms_dump_prompt_embeds_name_and_text() {
+        let p = build_kms_dump_prompt(
+            "notes",
+            "Decision: defer Redis migration. Tom raised cost concerns.",
+        );
+        assert!(p.contains("notes"));
+        assert!(p.contains("Decision: defer Redis migration"));
+        assert!(p.contains("Tom raised cost concerns"));
+        // The routing categories are present so the agent has the contract.
+        assert!(p.contains("append-to-existing"));
+        assert!(p.contains("create-new-page"));
+        assert!(p.contains("defer"));
+        // The announce-then-execute pattern is loaded.
+        assert!(p.contains("Announce-then-execute") || p.contains("BEFORE making any tool calls"));
+        // Hard rules.
+        assert!(p.contains("Don't invent"));
+        assert!(p.contains("KmsDelete"));
+    }
+
+    // ─── /kms challenge ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_slash_kms_challenge_captures_idea() {
+        match parse_slash("/kms challenge notes I should build feature X next sprint") {
+            Some(SlashCommand::KmsChallenge { name, idea }) => {
+                assert_eq!(name, "notes");
+                assert_eq!(idea, "I should build feature X next sprint");
+            }
+            other => panic!("expected KmsChallenge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_kms_redteam_alias() {
+        assert!(matches!(
+            parse_slash("/kms redteam notes anything"),
+            Some(SlashCommand::KmsChallenge { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_slash_kms_challenge_rejects_missing_idea() {
+        assert!(matches!(
+            parse_slash("/kms challenge notes"),
+            Some(SlashCommand::Unknown(_))
+        ));
+        assert!(matches!(
+            parse_slash("/kms challenge notes   "),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn parse_slash_kms_challenge_rejects_missing_name() {
+        assert!(matches!(
+            parse_slash("/kms challenge"),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn build_kms_challenge_prompt_embeds_position_and_search_steps() {
+        let p = build_kms_challenge_prompt(
+            "notes",
+            "I should ship feature X this week",
+        );
+        assert!(p.contains("notes"));
+        assert!(p.contains("I should ship feature X this week"));
+        // Structured analysis sections.
+        assert!(p.contains("Counter-evidence from your vault"));
+        assert!(p.contains("Blind spots"));
+        assert!(p.contains("Verdict"));
+        // Hard rules — the agent must push back.
+        assert!(p.contains("Don't be agreeable"));
+        // Read-only contract.
+        assert!(p.contains("read-only") || p.contains("Don't write to the vault"));
+    }
+
+    // ─── /kms reconcile ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_slash_kms_reconcile_basic() {
+        match parse_slash("/kms reconcile notes") {
+            Some(SlashCommand::KmsReconcile { name, focus, apply }) => {
+                assert_eq!(name, "notes");
+                assert!(focus.is_none());
+                assert!(!apply); // dry-run by default
+            }
+            other => panic!("expected KmsReconcile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_kms_reconcile_with_focus() {
+        match parse_slash("/kms reconcile notes auth") {
+            Some(SlashCommand::KmsReconcile { name, focus, apply }) => {
+                assert_eq!(name, "notes");
+                assert_eq!(focus, Some("auth".into()));
+                assert!(!apply);
+            }
+            other => panic!("expected KmsReconcile with focus, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_kms_reconcile_apply_flag() {
+        match parse_slash("/kms reconcile notes --apply") {
+            Some(SlashCommand::KmsReconcile { name, apply, .. }) => {
+                assert_eq!(name, "notes");
+                assert!(apply);
+            }
+            other => panic!("expected KmsReconcile --apply, got {other:?}"),
+        }
+        // Order-insensitive: --apply before name should also work.
+        assert!(matches!(
+            parse_slash("/kms reconcile --apply notes"),
+            Some(SlashCommand::KmsReconcile { apply: true, .. })
+        ));
+    }
+
+    #[test]
+    fn parse_slash_kms_resolve_alias() {
+        assert!(matches!(
+            parse_slash("/kms resolve notes"),
+            Some(SlashCommand::KmsReconcile { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_slash_kms_reconcile_rejects_unknown_flag() {
+        assert!(matches!(
+            parse_slash("/kms reconcile notes --bogus"),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn parse_slash_kms_reconcile_rejects_missing_name() {
+        assert!(matches!(
+            parse_slash("/kms reconcile"),
+            Some(SlashCommand::Unknown(_))
+        ));
+        assert!(matches!(
+            parse_slash("/kms reconcile --apply"),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    // ─── /schedule preset ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_slash_schedule_preset_bare_lists() {
+        assert!(matches!(
+            parse_slash("/schedule preset"),
+            Some(SlashCommand::SchedulePresetList)
+        ));
+        assert!(matches!(
+            parse_slash("/schedule preset list"),
+            Some(SlashCommand::SchedulePresetList)
+        ));
+        assert!(matches!(
+            parse_slash("/schedule presets ls"),
+            Some(SlashCommand::SchedulePresetList)
+        ));
+    }
+
+    #[test]
+    fn parse_slash_schedule_preset_add_basic() {
+        match parse_slash("/schedule preset add nightly-close --kms notes") {
+            Some(SlashCommand::SchedulePresetAdd { preset_id, kms, cwd }) => {
+                assert_eq!(preset_id, "nightly-close");
+                assert_eq!(kms, "notes");
+                assert!(cwd.is_none());
+            }
+            other => panic!("expected SchedulePresetAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_schedule_preset_add_with_cwd() {
+        match parse_slash("/schedule preset add nightly-close --kms notes --cwd /tmp/foo") {
+            Some(SlashCommand::SchedulePresetAdd { preset_id, kms, cwd }) => {
+                assert_eq!(preset_id, "nightly-close");
+                assert_eq!(kms, "notes");
+                assert_eq!(cwd, Some(std::path::PathBuf::from("/tmp/foo")));
+            }
+            other => panic!("expected SchedulePresetAdd with cwd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_schedule_preset_add_rejects_missing_kms() {
+        assert!(matches!(
+            parse_slash("/schedule preset add nightly-close"),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn parse_slash_schedule_preset_add_rejects_missing_id() {
+        assert!(matches!(
+            parse_slash("/schedule preset add --kms notes"),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
     /// M6.28: build_kms_ingest_session_prompt produces a non-empty
     /// prompt referencing the KMS name + page + KmsWrite tool, with a
     /// provenance hint that varies by alias source.
@@ -7718,6 +8477,38 @@ mod tests {
             parse_slash("/agent cancel side-abc123"),
             Some(SlashCommand::AgentCancel("side-abc123".into())),
         );
+    }
+
+    /// `/translate xxx` is a parse-time alias for
+    /// `/agent translator xxx` — same dispatch path, same permissions,
+    /// same settings.json model override.
+    #[test]
+    fn parse_slash_translate_aliases_to_agent_translator() {
+        assert_eq!(
+            parse_slash("/translate hello world"),
+            Some(SlashCommand::Agent {
+                name: "translator".into(),
+                prompt: "hello world".into(),
+            }),
+        );
+        // Multi-byte (Thai) input round-trips intact.
+        assert_eq!(
+            parse_slash("/translate แปลไฟล์ src/foo.md เป็นภาษาไทย"),
+            Some(SlashCommand::Agent {
+                name: "translator".into(),
+                prompt: "แปลไฟล์ src/foo.md เป็นภาษาไทย".into(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_slash_translate_bare_errors() {
+        match parse_slash("/translate") {
+            Some(SlashCommand::Unknown(msg)) => {
+                assert!(msg.contains("usage: /translate"), "got: {msg}");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
     }
 
     #[test]
