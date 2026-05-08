@@ -39,7 +39,7 @@ automatically for protected servers.
   "mcpServers": {
     "agentic-cloud": {
       "transport": "http",
-      "url": "https://api.agentic.cloud/mcp",
+      "url": "https://mcp.example.com",
       "headers": { "Authorization": "Bearer …" }
     }
   }

@@ -107,8 +107,8 @@ consult them before answering when the user's question overlaps.
 ## KMS: notes (user)
 
 # notes
-- [auth-flow](pages/auth-flow.md) — JWT refresh pattern we use
-- [api-conventions](pages/api-conventions.md) — REST style guide
+- auth-flow → pages/auth-flow.md — JWT refresh pattern we use
+- api-conventions → pages/api-conventions.md — REST style guide
 
 To read a specific page, call `KmsRead(kms: "notes", page: "<page>")`.
 To grep all pages, call `KmsSearch(kms: "notes", pattern: "...")`.
@@ -146,8 +146,8 @@ surface เต็ม จัดกลุ่มตาม purpose
 ```
 ❯ /kms show notes
 # notes
-- [auth-flow](pages/auth-flow.md) — JWT refresh pattern we use
-- [api-conventions](pages/api-conventions.md) — REST style guide
+- auth-flow → pages/auth-flow.md — JWT refresh pattern we use
+- api-conventions → pages/api-conventions.md — REST style guide
 ...
 ```
 
