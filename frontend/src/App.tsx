@@ -458,7 +458,15 @@ export default function App() {
         {TABS.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => {
+              setActiveTab(tab.id);
+              // M6.39.12: switching tabs closes both the KMS viewer
+              // pane and the KMS browser sidebar — the user is moving
+              // back to "real work" (chat / terminal / files / team)
+              // and the KMS browse session is implicitly done.
+              setViewerTarget(null);
+              setBrowsingKms(null);
+            }}
             className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors"
             style={{
               color:
@@ -553,7 +561,15 @@ export default function App() {
         {browsingKms && (
           <KmsBrowserSidebar
             kmsName={browsingKms}
-            onClose={() => setBrowsingKms(null)}
+            onClose={() => {
+              // M6.39.12: closing the browser sidebar also closes the
+              // viewer pane underneath. The user's focus has moved
+              // away from this KMS — the viewer would just be
+              // orphaned content with no visible browser to re-open
+              // it from.
+              setBrowsingKms(null);
+              setViewerTarget(null);
+            }}
             onOpenFile={(target) => setViewerTarget(target)}
           />
         )}
