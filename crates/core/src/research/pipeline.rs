@@ -236,7 +236,16 @@ pub async fn run_with_tools(
     let kms_name = match &config.kms_target {
         Some(n) => n.clone(),
         None => {
-            let slug = llm_calls::derive_topic_slug(
+            // M6.39.5: KMS name is the LLM-derived topic slug
+            // verbatim, no `research-` prefix. Pre-fix the prefix
+            // misled the consulting LLM — the KMS section header
+            // `## KMS: research-llm-wiki (project)` reads as "a KMS
+            // about *research methodology* on llm-wiki" or "an
+            // archive of research outputs", not "the wiki entry on
+            // llm-wiki". The slug alone is more honest about what
+            // the KMS contains. Users who want a `research-` prefix
+            // for grouping pass `--kms research-<topic>` explicitly.
+            llm_calls::derive_topic_slug(
                 provider.as_ref(),
                 &model,
                 &query,
@@ -244,8 +253,7 @@ pub async fn run_with_tools(
                 &cancel,
             )
             .await
-            .unwrap_or_else(|_| "research".into());
-            format!("research-{slug}")
+            .unwrap_or_else(|_| "research".into())
         }
     };
     let query_slug = simple_slug(&query);
@@ -652,7 +660,17 @@ mod tests {
         // 2 iterations × evaluate + first iteration extract_subtopics
         // + iter 1 extract_next + synthesize + derive_slug = 6 calls
         assert_eq!(provider.call_count(), 6);
-        assert!(outcome.contains("research-test-topic"));
+        // M6.39.5: KMS name is the LLM-derived slug verbatim, no
+        // `research-` prefix. The mock provider returns "test-topic"
+        // as its derive_topic_slug response.
+        assert!(
+            outcome.starts_with("test-topic/"),
+            "outcome should be `<slug>/<filename>.md`, got: {outcome}"
+        );
+        assert!(
+            !outcome.contains("research-test-topic"),
+            "KMS name should not be prefixed with `research-`, got: {outcome}"
+        );
         assert!(outcome.ends_with(".md"));
     }
 
