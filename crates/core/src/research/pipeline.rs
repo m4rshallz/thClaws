@@ -32,20 +32,24 @@ use crate::error::{Error, Result};
 use crate::providers::Provider;
 use std::sync::Arc;
 
-/// M6.39.7: in-memory cap per fetched source body. Pre-fix this was
-/// 1500 chars — fine for the synthesis prompt (which further
-/// truncates via `snippet(body, 500)`) but starved the
-/// `<kms>/sources/<slug>.md` archive files of meaningful content.
-/// 100 KB matches `WebFetchTool`'s typical `max_bytes` cap, holds a
-/// full wiki / blog page, and at 30 accumulated sources still tops
-/// out around 3 MB per run — comfortable.
-const MAX_SOURCE_BODY_CHARS: usize = 100_000;
-/// M6.39.7: per-fetch byte budget for `WebFetch` calls. Replaces the
-/// earlier 8 KB synth-only cap. The synthesis prompt builders still
-/// `snippet(body, 500)` etc. when composing prompts, so larger
-/// fetched bodies don't bloat LLM cost — but sources/ archives now
-/// get the full page.
-const FETCH_MAX_BYTES: u64 = 100 * 1024;
+/// In-memory cap per fetched source body. Research is for gathering
+/// **complete** references — short caps defeat the purpose. 1 MB
+/// holds a long wiki article + comments + a typical 50-page PDF text
+/// extract, while still bounding pathological pages (e.g. an entire
+/// site dumped to one URL). At 30 accumulated sources × 1 MB worst
+/// case = ~30 MB peak in memory per run; comfortable for desktop.
+///
+/// Synth prompts still truncate via `snippet(body, N)` (500 chars
+/// for evaluate / 600 for write_research_page) when composing, so a
+/// large source body doesn't bloat LLM cost — only the sources/
+/// archive on disk grows.
+const MAX_SOURCE_BODY_CHARS: usize = 1_000_000;
+/// Per-fetch byte budget for `WebFetch` calls. Same 1 MB ceiling as
+/// the in-memory cap so they don't conflict. M6.39.8: HAL-backed
+/// `WebScrape` is preferred when `HAL_API_KEY` is set (returns
+/// cleaner markdown); this constant only governs the WebFetch
+/// fallback path.
+const FETCH_MAX_BYTES: u64 = 1024 * 1024;
 const SEED_SEARCH_RESULTS: u32 = 10;
 
 /// Trait abstraction over WebSearch / WebFetch so the pipeline can be
@@ -477,6 +481,12 @@ pub fn production_tools() -> Arc<dyn ResearchTools> {
 pub struct ProductionTools {
     search: crate::tools::WebSearchTool,
     fetch: crate::tools::WebFetchTool,
+    /// M6.39.8: HAL-backed web scraper, used when `HAL_API_KEY` is
+    /// set. Returns clean Markdown directly from HAL's headless-browser
+    /// scrape — far better archive quality than WebFetch's HTML→
+    /// Markdown conversion. Falls back to `WebFetchTool` when the key
+    /// isn't available or the call fails.
+    scrape: crate::tools::WebScrapeTool,
 }
 
 impl ProductionTools {
@@ -484,6 +494,7 @@ impl ProductionTools {
         Self {
             search: crate::tools::WebSearchTool::default(),
             fetch: crate::tools::WebFetchTool::new(),
+            scrape: crate::tools::WebScrapeTool::new(),
         }
     }
 }
@@ -509,11 +520,33 @@ impl ResearchTools for ProductionTools {
     }
     async fn fetch(&self, url: &str) -> Result<String> {
         use crate::tools::Tool;
-        // M6.39.7: 100 KB cap. Pre-fix was 8 KB which was synth-prompt-
-        // sized, but the same body gets archived to <kms>/sources/ —
-        // truncating to 8 KB starved the offline archive of meaningful
-        // content. Synth prompts further truncate via `snippet(body, N)`
-        // when composing, so the larger fetch doesn't bloat LLM cost.
+        // M6.39.8: HAL-first with WebFetch fallback. Research is for
+        // gathering complete references — truncation defeats the
+        // purpose, and HAL's scrape returns better-structured markdown
+        // than WebFetch's HTML conversion. Try HAL when its key is
+        // available; on failure or absence, fall back to WebFetch.
+        if hal_key_available() {
+            match self.scrape.call(serde_json::json!({"url": url})).await {
+                Ok(json_str) => {
+                    if let Some(markdown) = extract_hal_content(&json_str) {
+                        return Ok(markdown);
+                    }
+                    // HAL returned but parse failed — fall through to
+                    // WebFetch rather than silently surfacing the JSON
+                    // envelope as the source body.
+                }
+                Err(_) => {
+                    // HAL failed (rate limit, network, etc.) — fall
+                    // through to WebFetch. Best-effort archive: the
+                    // synth prompt only needs SOMETHING; sources/ is
+                    // a useful-but-secondary cache.
+                }
+            }
+        }
+        // WebFetch path: pass FETCH_MAX_BYTES as the byte budget.
+        // Synth prompts further truncate via `snippet(body, N)`, so
+        // larger fetched bodies don't bloat LLM cost. Sources/
+        // archive gets the full markdown.
         self.fetch
             .call(serde_json::json!({
                 "url": url,
@@ -521,6 +554,31 @@ impl ResearchTools for ProductionTools {
             }))
             .await
     }
+}
+
+/// Check whether `HAL_API_KEY` is set + non-empty in the live process
+/// env. Pulled out of `fetch` so the same logic is testable.
+fn hal_key_available() -> bool {
+    std::env::var("HAL_API_KEY")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Extract the `content` field (Markdown) out of HAL's
+/// `/scrape/v1/url` JSON response. The `WebScrapeTool` returns the
+/// full envelope as pretty-printed JSON; we want just the markdown
+/// for the sources/ archive. Returns `None` if the JSON doesn't have
+/// a `content` field — caller falls back to WebFetch.
+fn extract_hal_content(json_str: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let content = v.get("content").and_then(serde_json::Value::as_str)?;
+    if content.trim().is_empty() {
+        return None;
+    }
+    // Optionally prepend the title as an H1 so the source file has a
+    // nice header. HAL's content sometimes already includes it; keep
+    // it simple and just return content verbatim.
+    Some(content.to_string())
 }
 
 /// Parse `WebSearchTool`'s Markdown output back into structured hits.
@@ -1040,6 +1098,70 @@ mod tests {
         // Smoke test only — actual search/fetch require network +
         // configured keys, exercised via end-to-end manual testing.
         let _t = production_tools();
+    }
+
+    /// M6.39.8: HAL-key detection helper. The fetch path checks this
+    /// to decide between HAL `WebScrape` (preferred when key is set)
+    /// and `WebFetch` (fallback).
+    #[test]
+    fn hal_key_available_reflects_env() {
+        let prev = std::env::var("HAL_API_KEY").ok();
+
+        std::env::remove_var("HAL_API_KEY");
+        assert!(!hal_key_available(), "no var → unavailable");
+
+        std::env::set_var("HAL_API_KEY", "");
+        assert!(!hal_key_available(), "empty var → unavailable");
+
+        std::env::set_var("HAL_API_KEY", "   ");
+        assert!(!hal_key_available(), "whitespace-only var → unavailable");
+
+        std::env::set_var("HAL_API_KEY", "hal_realkey");
+        assert!(hal_key_available(), "non-empty → available");
+
+        match prev {
+            Some(v) => std::env::set_var("HAL_API_KEY", v),
+            None => std::env::remove_var("HAL_API_KEY"),
+        }
+    }
+
+    /// M6.39.8: parser for HAL's `/scrape/v1/url` envelope. The
+    /// pipeline pulls just the `content` markdown out — the full
+    /// envelope (title, url, metadata, scraped_at) wraps it but
+    /// research only wants the body for sources/.
+    #[test]
+    fn extract_hal_content_pulls_markdown_field() {
+        // Build the envelope at runtime so escape sequences are real.
+        let envelope = serde_json::json!({
+            "url": "https://example.com",
+            "title": "Example",
+            "content": "# Example\n\nFull markdown body here.",
+            "metadata": {},
+            "scraped_at": "2026-05-09T10:00:00Z"
+        })
+        .to_string();
+        let extracted = extract_hal_content(&envelope).unwrap();
+        assert_eq!(extracted, "# Example\n\nFull markdown body here.");
+    }
+
+    #[test]
+    fn extract_hal_content_returns_none_on_empty_content() {
+        let envelope = serde_json::json!({"content": ""}).to_string();
+        assert!(extract_hal_content(&envelope).is_none());
+        let envelope_ws = serde_json::json!({"content": "   \n  "}).to_string();
+        assert!(extract_hal_content(&envelope_ws).is_none());
+    }
+
+    #[test]
+    fn extract_hal_content_returns_none_on_missing_field() {
+        let envelope = r#"{"url": "x", "title": "t"}"#;
+        assert!(extract_hal_content(envelope).is_none());
+    }
+
+    #[test]
+    fn extract_hal_content_returns_none_on_bad_json() {
+        assert!(extract_hal_content("not json").is_none());
+        assert!(extract_hal_content("").is_none());
     }
 
     #[test]
