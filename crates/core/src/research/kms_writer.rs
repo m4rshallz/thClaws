@@ -176,6 +176,141 @@ pub fn today_str() -> String {
     crate::usage::today_str()
 }
 
+/// M6.39.5: persist a fetched source page into the KMS's `sources/`
+/// directory for offline provenance. Called once per cited source
+/// (those whose `[N]` index appears in the synthesized markdown) so
+/// the KMS contains both the synthesized note AND the raw inputs the
+/// LLM saw at synthesis time.
+///
+/// Filename is a deterministic slug of the URL — same URL across
+/// different research runs maps to the same file (the latest fetch
+/// wins). Frontmatter carries the original URL + citation index +
+/// query so a user browsing `sources/` can trace which research run
+/// produced each cached page.
+pub fn write_source(
+    kms_name: &str,
+    query: &str,
+    today: &str,
+    index: u32,
+    title: &str,
+    url: &str,
+    body: &str,
+) -> Result<std::path::PathBuf> {
+    let kref = crate::kms::resolve(kms_name).ok_or_else(|| {
+        crate::error::Error::Tool(format!(
+            "KMS '{kms_name}' not found — research-source write needs an existing KMS"
+        ))
+    })?;
+    let dir = kref.root.join("sources");
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        crate::error::Error::Tool(format!("create sources dir {}: {e}", dir.display()))
+    })?;
+    let filename = url_to_filename(url);
+    let path = dir.join(format!("{filename}.md"));
+    let body_str = format!(
+        "---\n\
+         type: research-source\n\
+         title: \"{}\"\n\
+         url: \"{}\"\n\
+         fetched_for: \"{}\"\n\
+         citation_index: {index}\n\
+         fetched_at: {today}\n\
+         ---\n\n\
+         # {}\n\n\
+         **Source:** [{}]({})\n\n\
+         {}\n",
+        escape_yaml_string(title),
+        escape_yaml_string(url),
+        escape_yaml_string(query),
+        title,
+        url,
+        url,
+        body.trim()
+    );
+    std::fs::write(&path, body_str)
+        .map_err(|e| crate::error::Error::Tool(format!("write {}: {e}", path.display())))?;
+    Ok(path)
+}
+
+/// URL → filesystem-safe slug. Strip protocol, lowercase, replace
+/// non-alphanumerics with `-`, collapse runs, trim, cap at 80 chars.
+/// `https://en.wikipedia.org/wiki/Obon` → `en-wikipedia-org-wiki-obon`.
+fn url_to_filename(url: &str) -> String {
+    let stripped = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let mut slug = String::with_capacity(stripped.len());
+    let mut prev_dash = true;
+    for c in stripped.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = slug.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "source".into()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
+/// M6.39.5: parse citation indices `[N]` out of synthesized markdown.
+/// Returns a set so duplicates collapse. Used by the pipeline to
+/// decide which fetched sources to persist into `sources/`.
+///
+/// Matches `[1]`, `[12]`, `[1,3,7]`, `[1, 3]` — comma-separated
+/// indices in a single bracket are common in academic-style synth
+/// output. Non-numeric brackets (`[ref]`, `[link](url)`) are
+/// ignored. False positives are cheap (one extra source file);
+/// false negatives leak provenance, so the parser leans permissive.
+pub fn parse_citation_indices(markdown: &str) -> std::collections::HashSet<u32> {
+    let mut out = std::collections::HashSet::new();
+    let bytes = markdown.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        // Find matching `]`. Bail if missing or content longer than 30
+        // chars (excludes `[link text with stuff](url)` and other
+        // non-citation brackets).
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b']' {
+            end += 1;
+        }
+        if end >= bytes.len() || end - start == 0 || end - start > 30 {
+            i += 1;
+            continue;
+        }
+        let inner = &markdown[start..end];
+        // Inner must be only digits + commas + spaces — anything else
+        // disqualifies (markdown link text, image alt, etc.).
+        if !inner
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ',' || c == ' ')
+        {
+            i += 1;
+            continue;
+        }
+        for tok in inner.split(',') {
+            if let Ok(n) = tok.trim().parse::<u32>() {
+                if n > 0 {
+                    out.insert(n);
+                }
+            }
+        }
+        i = end + 1;
+    }
+    out
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -338,6 +473,152 @@ mod tests {
             !index.contains("Research: what is OBON"),
             "index should NOT use the H1 title as summary (that's the pre-fix bug):\n{index}"
         );
+    }
+
+    // ── parse_citation_indices ─────────────────────────────────────
+
+    #[test]
+    fn parse_citation_indices_basic() {
+        let md = "Result here [1] and another claim [2].";
+        let got = parse_citation_indices(md);
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&1));
+        assert!(got.contains(&2));
+    }
+
+    #[test]
+    fn parse_citation_indices_handles_comma_lists() {
+        let md = "Multi-cite [1,3,5] and [2, 4].";
+        let got = parse_citation_indices(md);
+        assert_eq!(got.len(), 5);
+        for n in [1, 2, 3, 4, 5] {
+            assert!(got.contains(&n), "expected {n} in {:?}", got);
+        }
+    }
+
+    #[test]
+    fn parse_citation_indices_dedupes() {
+        let md = "Same source twice [3] and again [3] elsewhere.";
+        let got = parse_citation_indices(md);
+        assert_eq!(got.len(), 1);
+        assert!(got.contains(&3));
+    }
+
+    #[test]
+    fn parse_citation_indices_ignores_markdown_links() {
+        // Standard markdown link — `[text](url)` shouldn't trigger
+        // even though brackets contain digits.
+        let md = "See [the docs](https://example.com) for [3] more.";
+        let got = parse_citation_indices(md);
+        assert_eq!(got.len(), 1);
+        assert!(got.contains(&3));
+    }
+
+    #[test]
+    fn parse_citation_indices_ignores_non_numeric() {
+        let md = "Plain text [abc] and [ref-foo] but [7] is real.";
+        let got = parse_citation_indices(md);
+        assert_eq!(got.len(), 1);
+        assert!(got.contains(&7));
+    }
+
+    #[test]
+    fn parse_citation_indices_empty_on_no_citations() {
+        let md = "Just prose, no bracketed numbers anywhere.";
+        assert!(parse_citation_indices(md).is_empty());
+    }
+
+    #[test]
+    fn parse_citation_indices_skips_zero() {
+        // [0] is meaningless as a citation index (citations are 1-based).
+        let md = "Should ignore [0] and pick up [1].";
+        let got = parse_citation_indices(md);
+        assert_eq!(got.len(), 1);
+        assert!(got.contains(&1));
+    }
+
+    #[test]
+    fn parse_citation_indices_long_brackets_ignored() {
+        // > 30 chars between brackets = probably not a citation.
+        let md = "[this is a very very very very long bracket content with 1, 2, 3]";
+        assert!(parse_citation_indices(md).is_empty());
+    }
+
+    // ── url_to_filename ────────────────────────────────────────────
+
+    #[test]
+    fn url_to_filename_strips_protocol() {
+        assert_eq!(
+            url_to_filename("https://en.wikipedia.org/wiki/Obon"),
+            "en-wikipedia-org-wiki-obon"
+        );
+        assert_eq!(url_to_filename("http://example.com/foo"), "example-com-foo");
+    }
+
+    #[test]
+    fn url_to_filename_handles_query_string() {
+        assert_eq!(
+            url_to_filename("https://example.com/path?q=1&r=2"),
+            "example-com-path-q-1-r-2"
+        );
+    }
+
+    #[test]
+    fn url_to_filename_caps_at_80_chars() {
+        let long = format!("https://example.com/{}", "a".repeat(200));
+        let slug = url_to_filename(&long);
+        assert!(slug.len() <= 80);
+    }
+
+    #[test]
+    fn url_to_filename_falls_back_for_empty() {
+        assert_eq!(url_to_filename(""), "source");
+        assert_eq!(url_to_filename("---"), "source");
+    }
+
+    // ── write_source integration ───────────────────────────────────
+
+    #[test]
+    fn write_source_creates_file_in_sources_dir() {
+        let _g = scoped_home();
+        // Need an existing KMS to write into.
+        let _ = crate::kms::create("test-kms", crate::kms::KmsScope::Project).unwrap();
+        let path = write_source(
+            "test-kms",
+            "what is OBON",
+            "2026-05-09",
+            3,
+            "Obon Festival - Wikipedia",
+            "https://en.wikipedia.org/wiki/Obon",
+            "Body content of the wikipedia page about Obon...",
+        )
+        .unwrap();
+        assert!(path.exists());
+        // File lives under <kms-root>/sources/, not pages/.
+        assert!(path.to_str().unwrap().contains("/sources/"));
+        assert!(!path.to_str().unwrap().contains("/pages/"));
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.starts_with("---\n"));
+        assert!(body.contains("type: research-source"));
+        assert!(body.contains("citation_index: 3"));
+        assert!(body.contains("https://en.wikipedia.org/wiki/Obon"));
+        assert!(body.contains("Body content of the wikipedia"));
+    }
+
+    #[test]
+    fn write_source_errors_on_unknown_kms() {
+        let _g = scoped_home();
+        let err = write_source(
+            "no-such-kms",
+            "q",
+            "2026-05-09",
+            1,
+            "title",
+            "https://x.example",
+            "body",
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("not found"));
     }
 
     #[test]

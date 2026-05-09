@@ -257,13 +257,31 @@ pub async fn run_with_tools(
         }
     };
     let query_slug = simple_slug(&query);
-    let outcome = kms_writer::write(
-        &kms_name,
-        &query,
-        &query_slug,
-        &kms_writer::today_str(),
-        &synthesized,
-    )?;
+    let today = kms_writer::today_str();
+    let outcome = kms_writer::write(&kms_name, &query, &query_slug, &today, &synthesized)?;
+
+    // M6.39.5: persist cited sources to <kms>/sources/ for offline
+    // provenance. Without this, the synthesized note has [N] markers
+    // pointing at URLs that may rot or change. Parse the synthesized
+    // markdown for [N] citations, then write each cited source's
+    // fetched body to a deterministic filename. Errors per-source are
+    // tolerated (best-effort) — the synthesized note is the primary
+    // artifact; sources/ is a useful-but-secondary archive.
+    let cited = kms_writer::parse_citation_indices(&synthesized);
+    for s in &sources {
+        if cited.contains(&s.index) {
+            let _ = kms_writer::write_source(
+                &outcome.kms_name,
+                &query,
+                &today,
+                s.index,
+                &s.title,
+                &s.url,
+                &s.body,
+            );
+        }
+    }
+
     Ok(format!("{}/{}", outcome.kms_name, outcome.raw_note))
 }
 
