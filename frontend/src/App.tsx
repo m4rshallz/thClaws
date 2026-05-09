@@ -8,6 +8,7 @@ import { Sidebar } from "./components/Sidebar";
 import { PlanSidebar } from "./components/PlanSidebar";
 import { GoalSidebar } from "./components/GoalSidebar";
 import { TodoSidebar } from "./components/TodoSidebar";
+import { ResearchSidebar } from "./components/ResearchSidebar";
 import { SettingsModal } from "./components/SettingsModal";
 import { SettingsMenu } from "./components/SettingsMenu";
 import { InstructionsEditorModal } from "./components/InstructionsEditorModal";
@@ -510,6 +511,13 @@ export default function App() {
             with `null` to clear it on `/new` / `/load` of a plan-less
             session. Mounted on the right by design (Cowork pattern). */}
         <PlanSidebar />
+        {/* Research sidebar (M6.39.5). Mirrors PlanSidebar's
+            right-edge layout but shows /research pipeline progression
+            verbosely — current phase, iteration progress, score
+            history, phase log, accumulated source count. Renders
+            nothing until at least one research job has been observed
+            via `research_update`. */}
+        <ResearchSidebar />
       </div>
 
       {/* Status bar */}
