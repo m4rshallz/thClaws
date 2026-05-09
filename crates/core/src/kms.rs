@@ -836,13 +836,39 @@ pub fn system_prompt_section(active: &[String]) -> String {
     if parts.is_empty() {
         String::new()
     } else {
+        // M6.39.5: strong-imperative wording. Pre-fix the prelude said
+        // "consult them before answering when the user's question
+        // overlaps" — soft enough that models routinely answered from
+        // training data even when the index's per-page summaries
+        // clearly matched the user's question. This rewrite uses
+        // numbered MUST procedure + explicit "do not skip" + framing
+        // skipped lookups as a correctness bug. Reader/maintainer
+        // framing kept (still useful) but moved below the consultation
+        // procedure so the directive lands first.
         format!(
-            "# Active knowledge bases\n\n\
-             The following KMS are attached to this conversation. Their schemas + indices are below \
-             — consult them before answering when the user's question overlaps. Treat KMS \
-             content as authoritative over your training data for the topics it covers. You are \
-             both reader AND maintainer: file new findings, update entity pages when sources \
-             contradict them, and run `/kms lint <name>` periodically.\n\n{}",
+            "# Active knowledge bases (CONSULT BEFORE ANSWERING)\n\n\
+             The following KMS are attached to this conversation. They contain \
+             research, notes, and entity pages curated specifically for this project.\n\n\
+             **MANDATORY consultation procedure.** For ANY user message whose subject \
+             could plausibly appear in the index below, your FIRST action MUST be \
+             a tool call sequence — BEFORE composing any prose response:\n\n\
+             1. Call `KmsSearch(kms: \"<name>\", pattern: \"<keyword>\")` with 1-3 keyword \
+             stems from the user's message. KMS uses plain grep, so romanizations or \
+             English keywords work for non-English questions (e.g. user asks in Thai \
+             about \"llm-wiki\" → search `pattern: \"llm-wiki\"` or `\"llm wiki\"`).\n\
+             2. For each matching page, call `KmsRead(kms: \"<name>\", page: \"<page-stem>\")` \
+             to read full content.\n\
+             3. ONLY THEN compose your answer, citing KMS pages inline as `(see KMS: <name>/<page>)`.\n\n\
+             Do NOT skip steps 1-2 because the question seems familiar from training data. \
+             KMS content is authoritative for any topic it covers — the user populated the KMS \
+             specifically to override generic answers. Answering without KMS lookup when the \
+             index suggests relevance is a correctness bug, not a shortcut.\n\n\
+             If `KmsSearch` returns no hits AND the index lists nothing matching the user's \
+             topic, fall back to training-data knowledge — but say so explicitly (\"the KMS \
+             has nothing on this; answering from general knowledge\").\n\n\
+             You are both reader AND maintainer: file new findings via `KmsWrite`, update \
+             entity pages when sources contradict them, and run `/kms lint <name>` \
+             periodically.\n\n{}",
             parts.join("\n\n")
         )
     }
@@ -1874,6 +1900,45 @@ mod tests {
         assert!(out.contains("## KMS: nb"));
         assert!(out.contains("foo page"));
         assert!(out.contains("KmsRead"));
+    }
+
+    /// M6.39.5: pin the strong-imperative wording of the prelude.
+    /// User reported via /system inspection that even when KMS was
+    /// active and the index summary was descriptive, the LLM still
+    /// answered from training data. Pre-fix prelude said "consult
+    /// them before answering" — soft language. This test locks the
+    /// directive form so a future "smooth out the wording" refactor
+    /// can't regress it.
+    #[test]
+    fn system_prompt_section_uses_mandatory_consultation_directive() {
+        let _home = scoped_home();
+        let k = create("nb", KmsScope::User).unwrap();
+        std::fs::write(k.index_path(), "# nb\n- [foo](pages/foo.md) — foo\n").unwrap();
+        let out = system_prompt_section(&["nb".into()]);
+        // MUST include the strong imperative form
+        assert!(
+            out.contains("MANDATORY"),
+            "prelude must use MANDATORY (got soft 'consult'-style wording)"
+        );
+        // MUST name the tool call sequence explicitly — `KmsSearch`
+        // first, then `KmsRead`, then answer. This is the procedure
+        // the model needs to follow.
+        assert!(out.contains("KmsSearch"));
+        assert!(out.contains("KmsRead"));
+        // MUST forbid the shortcut (answering from training when KMS
+        // could match). Without this the model rationalizes skipping
+        // ("I already know the answer").
+        let lower = out.to_ascii_lowercase();
+        assert!(
+            lower.contains("do not skip"),
+            "prelude must forbid skipping the lookup steps"
+        );
+        // MUST acknowledge the no-match fallback so the model doesn't
+        // feel boxed in when KMS genuinely has nothing.
+        assert!(
+            lower.contains("fall back to training-data knowledge"),
+            "prelude must allow training-data fallback when KMS has no hits"
+        );
     }
 
     #[test]
