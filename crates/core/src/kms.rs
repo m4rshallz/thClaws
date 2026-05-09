@@ -1261,6 +1261,112 @@ pub fn delete_page(kref: &KmsRef, page_name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// M6.39.9: list every readable `*.md` file inside a KMS, split by
+/// kind (`pages/` and `sources/`). Drives the right-edge KMS browser
+/// panel — clicking the title of a KMS row in the sidebar opens this
+/// listing, clicking a list entry opens the viewer overlay.
+///
+/// Filenames returned without the `.md` extension (so the frontend
+/// can use them as page-name keys consistent with `KmsRead`).
+/// Sorted alphabetically. Hidden files (`.foo`) skipped.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BrowseFile {
+    pub name: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BrowseListing {
+    pub kms: String,
+    pub pages: Vec<BrowseFile>,
+    pub sources: Vec<BrowseFile>,
+}
+
+/// List browseable files for a KMS by name. Returns `None` if the
+/// KMS isn't found. `pages/` and `sources/` are independent — a KMS
+/// that predates M6.39.5 may have no `sources/` dir; that's fine,
+/// returns empty list for that side.
+pub fn browse(name: &str) -> Option<BrowseListing> {
+    let kref = resolve(name)?;
+    let pages = scan_dir_md(&kref.pages_dir());
+    let sources = scan_dir_md(&kref.root.join("sources"));
+    Some(BrowseListing {
+        kms: name.to_string(),
+        pages,
+        sources,
+    })
+}
+
+fn scan_dir_md(dir: &Path) -> Vec<BrowseFile> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<BrowseFile> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || !name.ends_with(".md") {
+            continue;
+        }
+        let stem = name.trim_end_matches(".md").to_string();
+        let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        out.push(BrowseFile { name: stem, bytes });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// M6.39.9: read a file from a KMS's `pages/` or `sources/` dir
+/// for the viewer overlay. `kind` is `"page"` or `"source"`; `name`
+/// is the bare filename stem (no `.md`). Path-safety mirrors
+/// [`writable_page_path`] — the viewer is read-only, but we still
+/// don't want a crafted IPC reading `/etc/passwd` via traversal.
+pub fn read_browse_file(kms_name: &str, kind: &str, name: &str) -> Result<String> {
+    if name.is_empty()
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name.chars().any(|c| c.is_control())
+        || Path::new(name).is_absolute()
+    {
+        return Err(Error::Tool(format!(
+            "invalid file name '{name}' — no path separators or traversal"
+        )));
+    }
+    let kref =
+        resolve(kms_name).ok_or_else(|| Error::Tool(format!("KMS '{kms_name}' not found")))?;
+    let dir = match kind {
+        "page" => kref.pages_dir(),
+        "source" => kref.root.join("sources"),
+        other => return Err(Error::Tool(format!("invalid kind '{other}'"))),
+    };
+    let stem = name.trim_end_matches(".md");
+    let path = dir.join(format!("{stem}.md"));
+    if !path.exists() {
+        return Err(Error::Tool(format!("not found: {}", path.display())));
+    }
+    // Canonicalize both and confirm path lives inside dir — defense
+    // in depth even though the bare-name validation above already
+    // blocks `..`.
+    let canon_dir = std::fs::canonicalize(&dir)
+        .map_err(|e| Error::Tool(format!("canonicalize {}: {e}", dir.display())))?;
+    let canon_path = std::fs::canonicalize(&path)
+        .map_err(|e| Error::Tool(format!("canonicalize {}: {e}", path.display())))?;
+    if !canon_path.starts_with(&canon_dir) {
+        return Err(Error::Tool(format!(
+            "path '{}' escaped KMS root",
+            path.display()
+        )));
+    }
+    std::fs::read_to_string(&canon_path)
+        .map_err(|e| Error::Tool(format!("read {}: {e}", canon_path.display())))
+}
+
 fn remove_index_bullet(kref: &KmsRef, stem: &str) -> Result<()> {
     let path = kref.index_path();
     let Ok(existing) = std::fs::read_to_string(&path) else {

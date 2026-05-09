@@ -452,6 +452,78 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             (ctx.dispatch)(crate::kms::build_update_payload().to_string());
         }
 
+        // M6.39.9: KMS browser — clicking a KMS title in the sidebar
+        // emits `kms_browse` with the name; backend returns
+        // `kms_browse_result` listing every page + source file. The
+        // frontend renders this in the right-edge KMS browser panel.
+        "kms_browse" => {
+            let name = msg
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let payload = match crate::kms::browse(&name) {
+                Some(listing) => serde_json::json!({
+                    "type": "kms_browse_result",
+                    "kms": listing.kms,
+                    "pages": listing.pages,
+                    "sources": listing.sources,
+                    "ok": true,
+                }),
+                None => serde_json::json!({
+                    "type": "kms_browse_result",
+                    "kms": name,
+                    "pages": [],
+                    "sources": [],
+                    "ok": false,
+                    "error": format!("KMS '{name}' not found"),
+                }),
+            };
+            (ctx.dispatch)(payload.to_string());
+        }
+
+        // M6.39.9: KMS file reader for the viewer overlay. Returns
+        // raw markdown content; the frontend renders to HTML via
+        // `marked`. `kind` is "page" or "source"; `name` is the
+        // filename stem (no `.md`). Path-safety enforced server-side.
+        "kms_read_file" => {
+            let kms_name = msg
+                .get("kms")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let kind = msg
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let file = msg
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let payload = match crate::kms::read_browse_file(&kms_name, &kind, &file) {
+                Ok(content) => serde_json::json!({
+                    "type": "kms_file_content",
+                    "kms": kms_name,
+                    "kind": kind,
+                    "name": file,
+                    "content": content,
+                    "ok": true,
+                }),
+                Err(e) => serde_json::json!({
+                    "type": "kms_file_content",
+                    "kms": kms_name,
+                    "kind": kind,
+                    "name": file,
+                    "content": "",
+                    "ok": false,
+                    "error": format!("{e}"),
+                }),
+            };
+            (ctx.dispatch)(payload.to_string());
+        }
+
         // ── Working directory (M6.36 SERVE9d — migrated from gui.rs) ─
         "get_cwd" => {
             let cwd = std::env::current_dir()

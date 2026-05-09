@@ -47,7 +47,15 @@ type SsoState = {
   error?: string;
 };
 
-export function Sidebar() {
+/// M6.39.9: parent (App) tracks which KMS the user opened the
+/// browser for. The sidebar fires `onBrowseKms(name)` when the
+/// user clicks a KMS title (not the checkbox); App stores that in
+/// state and renders `KmsBrowserSidebar` accordingly.
+interface SidebarProps {
+  onBrowseKms?: (name: string) => void;
+}
+
+export function Sidebar({ onBrowseKms }: SidebarProps = {}) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>("");
   const [activeProvider, setActiveProvider] = useState("anthropic");
@@ -432,10 +440,10 @@ export function Sidebar() {
           </div>
         ) : (
           kmss.map((k) => (
-            <label
+            <div
               key={`${k.scope}:${k.name}`}
-              className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/5 cursor-pointer"
-              title={`${k.scope} scope`}
+              className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/5"
+              title={`${k.scope} scope — checkbox toggles attach; click name to browse`}
             >
               <input
                 type="checkbox"
@@ -448,11 +456,19 @@ export function Sidebar() {
                   })
                 }
               />
-              <span style={{ color: "var(--text-primary)" }}>{k.name}</span>
+              <button
+                type="button"
+                onClick={() => onBrowseKms?.(k.name)}
+                className="flex-1 text-left truncate hover:underline"
+                style={{ color: "var(--text-primary)", cursor: "pointer" }}
+                title="Browse pages + sources for this KMS"
+              >
+                {k.name}
+              </button>
               <span style={{ color: "var(--text-secondary)", fontSize: "10px" }}>
                 {k.scope === "project" ? "(proj)" : ""}
               </span>
-            </label>
+            </div>
           ))
         )}
       </Section>

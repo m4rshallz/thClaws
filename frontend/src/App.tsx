@@ -9,6 +9,11 @@ import { PlanSidebar } from "./components/PlanSidebar";
 import { GoalSidebar } from "./components/GoalSidebar";
 import { TodoSidebar } from "./components/TodoSidebar";
 import { ResearchSidebar } from "./components/ResearchSidebar";
+import {
+  KmsBrowserSidebar,
+  type ViewerTarget,
+} from "./components/KmsBrowserSidebar";
+import { KmsViewerOverlay } from "./components/KmsViewerOverlay";
 import { SettingsModal } from "./components/SettingsModal";
 import { SettingsMenu } from "./components/SettingsMenu";
 import { InstructionsEditorModal } from "./components/InstructionsEditorModal";
@@ -340,6 +345,15 @@ export default function App() {
     useState<"global" | "folder" | null>(null);
   const closeInstructions = useCallback(() => setInstructionsScope(null), []);
 
+  // M6.39.9: KMS browser + viewer state. `browsingKms` is the
+  // KMS the user clicked the title of in the left sidebar — when
+  // set, the right-edge `KmsBrowserSidebar` mounts. `viewerTarget`
+  // is the file the user clicked inside the browser — when set,
+  // `KmsViewerOverlay` mounts over the main pane. Both clear on
+  // their respective close handlers.
+  const [browsingKms, setBrowsingKms] = useState<string | null>(null);
+  const [viewerTarget, setViewerTarget] = useState<ViewerTarget | null>(null);
+
   // Post-key-entry model picker (issue #13). Backend broadcasts
   // `model_picker_open` after a successful api_key_set when the
   // provider has a non-trivial catalogue. Clearing this state on
@@ -474,7 +488,7 @@ export default function App() {
 
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
-        <Sidebar />
+        <Sidebar onBrowseKms={(name) => setBrowsingKms(name)} />
         <div className="flex-1 min-w-0 relative">
           {/* Keep every tab panel mounted AND full-sized via absolute+inset-0.
               Inactive panels get `invisible` + `pointer-events-none` so they
@@ -518,7 +532,26 @@ export default function App() {
             nothing until at least one research job has been observed
             via `research_update`. */}
         <ResearchSidebar />
+        {/* KMS browser sidebar (M6.39.9). Activated by clicking a
+            KMS row's title in the left sidebar. Lists pages +
+            sources; click an entry to open the viewer overlay. */}
+        {browsingKms && (
+          <KmsBrowserSidebar
+            kmsName={browsingKms}
+            onClose={() => setBrowsingKms(null)}
+            onOpenFile={(target) => setViewerTarget(target)}
+          />
+        )}
       </div>
+      {/* KMS viewer overlay (M6.39.9). Modal-style; renders
+          markdown → HTML via `marked`. Wikilinks + relative
+          markdown links navigate within the overlay. */}
+      {viewerTarget && (
+        <KmsViewerOverlay
+          initial={viewerTarget}
+          onClose={() => setViewerTarget(null)}
+        />
+      )}
 
       {/* Status bar */}
       <div
