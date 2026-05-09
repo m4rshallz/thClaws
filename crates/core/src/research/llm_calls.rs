@@ -268,10 +268,20 @@ fn build_synthesize_prompt(query: &str, sources: &[ResearchSource]) -> String {
     s.push_str(
         "Write a comprehensive answer to the original query as Markdown. \
          Requirements:\n\
-         - At least 200 words\n\
+         - **Lead with a 1-2 sentence ABSTRACT** as the very first prose \
+         line, BEFORE any `##` subtopic headings, before any list bullets, \
+         before any blockquotes. The abstract must name the topic + state \
+         your overall finding in one self-contained sentence (e.g. \
+         \"OBON is a Japanese summer festival honoring ancestors, observed \
+         13–16 August with regional variation in customs and dates [1][3].\"). \
+         Do NOT start with a heading like `# Research:` or `## Overview` — \
+         start directly with prose. This abstract is extracted verbatim as \
+         the KMS index summary; if it's a heading or a meta-line, the index \
+         loses signal.\n\
+         - At least 200 words total\n\
          - Inline `[N]` citations after every factual claim, mapping to the source list above\n\
          - Cite multiple sources for important claims when available\n\
-         - Use Markdown headings (`##`) to organize by subtopic\n\
+         - After the abstract, use Markdown headings (`##`) to organize by subtopic\n\
          - When sources contradict, surface the disagreement rather than picking arbitrarily\n\n\
          End with a `## Sources` section listing every cited source as `[N] <url>` (one per line). \
          Answer in the same language as the original query.",
@@ -678,5 +688,36 @@ mod tests {
     #[test]
     fn snippet_passes_through_short_strings() {
         assert_eq!(snippet("short", 100), "short");
+    }
+
+    /// M6.39.5: pin the synthesize prompt's "lead with abstract"
+    /// instruction. The KMS auto-index pulls a page's summary from
+    /// `first_meaningful_line(body)`; that line MUST be substantive
+    /// prose (the LLM-written abstract) for the index to be useful
+    /// to the next session deciding which page to KmsRead. If this
+    /// instruction drifts away the index regresses to "Research:
+    /// <query>"-style summaries that signal nothing.
+    #[test]
+    fn synthesize_prompt_requires_abstract_first() {
+        let prompt = build_synthesize_prompt("what is OBON", &[]);
+        // The instruction must mention "abstract" specifically.
+        let lower = prompt.to_ascii_lowercase();
+        assert!(
+            lower.contains("abstract"),
+            "synthesize prompt must require an abstract"
+        );
+        // It must mention that the abstract goes BEFORE headings
+        // (otherwise LLM may emit `## Overview\n<abstract>` which
+        // first_meaningful_line strips back to `Overview`).
+        assert!(
+            lower.contains("before any `##`") || lower.contains("before any ##"),
+            "synthesize prompt must say abstract goes before ## headings"
+        );
+        // It must explicitly forbid leading with `# Research:` or a
+        // heading — the pre-fix body shape produced exactly that.
+        assert!(
+            lower.contains("do not start with a heading"),
+            "synthesize prompt must forbid heading-first opening"
+        );
     }
 }

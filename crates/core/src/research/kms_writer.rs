@@ -73,6 +73,18 @@ pub fn write(
 /// lint (M6.37) can validate against. The `type: research` discriminator
 /// lets users filter `KmsSearch` to research notes only.
 fn build_raw_note_body(query: &str, today: &str, synthesized: &str) -> String {
+    // M6.39.5: body leads with synthesized content directly. Pre-fix
+    // the body opened with `# Research: <query>` H1 + `**Query:**` +
+    // `**Date:**` lines that just restated frontmatter. The KMS
+    // auto-index pulls each page's "summary" from
+    // `first_meaningful_line(body)`, which strips Markdown markers
+    // and returned just `Research: <query>` — useless for the LLM
+    // trying to decide whether the page is relevant.
+    //
+    // With this layout, the synthesize prompt's required 1-2
+    // sentence abstract becomes the first meaningful line, and the
+    // index summary actually describes what's inside.
+    let _ = query;
     format!(
         "---\n\
          title: \"Research: {}\"\n\
@@ -81,14 +93,9 @@ fn build_raw_note_body(query: &str, today: &str, synthesized: &str) -> String {
          created: {today}\n\
          updated: {today}\n\
          ---\n\n\
-         # Research: {}\n\n\
-         **Query:** {}\n\
-         **Date:** {today}\n\n\
          {}\n",
         escape_yaml_string(query),
         escape_yaml_string(query),
-        query,
-        query,
         synthesized.trim()
     )
 }
@@ -233,6 +240,40 @@ mod tests {
         assert!(body.contains("Some synthesized content"));
     }
 
+    /// M6.39.5: pin the post-fix body shape so the synthesized
+    /// abstract becomes the first non-frontmatter line. Pre-fix the
+    /// body led with `# Research: <query>` H1 + `**Query:**` /
+    /// `**Date:**` lines that just restated frontmatter — kms's
+    /// `first_meaningful_line` indexer would pull `Research: <query>`
+    /// as the page summary, useless for the LLM picking pages to read.
+    #[test]
+    fn build_raw_note_body_starts_with_synthesized_content_after_frontmatter() {
+        let synthesized = "OBON is a Japanese summer festival honoring \
+                           ancestors [1][3].\n\n## History\n\nMore content here.";
+        let body = build_raw_note_body("what is OBON", "2026-05-09", synthesized);
+        // Body MUST NOT contain the old preamble — those were the
+        // exact things crowding out the abstract.
+        assert!(
+            !body.contains("# Research: what is OBON"),
+            "body should not lead with H1 — frontmatter title covers it"
+        );
+        assert!(
+            !body.contains("**Query:**"),
+            "body should not restate Query — frontmatter has `query:`"
+        );
+        assert!(
+            !body.contains("**Date:**"),
+            "body should not restate Date — frontmatter has `created:`/`updated:`"
+        );
+        // The first non-frontmatter line must be the abstract prose.
+        let after_fm = body.splitn(2, "---\n\n").nth(1).unwrap();
+        let first_line = after_fm.lines().next().unwrap();
+        assert!(
+            first_line.starts_with("OBON is a Japanese"),
+            "first non-frontmatter line should be the abstract, got: {first_line}"
+        );
+    }
+
     /// Integration test: write to a temp KMS and verify both files land
     /// with the right shape. Uses the same `scoped_home` helper pattern
     /// as `kms::tests`.
@@ -262,6 +303,41 @@ mod tests {
         assert!(summary.contains("type: research-summary"));
         assert!(summary.contains("2026-05-09 — [what is OBON]"));
         assert!(summary.contains("(2026-05-09-obon-festival.md)"));
+    }
+
+    /// End-to-end: write a research note whose body leads with an
+    /// abstract, then verify the KMS auto-index picks up that abstract
+    /// as the page summary (not "Research: ..." or any meta line).
+    /// This is the exact flow that fixes the "LLM ignores KMS"
+    /// observation from /system inspection — an informative summary
+    /// signals page relevance to the model deciding which page to
+    /// KmsRead.
+    #[test]
+    fn write_index_summary_uses_abstract_not_title() {
+        let _g = scoped_home();
+        let synthesized = "OBON is a Japanese festival honoring ancestors \
+                           observed 13–16 August [1][3].\n\n## History\nmore.";
+        write(
+            "research-test-index",
+            "what is OBON",
+            "what-is-obon",
+            "2026-05-09",
+            synthesized,
+        )
+        .unwrap();
+        let kref = kms::resolve("research-test-index").unwrap();
+        let index = std::fs::read_to_string(&kref.index_path()).unwrap();
+        // The auto-index should have a bullet for the page using the
+        // abstract's first line as the summary, NOT "Research: ..."
+        // or "Query: ...".
+        assert!(
+            index.contains("OBON is a Japanese festival"),
+            "index should contain the abstract as page summary, got:\n{index}"
+        );
+        assert!(
+            !index.contains("Research: what is OBON"),
+            "index should NOT use the H1 title as summary (that's the pre-fix bug):\n{index}"
+        );
     }
 
     #[test]
