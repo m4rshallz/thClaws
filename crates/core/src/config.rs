@@ -92,6 +92,24 @@ pub struct AppConfig {
     #[serde(default)]
     pub kms_active: Vec<String>,
 
+    /// M6.39.5: opt-in to loading user-level Claude Code memory
+    /// (`~/.claude/CLAUDE.md` and `~/.claude/AGENTS.md`) into
+    /// thClaws's system prompt. Default `false` — the user's Claude
+    /// Code identity (Pinn.AI bias, "use Claude Code's MCP tools",
+    /// etc.) shouldn't bleed into thClaws's behavior just because
+    /// both tools happen to live on the same machine.
+    ///
+    /// Project-level `<cwd>/.claude/CLAUDE.md` (committed to a repo)
+    /// keeps loading regardless — that's repo-shared instructions,
+    /// not user-personal config. The flag only affects the user-home
+    /// `~/.claude/*` files.
+    ///
+    /// Set `true` if you intentionally maintain one CLAUDE.md across
+    /// both tools and want the parity. The thClaws-native path
+    /// (`~/.config/thclaws/CLAUDE.md`) loads either way.
+    #[serde(default)]
+    pub claude_md_compat: bool,
+
     /// Per-skill model recommendations from settings.json. Overrides the
     /// `model:` field declared in the SKILL.md frontmatter for the named
     /// built-in skill. Lets users say "for my extract-and-save runs use
@@ -148,6 +166,7 @@ impl Default for AppConfig {
             skills_listing_strategy: "full".to_string(),
             mcp_servers: Vec::new(),
             kms_active: Vec::new(),
+            claude_md_compat: false,
             extract_save_skill_models: None,
             translator_subagent_model: None,
         }
@@ -453,6 +472,7 @@ impl ProjectConfig {
   "guiScale": null,
   "extract_save_skill_models": null,
   "translator_subagent_model": null,
+  "claude_md_compat": false,
   "kms": { "active": [] }
 }
 "#;
