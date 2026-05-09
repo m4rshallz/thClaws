@@ -490,7 +490,7 @@ pub fn rewrite_cross_links(body: &str, known_slugs: &[&str], run_prefix: &str) -
     let bytes = body.as_bytes();
     let mut out = String::with_capacity(body.len() + 64);
     let mut i = 0usize;
-    while i < bytes.len() {
+    while i < body.len() {
         if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
             // Find the closing `]]`.
             if let Some(end_rel) = body[i + 2..].find("]]") {
@@ -519,8 +519,19 @@ pub fn rewrite_cross_links(body: &str, known_slugs: &[&str], run_prefix: &str) -
                 }
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // M6.39.10: UTF-8-safe pass-through. Pre-fix used
+        // `out.push(bytes[i] as char)` — that ALWAYS pushes 1 byte
+        // as a Latin-1 codepoint, mangling every multi-byte UTF-8
+        // char. Em-dash `—` (UTF-8 e2 80 94) became `â` + 2 invisible
+        // control chars. Walk to next char boundary and push the
+        // whole char instead. Same fix as linkify_citations'
+        // "default" path.
+        let mut j = i + 1;
+        while j < body.len() && !body.is_char_boundary(j) {
+            j += 1;
+        }
+        out.push_str(&body[i..j]);
+        i = j;
     }
     out
 }
@@ -1036,6 +1047,42 @@ mod tests {
         // Should pass through unchanged (no slug match anyway, but
         // the length guard must fire first).
         assert_eq!(out, body);
+    }
+
+    /// M6.39.10: regression test for UTF-8 mojibake in rewrite_cross_links.
+    /// Pre-fix the byte-walking loop pushed `bytes[i] as char` for the
+    /// non-wikilink default path — which silently corrupted every
+    /// multi-byte UTF-8 char. Em-dash `—` (e2 80 94) became `â` plus
+    /// two invisible control chars. Pin the fix.
+    #[test]
+    fn rewrite_cross_links_preserves_em_dash() {
+        let body = "Each note — keep things simple.";
+        let out = rewrite_cross_links(body, &[], "run");
+        assert_eq!(out, body, "em-dash must round-trip; got: {out:?}");
+        // Defensive: also confirm the bytes stayed identical.
+        assert_eq!(out.as_bytes(), body.as_bytes());
+    }
+
+    #[test]
+    fn rewrite_cross_links_preserves_thai_text() {
+        let body = "ภาษาไทย [[karpathy]] ทดสอบ.";
+        let out = rewrite_cross_links(body, &["karpathy"], "run");
+        assert!(out.contains("ภาษาไทย"));
+        assert!(out.contains("ทดสอบ"));
+        assert!(out.contains("[[run__karpathy]]"));
+    }
+
+    #[test]
+    fn rewrite_cross_links_preserves_curly_quotes_and_ellipsis() {
+        // Common mojibake culprits: curly apostrophe `'`, curly quotes
+        // `"` `"`, ellipsis `…`. All multi-byte UTF-8 — pre-fix all
+        // mangled.
+        let body = "It's \"quoted\" — really… and [[karpathy]]!";
+        let out = rewrite_cross_links(body, &["karpathy"], "run");
+        assert!(out.contains("It's"));
+        assert!(out.contains("\"quoted\""));
+        assert!(out.contains("…"));
+        assert!(out.contains("[[run__karpathy]]"));
     }
 
     #[test]
