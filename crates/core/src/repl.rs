@@ -260,6 +260,8 @@ pub enum SlashCommand {
         /// (NaN). Converted to `f32` at dispatch time when applying to
         /// `JobConfig`.
         score_threshold_pct: Option<u32>,
+        /// M6.39.6: cap on KMS pages emitted per research run.
+        max_pages: Option<u32>,
         budget_tokens: Option<u64>,
         budget_time_secs: Option<u64>,
     },
@@ -850,6 +852,7 @@ fn parse_research_start(args: &str) -> SlashCommand {
     let mut min_iter: Option<u32> = None;
     let mut max_iter: Option<u32> = None;
     let mut score_threshold_pct: Option<u32> = None;
+    let mut max_pages: Option<u32> = None;
     let mut budget_tokens: Option<u64> = None;
     let mut budget_time_secs: Option<u64> = None;
 
@@ -898,6 +901,18 @@ fn parse_research_start(args: &str) -> SlashCommand {
                     break;
                 }
             }
+            "--max-pages" if tokens.len() >= 2 => {
+                if let Ok(v) = tokens[1].parse::<u32>() {
+                    if v >= 1 && v <= 20 {
+                        max_pages = Some(v);
+                        tokens.drain(0..2);
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
             "--budget-tokens" if tokens.len() >= 2 => {
                 if let Ok(v) = tokens[1].parse::<u64>() {
                     budget_tokens = Some(v);
@@ -920,7 +935,7 @@ fn parse_research_start(args: &str) -> SlashCommand {
     let query = tokens.join(" ").trim().to_string();
     if query.is_empty() {
         return SlashCommand::Unknown(
-            "usage: /research [--kms <name>] [--min-iter N] [--max-iter K] [--score-threshold 0.X] [--budget-time SEC] <query>"
+            "usage: /research [--kms <name>] [--min-iter N] [--max-iter K] [--score-threshold 0.X] [--max-pages N] [--budget-time SEC] <query>"
                 .into(),
         );
     }
@@ -929,6 +944,7 @@ fn parse_research_start(args: &str) -> SlashCommand {
         kms_target,
         min_iter,
         max_iter,
+        max_pages,
         score_threshold_pct,
         budget_tokens,
         budget_time_secs,
@@ -7144,6 +7160,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     min_iter,
                     max_iter,
                     score_threshold_pct,
+                    max_pages,
                     budget_tokens: _,
                     budget_time_secs,
                 } => {
@@ -7157,6 +7174,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     }
                     if let Some(pct) = score_threshold_pct {
                         cfg.score_threshold = (pct as f32 / 100.0).clamp(0.0, 1.0);
+                    }
+                    if let Some(v) = max_pages {
+                        cfg.max_pages = v;
                     }
                     if let Some(secs) = budget_time_secs {
                         cfg.time_budget = std::time::Duration::from_secs(secs);
@@ -8220,6 +8240,7 @@ mod tests {
                 min_iter: None,
                 max_iter: None,
                 score_threshold_pct: None,
+                max_pages: None,
                 budget_tokens: None,
                 budget_time_secs: None,
             })
@@ -8234,6 +8255,7 @@ mod tests {
                 min_iter: None,
                 max_iter: None,
                 score_threshold_pct: None,
+                max_pages: None,
                 budget_tokens: None,
                 budget_time_secs: None,
             })
@@ -8250,6 +8272,7 @@ mod tests {
                 min_iter: Some(3),
                 max_iter: Some(10),
                 score_threshold_pct: Some(85),
+                max_pages: None,
                 budget_tokens: None,
                 budget_time_secs: None,
             })
@@ -8264,6 +8287,7 @@ mod tests {
                 min_iter: None,
                 max_iter: None,
                 score_threshold_pct: Some(75),
+                max_pages: None,
                 budget_tokens: None,
                 budget_time_secs: None,
             })
@@ -8278,6 +8302,7 @@ mod tests {
                 min_iter: None,
                 max_iter: None,
                 score_threshold_pct: None,
+                max_pages: None,
                 budget_tokens: None,
                 budget_time_secs: Some(300),
             })

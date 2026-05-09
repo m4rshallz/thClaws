@@ -1089,6 +1089,7 @@ pub async fn dispatch(
             min_iter,
             max_iter,
             score_threshold_pct,
+            max_pages,
             budget_tokens: _,
             budget_time_secs,
         } => {
@@ -1102,6 +1103,9 @@ pub async fn dispatch(
             }
             if let Some(pct) = score_threshold_pct {
                 cfg.score_threshold = (pct as f32 / 100.0).clamp(0.0, 1.0);
+            }
+            if let Some(v) = max_pages {
+                cfg.max_pages = v;
             }
             if let Some(secs) = budget_time_secs {
                 cfg.time_budget = std::time::Duration::from_secs(secs);

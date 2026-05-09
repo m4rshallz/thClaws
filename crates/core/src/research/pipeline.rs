@@ -213,38 +213,27 @@ pub async fn run_with_tools(
         .await?;
     }
 
-    // ── 6. Final synthesis ──────────────────────────────────────────
+    // ── 6. Plan multi-page output ───────────────────────────────────
     check_alive(job_id, &cancel)?;
-    mgr.update_phase(job_id, "synthesizing final answer");
-    let mut synthesized = llm_calls::synthesize(
+    mgr.update_phase(job_id, "planning KMS pages");
+    let plan = llm_calls::plan_pages(
         provider.as_ref(),
         &model,
         &query,
         &sources,
+        config.max_pages,
         config.llm_timeout,
         &cancel,
     )
     .await?;
-    if !last_notes.is_empty() {
-        synthesized.push_str("\n\n---\n\n## Research notes\n\n");
-        synthesized.push_str(&last_notes);
-    }
 
-    // ── 7. KMS write ────────────────────────────────────────────────
+    // ── 7. Resolve KMS name (auto-derive slug when --kms not passed)
     check_alive(job_id, &cancel)?;
-    mgr.update_phase(job_id, "writing to KMS");
     let kms_name = match &config.kms_target {
         Some(n) => n.clone(),
         None => {
             // M6.39.5: KMS name is the LLM-derived topic slug
-            // verbatim, no `research-` prefix. Pre-fix the prefix
-            // misled the consulting LLM — the KMS section header
-            // `## KMS: research-llm-wiki (project)` reads as "a KMS
-            // about *research methodology* on llm-wiki" or "an
-            // archive of research outputs", not "the wiki entry on
-            // llm-wiki". The slug alone is more honest about what
-            // the KMS contains. Users who want a `research-` prefix
-            // for grouping pass `--kms research-<topic>` explicitly.
+            // verbatim, no `research-` prefix.
             llm_calls::derive_topic_slug(
                 provider.as_ref(),
                 &model,
@@ -256,33 +245,120 @@ pub async fn run_with_tools(
             .unwrap_or_else(|_| "research".into())
         }
     };
-    let query_slug = simple_slug(&query);
-    let today = kms_writer::today_str();
-    let outcome = kms_writer::write(&kms_name, &query, &query_slug, &today, &synthesized)?;
 
-    // M6.39.5: persist cited sources to <kms>/sources/ for offline
-    // provenance. Without this, the synthesized note has [N] markers
-    // pointing at URLs that may rot or change. Parse the synthesized
-    // markdown for [N] citations, then write each cited source's
-    // fetched body to a deterministic filename. Errors per-source are
-    // tolerated (best-effort) — the synthesized note is the primary
-    // artifact; sources/ is a useful-but-secondary archive.
-    let cited = kms_writer::parse_citation_indices(&synthesized);
+    // Make sure the KMS exists before we kick off N parallel page
+    // syntheses (each will write into it).
+    let _ = kms_writer::resolve_or_create(&kms_name)?;
+
+    // ── 8. Parallel per-page synthesis ──────────────────────────────
+    check_alive(job_id, &cancel)?;
+    mgr.update_phase(
+        job_id,
+        format!("synthesizing {} pages in parallel", plan.len()),
+    );
+    let today = kms_writer::today_str();
+    let query_slug = simple_slug(&query);
+    let run_prefix = format!("{today}-{query_slug}");
+
+    let mut page_futures = Vec::with_capacity(plan.len());
+    for page in &plan {
+        let provider_ref = provider.clone();
+        let model_owned = model.clone();
+        let query_owned = query.clone();
+        let page_owned = page.clone();
+        let plan_owned = plan.clone();
+        let sources_owned = sources.clone();
+        let cancel_owned = cancel.clone();
+        let timeout = config.llm_timeout;
+        page_futures.push(tokio::spawn(async move {
+            llm_calls::write_research_page(
+                provider_ref.as_ref(),
+                &model_owned,
+                &query_owned,
+                &page_owned,
+                &plan_owned,
+                &sources_owned,
+                timeout,
+                &cancel_owned,
+            )
+            .await
+        }));
+    }
+    let mut bodies: Vec<(usize, String)> = Vec::with_capacity(plan.len());
+    for (idx, fut) in page_futures.into_iter().enumerate() {
+        match fut.await {
+            Ok(Ok(body)) => bodies.push((idx, body)),
+            Ok(Err(e)) => return Err(e),
+            Err(join_err) => {
+                return Err(crate::error::Error::Tool(format!(
+                    "page-synth task panicked: {join_err}"
+                )));
+            }
+        }
+    }
+
+    // ── 9. Cross-link rewrite + write each page ─────────────────────
+    check_alive(job_id, &cancel)?;
+    mgr.update_phase(job_id, "writing pages to KMS");
+    let known_slugs: Vec<&str> = plan.iter().map(|p| p.slug.as_str()).collect();
+    let mut all_cited_indices: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut last_page_path: Option<String> = None;
+    for (idx, body) in bodies {
+        let page = &plan[idx];
+        let mut rewritten = kms_writer::rewrite_cross_links(&body, &known_slugs, &run_prefix);
+        if !last_notes.is_empty() && idx == 0 {
+            // Keep the iteration-evaluation notes attached to the
+            // first page as a research-context appendix. Only the
+            // first page gets it to avoid duplication across all
+            // pages from the same run.
+            rewritten.push_str("\n\n---\n\n## Research notes\n\n");
+            rewritten.push_str(&last_notes);
+        }
+        // Accumulate cited indices across all pages so sources/ is
+        // populated with every cited source from the run, not just
+        // one page's.
+        let cited = kms_writer::parse_citation_indices(&rewritten);
+        all_cited_indices.extend(cited);
+
+        let path = kms_writer::write_research_page(
+            &kms_name,
+            &run_prefix,
+            &page.slug,
+            &page.title,
+            &page.topic,
+            &query,
+            &today,
+            &rewritten,
+        )?;
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            last_page_path = Some(name.to_string());
+        }
+    }
+
+    // ── 10. Append run section to _summary.md ───────────────────────
+    let pages_for_summary: Vec<(String, String, String)> = plan
+        .iter()
+        .map(|p| (p.slug.clone(), p.title.clone(), p.topic.clone()))
+        .collect();
+    kms_writer::append_run_section(&kms_name, &run_prefix, &today, &query, &pages_for_summary)?;
+
+    // ── 11. Persist cited sources to <kms>/sources/ ─────────────────
     for s in &sources {
-        if cited.contains(&s.index) {
+        if all_cited_indices.contains(&s.index) {
             let _ = kms_writer::write_source(
-                &outcome.kms_name,
-                &query,
-                &today,
-                s.index,
-                &s.title,
-                &s.url,
-                &s.body,
+                &kms_name, &query, &today, s.index, &s.title, &s.url, &s.body,
             );
         }
     }
 
-    Ok(format!("{}/{}", outcome.kms_name, outcome.raw_note))
+    // result_page = filename of the last-written page so /research
+    // show <id> opens something meaningful. The summary section in
+    // _summary.md links to all pages from this run.
+    let result = match last_page_path {
+        Some(name) => format!("{kms_name}/{name}"),
+        None => format!("{kms_name}/_summary.md"),
+    };
+    Ok(result)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -628,10 +704,12 @@ mod tests {
             "1. subtopic-c\n2. subtopic-d",
             // iter 2 evaluate (high score → stop)
             "score: 0.85\ncovered",
-            // synthesize
-            "Final answer [1] [2]\n\n## Sources\n[1] https://a.example\n[2] https://b.example",
+            // M6.39.6: plan_pages — single-page plan to keep test small
+            r#"[{"slug":"main","title":"Main","topic":"top-level","source_indices":[1,2]}]"#,
             // derive_topic_slug
             "test-topic",
+            // write_research_page (one page)
+            "Main page abstract [1].\n\n## Body\nMore here [2].\n\n## Sources\n[1] https://a.example\n[2] https://b.example",
         ]));
         let tools = Arc::new(MockTools::new(
             vec![
@@ -658,6 +736,7 @@ mod tests {
             score_threshold: 0.75,
             subtopics_per_iter: 2,
             fetch_top_n: 1,
+            max_pages: 7,
             llm_timeout: std::time::Duration::from_secs(5),
             time_budget: std::time::Duration::from_secs(60),
             kms_target: None,
@@ -675,9 +754,6 @@ mod tests {
         )
         .await
         .unwrap();
-        // 2 iterations × evaluate + first iteration extract_subtopics
-        // + iter 1 extract_next + synthesize + derive_slug = 6 calls
-        assert_eq!(provider.call_count(), 6);
         // M6.39.5: KMS name is the LLM-derived slug verbatim, no
         // `research-` prefix. The mock provider returns "test-topic"
         // as its derive_topic_slug response.
@@ -702,8 +778,10 @@ mod tests {
             "score: 0.95\nlooks complete", // evaluate (iter 1) — high but floor blocks
             "1. topic-c\n2. topic-d",      // extract_next_subtopics
             "score: 0.95\nstill complete", // evaluate (iter 2) — now passes
-            "Synth [1]",                   // synthesize
-            "topic",                       // derive_topic_slug
+            // M6.39.6: plan_pages — single-page plan
+            r#"[{"slug":"main","title":"Main","topic":"top","source_indices":[1]}]"#,
+            "topic",       // derive_topic_slug
+            "Body [1].\n", // write_research_page (1 page)
         ]));
         let tools = Arc::new(MockTools::new(
             vec![vec![hit("S", "https://s.example")]; 5],
@@ -715,13 +793,14 @@ mod tests {
             score_threshold: 0.75,
             subtopics_per_iter: 2,
             fetch_top_n: 1,
+            max_pages: 7,
             llm_timeout: std::time::Duration::from_secs(5),
             time_budget: std::time::Duration::from_secs(60),
             kms_target: None,
         };
         let cancel = CancelToken::new();
         let (id, _) = manager().register("query".into(), &cfg);
-        run_with_tools(
+        let outcome = run_with_tools(
             &id,
             "query".into(),
             cfg,
@@ -732,9 +811,10 @@ mod tests {
         )
         .await
         .unwrap();
-        // 5 = subtopics + eval-1 + next-subtopics + eval-2 + synthesize + slug
-        // (slug runs because kms_target was None)
-        assert_eq!(provider.call_count(), 6);
+        // Hard floor honored — both iterations ran even though iter 1 score was high.
+        let v = manager().get(&id).unwrap();
+        assert_eq!(v.iterations_done, 2);
+        assert!(outcome.starts_with("topic/"));
     }
 
     /// Hard ceiling enforcement: low score for many iterations, loop
@@ -749,8 +829,9 @@ mod tests {
             canned.push("1. more-a\n2. more-b"); // next subtopics
         }
         canned.pop(); // last iteration doesn't get next-subtopics call (loop exits after eval)
-        canned.push("Synth"); // synthesize
-        canned.push("topic"); // slug
+        canned.push(r#"[{"slug":"x","title":"X","topic":"t","source_indices":[1]}]"#); // plan_pages
+        canned.push("topic"); // derive_topic_slug
+        canned.push("Body [1].\n"); // write_research_page (1 page)
         let provider = Arc::new(MockProvider::new(canned));
         let tools = Arc::new(MockTools::new(
             vec![vec![hit("S", "https://s.example")]; 10],
@@ -762,6 +843,7 @@ mod tests {
             score_threshold: 0.75,
             subtopics_per_iter: 2,
             fetch_top_n: 1,
+            max_pages: 7,
             llm_timeout: std::time::Duration::from_secs(5),
             time_budget: std::time::Duration::from_secs(60),
             kms_target: None,
@@ -809,11 +891,12 @@ mod tests {
     async fn empty_next_subtopics_breaks_loop() {
         let _g = scoped_home();
         let provider = Arc::new(MockProvider::new(vec![
-            "1. a\n2. b",                       // extract initial
-            "score: 0.4\nincomplete but stuck", // eval (iter 1)
-            "",                                 // next subtopics — empty
-            "Final synth",                      // synthesize
-            "slug",                             // derive_topic_slug
+            "1. a\n2. b",                                                     // extract initial
+            "score: 0.4\nincomplete but stuck",                               // eval (iter 1)
+            "", // next subtopics — empty
+            r#"[{"slug":"x","title":"X","topic":"t","source_indices":[1]}]"#, // plan_pages
+            "slug", // derive_topic_slug
+            "Final synth body [1].\n", // write_research_page
         ]));
         let tools = Arc::new(MockTools::new(
             vec![vec![hit("S", "https://s.example")]; 5],
@@ -825,6 +908,7 @@ mod tests {
             score_threshold: 0.9,
             subtopics_per_iter: 2,
             fetch_top_n: 1,
+            max_pages: 7,
             llm_timeout: std::time::Duration::from_secs(5),
             time_budget: std::time::Duration::from_secs(60),
             kms_target: None,
