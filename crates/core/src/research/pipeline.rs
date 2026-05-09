@@ -32,7 +32,20 @@ use crate::error::{Error, Result};
 use crate::providers::Provider;
 use std::sync::Arc;
 
-const MAX_SOURCE_BODY_CHARS: usize = 1500;
+/// M6.39.7: in-memory cap per fetched source body. Pre-fix this was
+/// 1500 chars — fine for the synthesis prompt (which further
+/// truncates via `snippet(body, 500)`) but starved the
+/// `<kms>/sources/<slug>.md` archive files of meaningful content.
+/// 100 KB matches `WebFetchTool`'s typical `max_bytes` cap, holds a
+/// full wiki / blog page, and at 30 accumulated sources still tops
+/// out around 3 MB per run — comfortable.
+const MAX_SOURCE_BODY_CHARS: usize = 100_000;
+/// M6.39.7: per-fetch byte budget for `WebFetch` calls. Replaces the
+/// earlier 8 KB synth-only cap. The synthesis prompt builders still
+/// `snippet(body, 500)` etc. when composing prompts, so larger
+/// fetched bodies don't bloat LLM cost — but sources/ archives now
+/// get the full page.
+const FETCH_MAX_BYTES: u64 = 100 * 1024;
 const SEED_SEARCH_RESULTS: u32 = 10;
 
 /// Trait abstraction over WebSearch / WebFetch so the pipeline can be
@@ -496,13 +509,15 @@ impl ResearchTools for ProductionTools {
     }
     async fn fetch(&self, url: &str) -> Result<String> {
         use crate::tools::Tool;
-        // 8 KB cap per page is a budget tradeoff: the LLM gets enough
-        // body to verify claims, but the source list doesn't blow up
-        // the synthesis prompt across 30+ accumulated sources.
+        // M6.39.7: 100 KB cap. Pre-fix was 8 KB which was synth-prompt-
+        // sized, but the same body gets archived to <kms>/sources/ —
+        // truncating to 8 KB starved the offline archive of meaningful
+        // content. Synth prompts further truncate via `snippet(body, N)`
+        // when composing, so the larger fetch doesn't bloat LLM cost.
         self.fetch
             .call(serde_json::json!({
                 "url": url,
-                "max_bytes": 8192,
+                "max_bytes": FETCH_MAX_BYTES,
             }))
             .await
     }
@@ -956,9 +971,26 @@ mod tests {
     }
 
     #[test]
-    fn accumulate_truncates_long_bodies() {
+    fn accumulate_keeps_bodies_up_to_max_cap() {
+        // M6.39.7: cap is now 100 KB so sources/ archive files have
+        // meaningful content, not 8 KB / 1500 chars of fragment.
+        // Bodies under the cap are kept intact; ones over get
+        // truncated with `…`.
         let mut sources = Vec::new();
-        let big_body = "x".repeat(10_000);
+        let under_cap = "x".repeat(10_000);
+        accumulate(
+            &mut sources,
+            vec![SearchHit {
+                title: "under".into(),
+                url: "https://under.example".into(),
+                snippet: under_cap.clone(),
+            }],
+            None,
+        );
+        assert_eq!(sources[0].body, under_cap, "under-cap body untouched");
+        assert!(!sources[0].body.ends_with('…'));
+        // Now an over-cap body to confirm truncation still kicks in.
+        let big_body = "y".repeat(MAX_SOURCE_BODY_CHARS + 5_000);
         accumulate(
             &mut sources,
             vec![SearchHit {
@@ -968,8 +1000,10 @@ mod tests {
             }],
             None,
         );
-        assert!(sources[0].body.len() <= MAX_SOURCE_BODY_CHARS + 4); // + 4 for "…" UTF-8
-        assert!(sources[0].body.ends_with('…'));
+        // The big-body source is the second one we appended.
+        let big = sources.iter().find(|s| s.title == "big").unwrap();
+        assert!(big.body.len() <= MAX_SOURCE_BODY_CHARS + 4); // + 4 for "…" UTF-8
+        assert!(big.body.ends_with('…'));
     }
 
     #[test]
