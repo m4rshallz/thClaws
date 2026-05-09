@@ -882,11 +882,38 @@ async fn run_worker(
     // each fire this once with a fresh snapshot of all jobs. Frontend
     // gets a `research_update` IPC envelope with the JSON shape from
     // `gui::build_research_update_payload`.
+    //
+    // M6.39.5: same closure also fires `kms_update` when any job
+    // transitions to Done — the pipeline may have just created or
+    // refreshed a KMS, and the sidebar's Knowledge panel should
+    // reflect it without a manual refresh. We track already-announced
+    // Done ids so we don't republish on every subsequent broadcast
+    // (each phase change fires the closure with the same Done id
+    // present).
     {
         let research_tx = events_tx.clone();
-        crate::research::manager().set_broadcaster(move |_jobs| {
+        let known_done_ids: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        crate::research::manager().set_broadcaster(move |jobs| {
             let payload = crate::gui::build_research_update_payload();
             let _ = research_tx.send(ViewEvent::ResearchUpdate(payload.to_string()));
+
+            // Detect any new Done transitions since last broadcast.
+            // Fire kms_update once per detected transition so the
+            // KMS sidebar picks up newly-created research KMSs.
+            let mut new_done = false;
+            if let Ok(mut known) = known_done_ids.lock() {
+                for j in jobs {
+                    if j.status == crate::research::JobStatus::Done && !known.contains(&j.id) {
+                        known.insert(j.id.clone());
+                        new_done = true;
+                    }
+                }
+            }
+            if new_done {
+                let kms_payload = crate::gui::build_kms_update_payload();
+                let _ = research_tx.send(ViewEvent::KmsUpdate(kms_payload.to_string()));
+            }
         });
     }
 
