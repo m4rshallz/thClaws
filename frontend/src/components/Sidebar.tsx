@@ -5,23 +5,6 @@ import { ModelPickerDropdown } from "./ModelPickerDropdown";
 
 type SessionInfo = { id: string; model: string; messages: number; title?: string | null };
 type KmsInfo = { name: string; scope: "user" | "project"; active: boolean };
-/// M6.39.3: shape of one entry in the `research_update` IPC payload
-/// from `gui::build_research_update_payload`. Mirrors `JobView` on
-/// the Rust side.
-type ResearchJobInfo = {
-  id: string;
-  status: "pending" | "running" | "done" | "cancelled" | "failed";
-  phase: string;
-  query: string;
-  iterations_done: number;
-  source_count: number;
-  last_score: number | null;
-  kms_target: string | null;
-  result_page: string | null;
-  error: string | null;
-  started_at: number | null;
-  finished_at: number | null;
-};
 
 // Wry blocks `window.confirm`, so we proxy through a native OS dialog
 // via IPC. Mirrors `confirmNative` in FilesView.
@@ -78,12 +61,6 @@ export function Sidebar() {
     { name: string; tools: number }[]
   >([]);
   const [kmss, setKmss] = useState<KmsInfo[]>([]);
-  // M6.39.3: live research jobs from `research_update` IPC. Newest
-  // first; the backend sorts. Each job has `id`, `status`, `phase`,
-  // `query`, `iterations_done`, `source_count`, `last_score`,
-  // `kms_target`, `result_page`, `error`, `started_at`,
-  // `finished_at`.
-  const [researchJobs, setResearchJobs] = useState<ResearchJobInfo[]>([]);
   // Right-click context menu anchored to the session row the user
   // right-clicked; null when closed. Click anywhere else dismisses.
   const [sessionMenu, setSessionMenu] = useState<
@@ -128,9 +105,6 @@ export function Sidebar() {
         setMcpServers(msg.servers as { name: string; tools: number }[]);
       } else if (msg.type === "kms_update") {
         setKmss(msg.kmss as KmsInfo[]);
-      } else if (msg.type === "research_update") {
-        // Backend already sorts newest-first; no client-side sort.
-        setResearchJobs(msg.jobs as ResearchJobInfo[]);
       } else if (msg.type === "sso_state") {
         setSso({
           enabled: Boolean(msg.enabled),
@@ -505,15 +479,13 @@ export function Sidebar() {
         )}
       </Section>
 
-      {/* Research jobs (M6.39.3). Hidden when empty so the sidebar
-          stays compact for users who don't use /research. */}
-      {researchJobs.length > 0 && (
-        <Section title="Research">
-          {researchJobs.map((j) => (
-            <ResearchJobRow key={j.id} job={j} />
-          ))}
-        </Section>
-      )}
+      {/* M6.39.5: Research panel moved out of left Sidebar — the
+          right-edge ResearchSidebar (mounted in App.tsx alongside
+          PlanSidebar / TodoSidebar) shows the active job in detail.
+          Discoverability of the list is sacrificed deliberately —
+          one job at a time matches how users actually use /research,
+          and the verbose right panel is more informative than the
+          compact left list ever was. */}
       {/* Context menu for a right-clicked session row. Absolute, pinned
           to cursor coords. The onClick={stopPropagation} prevents the
           menu's own clicks from bubbling up to the window-level click
@@ -686,84 +658,6 @@ function CtxMenuItem({
     >
       {children}
     </button>
-  );
-}
-
-/// One row in the Research sidebar panel. Compact: status badge,
-/// truncated query, phase, and (when terminal) a click-to-show button
-/// that fires `/research show <id>` into the chat. Done jobs link to
-/// the KMS file directly so the user can open the full result.
-function ResearchJobRow({ job }: { job: ResearchJobInfo }) {
-  const statusColor = (() => {
-    switch (job.status) {
-      case "done":
-        return "var(--accent, #8aa)";
-      case "failed":
-        return "var(--danger, #e06c75)";
-      case "cancelled":
-        return "var(--text-secondary)";
-      default:
-        return "var(--warning, #d4a657)";
-    }
-  })();
-  const showResult = () => {
-    // Fire `/research show <id>` into the chat input pipeline — same
-    // shape as the user typing it (chat_prompt + text). Backend's
-    // ipc.rs converts to ShellInput::Line and dispatches as a slash.
-    send({ type: "chat_prompt", text: `/research show ${job.id}` });
-  };
-  const cancel = () => {
-    send({ type: "chat_prompt", text: `/research cancel ${job.id}` });
-  };
-  const isRunning = job.status === "pending" || job.status === "running";
-  return (
-    <div
-      className="px-2 py-1 flex flex-col gap-0.5"
-      style={{ color: "var(--text-primary)", fontSize: "11px" }}
-    >
-      <div className="flex items-center gap-1.5">
-        <span
-          style={{ color: statusColor, fontFamily: "Menlo, Monaco, monospace" }}
-        >
-          {isRunning ? "▸" : job.status === "done" ? "✓" : "·"}
-        </span>
-        <span className="truncate flex-1" title={job.query}>
-          {job.query}
-        </span>
-      </div>
-      <div
-        className="pl-4 flex items-center justify-between"
-        style={{ color: "var(--text-secondary)", fontSize: "10px" }}
-      >
-        <span className="truncate">
-          {isRunning
-            ? `${job.phase}${job.last_score !== null ? ` · score ${job.last_score.toFixed(2)}` : ""}`
-            : job.status === "done"
-              ? `${job.iterations_done}× · ${job.source_count} sources${job.last_score !== null ? ` · ${job.last_score.toFixed(2)}` : ""}`
-              : (job.error ?? job.status)}
-        </span>
-        <div className="flex gap-1 shrink-0 ml-2">
-          {job.status === "done" && (
-            <button
-              onClick={showResult}
-              style={{ color: "var(--accent)" }}
-              title="Show result in chat"
-            >
-              show
-            </button>
-          )}
-          {isRunning && (
-            <button
-              onClick={cancel}
-              style={{ color: "var(--text-secondary)" }}
-              title="Cancel research"
-            >
-              ✕
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
   );
 }
 
