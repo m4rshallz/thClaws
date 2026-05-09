@@ -266,6 +266,170 @@ fn url_to_filename(url: &str) -> String {
     }
 }
 
+/// M6.39.7: ensure each research page ends with a complete
+/// `## Sources` section listing every `[N]` citation used in the
+/// body, mapped to source title + URL + local cached file.
+///
+/// Pre-fix the LLM was inconsistent — sometimes wrote a Sources
+/// section listing only the page's own subset, sometimes forgot it
+/// entirely. The "Research notes" appendix (eval notes) uses [N]
+/// references spanning ALL iterations, so per-page subsets were
+/// never enough anyway.
+///
+/// Approach: scan the body for [N] citations, strip any existing
+/// `## Sources` block the LLM wrote (it may be incomplete/wrong),
+/// append a new section that lists exactly the cited indices in
+/// numeric order. Idempotent — running twice yields the same
+/// output.
+///
+/// Format uses numbered-list syntax (`N.`) intentionally — avoids
+/// `[N]` at the start of an entry which would conflict with
+/// [`linkify_citations`]'s `[N]` → `[N](path)` rewrite. Each entry:
+///
+///   `N. [Title](../sources/<slug>.md) — https://upstream-url`
+///
+/// Title is the clickable link to the local cached source body in
+/// `<kms>/sources/`. The bare upstream URL follows so the user sees
+/// the original. `sources` is the master accumulated source list
+/// from the research run (index, title, url tuples) so callers can
+/// share the same shape with [`linkify_citations`].
+pub fn ensure_sources_section(
+    body: &str,
+    sources: &[(u32, String, String)], // (index, title, url)
+) -> String {
+    let cited = parse_citation_indices(body);
+    if cited.is_empty() {
+        // Page genuinely has no citations — nothing to do, return
+        // body unchanged. (Don't auto-append an empty Sources
+        // section; that would just clutter the page.)
+        return body.to_string();
+    }
+    let stripped = strip_sources_section(body);
+    let mut indices: Vec<u32> = cited.into_iter().collect();
+    indices.sort_unstable();
+
+    let mut section = String::from("\n\n## Sources\n\n");
+    for n in indices {
+        if let Some((_, title, url)) = sources.iter().find(|(i, _, _)| *i == n) {
+            let rel = format!("../sources/{}.md", url_to_filename(url));
+            section.push_str(&format!("{n}. [{title}]({rel}) — {url}\n"));
+        } else {
+            // Resolves to nothing — surface it explicitly rather
+            // than silently dropping. Should be rare; would mean
+            // the LLM hallucinated an index outside the source
+            // list.
+            section.push_str(&format!("{n}. (unknown source — index out of range)\n"));
+        }
+    }
+    format!("{}{}", stripped.trim_end(), section)
+}
+
+/// M6.39.7: rewrite inline `[N]` citations in a research page body
+/// to clickable markdown links pointing at the locally-cached
+/// source file in `<kms>/sources/<url-slug>.md`.
+///
+/// Pages live at `<kms>/pages/<run>__<slug>.md`; sources live at
+/// `<kms>/sources/<url-slug>.md`. Relative path from page to
+/// source = `../sources/<url-slug>.md`. So `[1]` in the body
+/// becomes `[1](../sources/en-wikipedia-org-wiki-obon.md)` — works
+/// in Obsidian, GitHub web view, and the chat UI's KmsRead.
+///
+/// Skip cases:
+/// - `[1](path)` already linked → next char after `]` is `(`, leave alone
+/// - `[1, 3]` multi-cite → can't fail-safely split into two links, leave alone
+/// - `[N]` where N doesn't resolve to any source → leave alone (the
+///   `## Sources` section will surface the unresolved index)
+/// - `[non-numeric]` → not a citation, leave alone
+///
+/// Idempotent — already-linkified citations are detected and skipped.
+pub fn linkify_citations(body: &str, sources: &[(u32, String, String)]) -> String {
+    let mut out = String::with_capacity(body.len() + 256);
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < body.len() {
+        if bytes[i] == b'[' {
+            if let Some((rewritten, consumed)) = try_rewrite_citation_at(body, i, sources) {
+                out.push_str(&rewritten);
+                i += consumed;
+                continue;
+            }
+        }
+        // Not a citation we can rewrite — emit one Unicode char and
+        // advance to the next char boundary.
+        let mut j = i + 1;
+        while j < body.len() && !body.is_char_boundary(j) {
+            j += 1;
+        }
+        out.push_str(&body[i..j]);
+        i = j;
+    }
+    out
+}
+
+fn try_rewrite_citation_at(
+    body: &str,
+    pos: usize,
+    sources: &[(u32, String, String)],
+) -> Option<(String, usize)> {
+    let bytes = body.as_bytes();
+    debug_assert_eq!(bytes[pos], b'[');
+    let after = body.get(pos + 1..)?;
+    let end_rel = after.find(']')?;
+    let inner = &after[..end_rel];
+    if inner.is_empty() || inner.len() > 30 {
+        return None;
+    }
+    if !inner
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == ',' || c == ' ')
+    {
+        return None;
+    }
+    // Already linked? Next char after `]` is `(`?
+    let after_close = pos + 1 + end_rel + 1;
+    if bytes.get(after_close).copied() == Some(b'(') {
+        return None;
+    }
+    // Single-index only — multi-cite `[1, 3]` doesn't have an
+    // unambiguous single-link rewrite; leave it for the user to read
+    // alongside the canonical `## Sources` section.
+    let n: u32 = inner.trim().parse().ok()?;
+    let (_, _, url) = sources.iter().find(|(i, _, _)| *i == n)?;
+    let rel = format!("../sources/{}.md", url_to_filename(url));
+    let rewritten = format!("[{n}]({rel})");
+    let consumed = after_close - pos; // bytes from `[` through `]`
+    Some((rewritten, consumed))
+}
+
+/// Strip the trailing `## Sources` section (case-insensitive) from
+/// a markdown body if present. Preserves everything before the
+/// header. Used by [`ensure_sources_section`] before regenerating.
+pub fn strip_sources_section(body: &str) -> String {
+    // Find a line that starts with `## Sources` (any case). Anything
+    // after that (and the header line itself) goes. Walk lines so we
+    // don't accidentally match `## Sources of inspiration` mid-body
+    // — only an exact heading match.
+    let mut keep = String::with_capacity(body.len());
+    let mut found = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if !found && trimmed.eq_ignore_ascii_case("## sources") {
+            found = true;
+            break;
+        }
+        keep.push_str(line);
+        keep.push('\n');
+    }
+    if found {
+        // Trim trailing whitespace/newlines so the regenerated
+        // section concatenates cleanly.
+        keep.trim_end().to_string()
+    } else {
+        // No Sources header found — body unchanged.
+        body.to_string()
+    }
+}
+
 /// M6.39.6: write one page from a multi-page research run. Filename
 /// shape `<run-prefix>__<page-slug>.md` so multiple pages from the
 /// same research run sort together in the index, and pages from
@@ -624,6 +788,195 @@ mod tests {
             !index.contains("Research: what is OBON"),
             "index should NOT use the H1 title as summary (that's the pre-fix bug):\n{index}"
         );
+    }
+
+    // ── linkify_citations + ensure_sources_section (M6.39.7) ──────
+
+    fn meta(idx: u32, title: &str, url: &str) -> (u32, String, String) {
+        (idx, title.into(), url.into())
+    }
+
+    #[test]
+    fn linkify_citations_basic_single_index() {
+        let body = "Citation here [1] and another [3].";
+        let sources = vec![
+            meta(1, "T1", "https://a.example"),
+            meta(3, "T3", "https://b.example/path"),
+        ];
+        let out = linkify_citations(body, &sources);
+        assert!(out.contains("[1](../sources/a-example.md)"));
+        assert!(out.contains("[3](../sources/b-example-path.md)"));
+    }
+
+    #[test]
+    fn linkify_citations_idempotent_on_already_linked() {
+        let body = "Already linked [1](../sources/a-example.md) and bare [2].";
+        let sources = vec![
+            meta(1, "T1", "https://a.example"),
+            meta(2, "T2", "https://b.example"),
+        ];
+        let out = linkify_citations(body, &sources);
+        // Already-linked stays as-is (single occurrence, not double).
+        let count = out.matches("[1](../sources/a-example.md)").count();
+        assert_eq!(count, 1, "[1] link should appear once, got: {out}");
+        assert!(out.contains("[2](../sources/b-example.md)"));
+    }
+
+    #[test]
+    fn linkify_citations_skips_multi_cite() {
+        // `[1, 3]` doesn't have an unambiguous single-link rewrite;
+        // the canonical Sources section + per-citation [N] coverage
+        // handles it.
+        let body = "Multi cite [1, 3] here.";
+        let sources = vec![
+            meta(1, "T1", "https://a.example"),
+            meta(3, "T3", "https://b.example"),
+        ];
+        let out = linkify_citations(body, &sources);
+        assert!(
+            out.contains("[1, 3]"),
+            "multi-cite should pass through, got: {out}"
+        );
+        assert!(!out.contains("[1, 3](../sources/"));
+    }
+
+    #[test]
+    fn linkify_citations_skips_unresolved_index() {
+        // [99] not in source list → leave alone (Sources section
+        // surfaces it as "unknown source").
+        let body = "Unresolvable [99] cite.";
+        let sources = vec![meta(1, "T1", "https://a.example")];
+        let out = linkify_citations(body, &sources);
+        assert!(out.contains("[99]"));
+        assert!(!out.contains("[99]("));
+    }
+
+    #[test]
+    fn linkify_citations_preserves_unicode() {
+        let body = "ภาษาไทย [1] ทดสอบ.";
+        let sources = vec![meta(1, "T", "https://a.example")];
+        let out = linkify_citations(body, &sources);
+        assert!(out.contains("ภาษาไทย"));
+        assert!(out.contains("[1](../sources/a-example.md)"));
+        assert!(out.contains("ทดสอบ"));
+    }
+
+    #[test]
+    fn linkify_citations_handles_wikilinks_alongside() {
+        // [[wiki-link]] shape (used by cross-linker) shouldn't get
+        // linkified — its inner is not all-digits.
+        let body = "Wiki [[karpathy|Karpathy]] and cite [1].";
+        let sources = vec![meta(1, "T", "https://a.example")];
+        let out = linkify_citations(body, &sources);
+        assert!(out.contains("[[karpathy|Karpathy]]"));
+        assert!(out.contains("[1](../sources/a-example.md)"));
+    }
+
+    #[test]
+    fn ensure_sources_section_uses_numbered_list_format() {
+        let body = "Body cites [1] and [3].";
+        let sources = vec![
+            meta(1, "Title One", "https://a.example"),
+            meta(2, "Title Two", "https://b.example"),
+            meta(3, "Title Three", "https://c.example"),
+        ];
+        let out = ensure_sources_section(body, &sources);
+        assert!(out.contains("## Sources"));
+        // Numbered list (`1. ...`), not `[1]` — avoids conflict with
+        // linkify_citations which would otherwise double-link.
+        assert!(out.contains("1. [Title One]"));
+        assert!(out.contains("3. [Title Three]"));
+        // [2] not cited → not in Sources section.
+        assert!(!out.contains("Title Two"));
+    }
+
+    #[test]
+    fn ensure_sources_section_includes_local_link_and_upstream_url() {
+        let body = "Cite [1].";
+        let sources = vec![meta(
+            1,
+            "Wikipedia: Obon",
+            "https://en.wikipedia.org/wiki/Obon",
+        )];
+        let out = ensure_sources_section(body, &sources);
+        // Local cached file link
+        assert!(out.contains("[Wikipedia: Obon](../sources/en-wikipedia-org-wiki-obon.md)"));
+        // Plus the upstream URL after the em-dash
+        assert!(out.contains("— https://en.wikipedia.org/wiki/Obon"));
+    }
+
+    #[test]
+    fn ensure_sources_section_strips_old_section_first() {
+        // LLM wrote a partial Sources section; we replace it.
+        let body = "Body [1] [2].\n\n## Sources\n\n[1] old\n";
+        let sources = vec![
+            meta(1, "T1", "https://a.example"),
+            meta(2, "T2", "https://b.example"),
+        ];
+        let out = ensure_sources_section(body, &sources);
+        // Old [1] old line gone
+        assert!(!out.contains("[1] old"));
+        // New section has both citations
+        assert!(out.contains("1. [T1]"));
+        assert!(out.contains("2. [T2]"));
+    }
+
+    #[test]
+    fn ensure_sources_section_idempotent() {
+        let body = "Cite [1].";
+        let sources = vec![meta(1, "T1", "https://a.example")];
+        let once = ensure_sources_section(body, &sources);
+        let twice = ensure_sources_section(&once, &sources);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn ensure_sources_section_handles_unknown_index() {
+        let body = "Hallucinated [99] cite.";
+        let sources = vec![meta(1, "T1", "https://a.example")];
+        let out = ensure_sources_section(body, &sources);
+        assert!(out.contains("99. (unknown source"));
+    }
+
+    #[test]
+    fn ensure_sources_section_no_op_when_no_citations() {
+        let body = "Body without any bracketed numbers.";
+        let sources = vec![meta(1, "T1", "https://a.example")];
+        let out = ensure_sources_section(body, &sources);
+        assert_eq!(out, body, "no citations → body unchanged");
+    }
+
+    /// End-to-end: ensure_sources_section + linkify_citations
+    /// composed in the order the pipeline calls them. The Sources
+    /// section's numbered list must NOT get its leading `N.`
+    /// touched by the linkifier (only `[N]` patterns rewrite).
+    #[test]
+    fn ensure_then_linkify_compose_correctly() {
+        let body = "Cite [1] here.";
+        let sources = vec![meta(1, "Title", "https://a.example")];
+        let with_sources = ensure_sources_section(body, &sources);
+        let final_body = linkify_citations(&with_sources, &sources);
+        // Inline citation linkified
+        assert!(final_body.contains("[1](../sources/a-example.md)"));
+        // Sources section heading still there
+        assert!(final_body.contains("## Sources"));
+        // Numbered list entry intact (not turned into [1]( ... ))
+        assert!(final_body.contains("1. [Title]"));
+        // Local cached link in section
+        assert!(final_body.contains("](../sources/a-example.md)"));
+    }
+
+    #[test]
+    fn strip_sources_section_no_op_when_absent() {
+        let body = "Body with no Sources heading.\n\nMore text.";
+        assert_eq!(strip_sources_section(body), body);
+    }
+
+    #[test]
+    fn strip_sources_section_drops_section_and_after() {
+        let body = "Body here.\n\n## Sources\n\n[1] x\n[2] y\n";
+        let out = strip_sources_section(body);
+        assert_eq!(out, "Body here.");
     }
 
     // ── rewrite_cross_links ────────────────────────────────────────

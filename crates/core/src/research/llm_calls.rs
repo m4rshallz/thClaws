@@ -433,7 +433,10 @@ fn build_write_research_page_prompt(
          when this page mentions an entity / concept that has its own page in \
          the list above. Don't force it — only link when the reference is \
          genuinely useful to a future reader.\n\
-         - End with `## Sources` listing each cited [N] URL on its own line.\n\
+         - **Do NOT write a `## Sources` section yourself** — the pipeline \
+         appends a canonical Sources section automatically based on which \
+         `[N]` you cited, so any manual one would be replaced. Just use `[N]` \
+         inline citations and stop.\n\
          - Answer in the same language as the original query.\n\n\
          Output ONLY the markdown body — no preamble, no JSON, no commentary.",
     );

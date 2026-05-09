@@ -303,6 +303,13 @@ pub async fn run_with_tools(
     let known_slugs: Vec<&str> = plan.iter().map(|p| p.slug.as_str()).collect();
     let mut all_cited_indices: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut last_page_path: Option<String> = None;
+    // M6.39.7: shared (index, title, url) shape for the citation
+    // helpers (ensure_sources_section + linkify_citations). Built
+    // once per run; same for every page.
+    let sources_meta: Vec<(u32, String, String)> = sources
+        .iter()
+        .map(|s| (s.index, s.title.clone(), s.url.clone()))
+        .collect();
     for (idx, body) in bodies {
         let page = &plan[idx];
         let mut rewritten = kms_writer::rewrite_cross_links(&body, &known_slugs, &run_prefix);
@@ -314,6 +321,17 @@ pub async fn run_with_tools(
             rewritten.push_str("\n\n---\n\n## Research notes\n\n");
             rewritten.push_str(&last_notes);
         }
+        // M6.39.7: deterministically rebuild the `## Sources` section
+        // from actual `[N]` usage (LLM was inconsistent — sometimes
+        // wrote a partial section, sometimes none). Then linkify
+        // every inline `[N]` so it points at the cached source file
+        // in <kms>/sources/. Order matters: ensure_sources_section
+        // runs first so the regenerated section's `N.` numbered-list
+        // entries don't get touched by the linkifier (which only
+        // rewrites `[N]` patterns).
+        rewritten = kms_writer::ensure_sources_section(&rewritten, &sources_meta);
+        rewritten = kms_writer::linkify_citations(&rewritten, &sources_meta);
+
         // Accumulate cited indices across all pages so sources/ is
         // populated with every cited source from the run, not just
         // one page's.
