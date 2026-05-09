@@ -327,6 +327,14 @@ pub enum SlashCommand {
     PluginGc,
     Tasks,
     Context,
+    /// M6.39.4: print the active system prompt as the LLM currently
+    /// sees it. Output mode selectable for compactness:
+    ///   /system          — full prompt verbatim
+    ///   /system stats    — sections + byte counts (no contents)
+    ///   /system grep <p> — only sections whose body matches `p`
+    System {
+        mode: SystemPromptViewMode,
+    },
     Version,
     Cwd,
     Thinking(String),
@@ -546,6 +554,18 @@ pub enum SsoSubcommand {
     Login,
     Logout,
     Status,
+}
+
+/// Output mode for `/system`. Defaults to `Full` so a bare
+/// `/system` dumps everything verbatim — the most useful default
+/// for "what does the LLM see right now" debugging. `Stats` and
+/// `Grep` exist for when the prompt is huge and the user only
+/// wants a slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemPromptViewMode {
+    Full,
+    Stats,
+    Grep(String),
 }
 
 /// Parse `/plugin [install|remove ...]` and the `/plugins` alias.
@@ -1179,6 +1199,26 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "plugin" | "plugins" => parse_plugin_subcommand(cmd, args),
         "tasks" | "todo" => SlashCommand::Tasks,
         "context" => SlashCommand::Context,
+        "system" => {
+            let trimmed = args.trim();
+            let mode = if trimmed.is_empty() {
+                SystemPromptViewMode::Full
+            } else if trimmed == "stats" {
+                SystemPromptViewMode::Stats
+            } else if let Some(pat) = trimmed.strip_prefix("grep ").map(str::trim) {
+                if pat.is_empty() {
+                    return Some(SlashCommand::Unknown(
+                        "usage: /system grep <pattern>".into(),
+                    ));
+                }
+                SystemPromptViewMode::Grep(pat.to_string())
+            } else {
+                return Some(SlashCommand::Unknown(format!(
+                    "unknown /system mode: '{trimmed}' (try /system, /system stats, /system grep <pattern>)"
+                )));
+            };
+            SlashCommand::System { mode }
+        }
         "version" | "v" => SlashCommand::Version,
         "cwd" | "pwd" => SlashCommand::Cwd,
         "thinking" => SlashCommand::Thinking(args.to_string()),
@@ -2526,6 +2566,7 @@ pub fn built_in_commands() -> &'static [BuiltInCommand] {
 
         // Context / memory / knowledge
         BuiltInCommand { name: "context",  description: "Show context-window usage breakdown",        category: "Context", usage: "" },
+        BuiltInCommand { name: "system",   description: "Show the active system prompt",               category: "Context", usage: "[stats | grep <pattern>]" },
         BuiltInCommand { name: "memory",   description: "List memory entries",                        category: "Context", usage: "" },
         BuiltInCommand { name: "kms",      description: "List knowledge bases",                       category: "Context", usage: "" },
 
@@ -2552,6 +2593,103 @@ pub fn built_in_commands() -> &'static [BuiltInCommand] {
         BuiltInCommand { name: "config",   description: "Set a config value (session-only)",          category: "System", usage: "key=value" },
         BuiltInCommand { name: "quit",     description: "Exit",                                       category: "System", usage: "" },
     ]
+}
+
+/// Format `/system` output for one of the three view modes. Pure
+/// (no IO, no state mutation) so both CLI and GUI dispatch share the
+/// same renderer.
+///
+/// `Full` returns the prompt verbatim. `Stats` walks Markdown headers
+/// (`#`, `##`, `###`) and reports each section's line + byte count
+/// without dumping content. `Grep(pat)` keeps only sections whose body
+/// (after the header) contains `pat` (case-insensitive).
+pub fn render_system_prompt_view(prompt: &str, mode: &SystemPromptViewMode) -> String {
+    match mode {
+        SystemPromptViewMode::Full => {
+            let bytes = prompt.len();
+            let lines = prompt.lines().count();
+            format!("=== SYSTEM PROMPT ({lines} lines, {bytes} bytes) ===\n\n{prompt}")
+        }
+        SystemPromptViewMode::Stats => {
+            let mut out = String::new();
+            out.push_str(&format!(
+                "=== SYSTEM PROMPT STATS ({} lines, {} bytes) ===\n\n",
+                prompt.lines().count(),
+                prompt.len()
+            ));
+            // Walk headers, accumulate per-section size.
+            let mut current: Option<(String, usize, usize)> = None; // (heading, lines, bytes)
+            let flush = |out: &mut String, sec: &(String, usize, usize)| {
+                out.push_str(&format!("  {} ({} lines, {} bytes)\n", sec.0, sec.1, sec.2));
+            };
+            for line in prompt.lines() {
+                let is_header =
+                    line.trim_start().starts_with('#') && line.trim_start().contains(' ');
+                if is_header {
+                    if let Some(prev) = &current {
+                        flush(&mut out, prev);
+                    }
+                    current = Some((line.trim().to_string(), 0, 0));
+                } else if let Some(sec) = current.as_mut() {
+                    sec.1 += 1;
+                    sec.2 += line.len() + 1;
+                }
+            }
+            if let Some(prev) = &current {
+                flush(&mut out, prev);
+            }
+            if current.is_none() {
+                out.push_str("(no Markdown headers found — prompt has no sectioned structure)\n");
+            }
+            out
+        }
+        SystemPromptViewMode::Grep(pat) => {
+            let needle = pat.to_ascii_lowercase();
+            let mut out = String::new();
+            out.push_str(&format!("=== SYSTEM PROMPT GREP '{}' ===\n\n", pat));
+            // Group lines by Markdown header. Emit any group whose
+            // accumulated text (header + body) contains the pattern.
+            let mut current_header: Option<String> = None;
+            let mut current_body = String::new();
+            let mut hits = 0usize;
+            let flush = |out: &mut String, hits: &mut usize, hdr: &Option<String>, body: &str| {
+                let hay_text = match hdr {
+                    Some(h) => format!("{h}\n{body}"),
+                    None => body.to_string(),
+                };
+                if hay_text.to_ascii_lowercase().contains(&needle) {
+                    *hits += 1;
+                    if let Some(h) = hdr {
+                        out.push_str(&format!("{h}\n"));
+                    }
+                    out.push_str(body);
+                    if !body.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push('\n');
+                }
+            };
+            for line in prompt.lines() {
+                let is_header =
+                    line.trim_start().starts_with('#') && line.trim_start().contains(' ');
+                if is_header {
+                    flush(&mut out, &mut hits, &current_header, &current_body);
+                    current_header = Some(line.to_string());
+                    current_body.clear();
+                } else {
+                    current_body.push_str(line);
+                    current_body.push('\n');
+                }
+            }
+            flush(&mut out, &mut hits, &current_header, &current_body);
+            if hits == 0 {
+                out.push_str(&format!("(no sections matched '{pat}')\n"));
+            } else {
+                out.push_str(&format!("\n=== {hits} section(s) matched '{pat}' ===\n"));
+            }
+            out
+        }
+    }
 }
 
 /// Truncate a string for one-line REPL display, with character-aware
@@ -5118,6 +5256,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             println!("{COLOR_DIM}{line}{COLOR_RESET}");
                         }
                     }
+                }
+                SlashCommand::System { mode } => {
+                    let view = render_system_prompt_view(&system, &mode);
+                    println!("{view}");
                 }
                 SlashCommand::Version => {
                     let v = crate::version::info();
@@ -7975,6 +8117,89 @@ mod tests {
             parse_slash("/mcp add weather"),
             Some(SlashCommand::Unknown(_))
         ));
+    }
+
+    #[test]
+    fn parse_slash_system_modes() {
+        assert_eq!(
+            parse_slash("/system"),
+            Some(SlashCommand::System {
+                mode: SystemPromptViewMode::Full,
+            })
+        );
+        assert_eq!(
+            parse_slash("/system stats"),
+            Some(SlashCommand::System {
+                mode: SystemPromptViewMode::Stats,
+            })
+        );
+        assert_eq!(
+            parse_slash("/system grep KMS"),
+            Some(SlashCommand::System {
+                mode: SystemPromptViewMode::Grep("KMS".into()),
+            })
+        );
+        assert_eq!(
+            parse_slash("/system grep multi word pattern"),
+            Some(SlashCommand::System {
+                mode: SystemPromptViewMode::Grep("multi word pattern".into()),
+            })
+        );
+        // grep with no pattern → Unknown
+        assert!(matches!(
+            parse_slash("/system grep "),
+            Some(SlashCommand::Unknown(_))
+        ));
+        // unknown subcommand → Unknown
+        assert!(matches!(
+            parse_slash("/system unknown"),
+            Some(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn render_system_prompt_view_full_includes_header_and_body() {
+        let s = "# Working directory\n/foo/bar\n\n# Memory\nlots of stuff";
+        let out = render_system_prompt_view(s, &SystemPromptViewMode::Full);
+        assert!(out.starts_with("=== SYSTEM PROMPT"));
+        assert!(out.contains("Working directory"));
+        assert!(out.contains("/foo/bar"));
+    }
+
+    #[test]
+    fn render_system_prompt_view_stats_lists_sections() {
+        let s = "# Working directory\nfoo\n\n# Memory\nbar baz\nqux";
+        let out = render_system_prompt_view(s, &SystemPromptViewMode::Stats);
+        assert!(out.contains("# Working directory"));
+        assert!(out.contains("# Memory"));
+        // Stats should NOT include the body content.
+        assert!(!out.contains("bar baz"));
+        assert!(!out.contains("foo"));
+    }
+
+    #[test]
+    fn render_system_prompt_view_grep_filters_sections() {
+        let s = "# Working directory\nfoo\n\n# Memory\nbar matched here\n\n# Other\nzzz";
+        let out = render_system_prompt_view(s, &SystemPromptViewMode::Grep("matched".into()));
+        assert!(out.contains("# Memory"));
+        assert!(out.contains("bar matched here"));
+        assert!(!out.contains("# Working directory"));
+        assert!(!out.contains("# Other"));
+        assert!(out.contains("1 section(s) matched"));
+    }
+
+    #[test]
+    fn render_system_prompt_view_grep_case_insensitive() {
+        let s = "# A\nMATCHME\n";
+        let out = render_system_prompt_view(s, &SystemPromptViewMode::Grep("matchme".into()));
+        assert!(out.contains("# A"));
+    }
+
+    #[test]
+    fn render_system_prompt_view_grep_zero_hits() {
+        let s = "# A\nbody\n";
+        let out = render_system_prompt_view(s, &SystemPromptViewMode::Grep("zzz".into()));
+        assert!(out.contains("no sections matched"));
     }
 
     #[test]

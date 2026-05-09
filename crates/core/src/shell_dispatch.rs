@@ -74,6 +74,10 @@ pub async fn dispatch(
                 .unwrap_or_else(|_| "?".to_string());
             emit(events_tx, format!("cwd: {cwd}"));
         }
+        SlashCommand::System { mode } => {
+            let view = crate::repl::render_system_prompt_view(&state.system_prompt, &mode);
+            emit(events_tx, view);
+        }
         SlashCommand::Context => {
             let history = state.agent.history_snapshot();
             let blocks: usize = history.iter().map(|m| m.content.len()).sum();
