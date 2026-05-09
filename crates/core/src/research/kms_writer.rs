@@ -430,15 +430,19 @@ pub fn strip_sources_section(body: &str) -> String {
     }
 }
 
-/// M6.39.6: write one page from a multi-page research run. Filename
-/// shape `<run-prefix>__<page-slug>.md` so multiple pages from the
-/// same research run sort together in the index, and pages from
-/// different runs don't collide. Frontmatter discriminator
-/// `type: research-page` (sibling of `type: research` for legacy
-/// single-page output).
+/// M6.39.11: write one page from a multi-page research run.
+/// Filename is just `<page-slug>.md` — frontmatter (date, run query,
+/// topic) carries the metadata, so the long
+/// `<run-prefix>__<slug>.md` form earlier revs used was redundant
+/// noise. Re-running `/research` on the same topic + KMS now
+/// updates pages in place rather than spamming dated copies — the
+/// `_summary.md` per-run section still chronologically logs each
+/// run, so history is preserved at the index level.
+///
+/// Frontmatter discriminator `type: research-page` (sibling of
+/// `type: research` for the legacy single-page output).
 pub fn write_research_page(
     kms_name: &str,
-    run_prefix: &str,
     page_slug: &str,
     page_title: &str,
     page_topic: &str,
@@ -447,13 +451,11 @@ pub fn write_research_page(
     body: &str,
 ) -> Result<std::path::PathBuf> {
     let kref = resolve_or_create_kms(kms_name)?;
-    let filename = format!("{run_prefix}__{page_slug}");
     let composed = format!(
         "---\n\
          title: \"{}\"\n\
          type: research-page\n\
          page_slug: {}\n\
-         run: {}\n\
          query: \"{}\"\n\
          topic: \"{}\"\n\
          created: {today}\n\
@@ -462,78 +464,11 @@ pub fn write_research_page(
          {}\n",
         escape_yaml_string(page_title),
         page_slug,
-        run_prefix,
         escape_yaml_string(query),
         escape_yaml_string(page_topic),
         body.trim()
     );
-    crate::kms::write_page(&kref, &filename, &composed)
-}
-
-/// M6.39.6: rewrite Obsidian-style `[[slug]]` and `[[slug|display]]`
-/// cross-links so they target the actual on-disk filename. Pages
-/// are written with `<run-prefix>__<slug>` filenames; a bare
-/// `[[karpathy]]` would not resolve because the file is
-/// `2026-05-09-llm-wiki__karpathy.md`. Rewriter replaces the slug
-/// portion with the prefixed form so Obsidian (and any markdown
-/// renderer that respects wikilinks) can resolve it.
-///
-/// Display text (`[[slug|display]]`) is preserved verbatim so the
-/// reader sees a clean human label.
-///
-/// Slugs not present in `known_slugs` are left untouched —
-/// `[[some-other-page]]` may legitimately reference an existing
-/// wiki entry from a previous research run, so we don't mangle
-/// those.
-pub fn rewrite_cross_links(body: &str, known_slugs: &[&str], run_prefix: &str) -> String {
-    let known: std::collections::HashSet<&str> = known_slugs.iter().copied().collect();
-    let bytes = body.as_bytes();
-    let mut out = String::with_capacity(body.len() + 64);
-    let mut i = 0usize;
-    while i < body.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            // Find the closing `]]`.
-            if let Some(end_rel) = body[i + 2..].find("]]") {
-                let inner_start = i + 2;
-                let inner_end = inner_start + end_rel;
-                let inner = &body[inner_start..inner_end];
-                // Length sanity — Obsidian wikilinks are short. >120
-                // chars is almost certainly not a wikilink.
-                if inner.len() <= 120 && !inner.contains('\n') {
-                    let (slug_part, display_part) = match inner.split_once('|') {
-                        Some((s, d)) => (s.trim(), Some(d.trim())),
-                        None => (inner.trim(), None),
-                    };
-                    if known.contains(slug_part) {
-                        let new_slug = format!("{run_prefix}__{slug_part}");
-                        out.push_str("[[");
-                        out.push_str(&new_slug);
-                        if let Some(d) = display_part {
-                            out.push('|');
-                            out.push_str(d);
-                        }
-                        out.push_str("]]");
-                        i = inner_end + 2;
-                        continue;
-                    }
-                }
-            }
-        }
-        // M6.39.10: UTF-8-safe pass-through. Pre-fix used
-        // `out.push(bytes[i] as char)` — that ALWAYS pushes 1 byte
-        // as a Latin-1 codepoint, mangling every multi-byte UTF-8
-        // char. Em-dash `—` (UTF-8 e2 80 94) became `â` + 2 invisible
-        // control chars. Walk to next char boundary and push the
-        // whole char instead. Same fix as linkify_citations'
-        // "default" path.
-        let mut j = i + 1;
-        while j < body.len() && !body.is_char_boundary(j) {
-            j += 1;
-        }
-        out.push_str(&body[i..j]);
-        i = j;
-    }
-    out
+    crate::kms::write_page(&kref, page_slug, &composed)
 }
 
 /// M6.39.6: append a "Run on `<date>`" section to `_summary.md`
@@ -543,7 +478,6 @@ pub fn rewrite_cross_links(body: &str, known_slugs: &[&str], run_prefix: &str) -
 /// from the summary.
 pub fn append_run_section(
     kms_name: &str,
-    run_prefix: &str,
     today: &str,
     query: &str,
     pages: &[(String, String, String)], // (slug, title, topic)
@@ -555,13 +489,14 @@ pub fn append_run_section(
     })?;
     let mut section = format!("\n## {today} — {}\n\n", truncate_for_summary(query, 80));
     for (slug, title, topic) in pages {
-        let filename = format!("{run_prefix}__{slug}");
+        // M6.39.11: bare slug — filenames no longer carry the run
+        // prefix, so `[[karpathy]]` resolves directly.
         let topic_brief = if topic.trim().is_empty() {
             String::new()
         } else {
             format!(" — {}", truncate_for_summary(topic, 100))
         };
-        section.push_str(&format!("- [[{filename}|{title}]]{topic_brief}\n"));
+        section.push_str(&format!("- [[{slug}|{title}]]{topic_brief}\n"));
     }
     let summary_name = "_summary";
     let summary_path = kref.pages_dir().join(format!("{summary_name}.md"));
@@ -990,118 +925,15 @@ mod tests {
         assert_eq!(out, "Body here.");
     }
 
-    // ── rewrite_cross_links ────────────────────────────────────────
-
-    #[test]
-    fn rewrite_cross_links_simple_slug() {
-        let body = "See also [[karpathy]] for more.";
-        let out = rewrite_cross_links(body, &["karpathy"], "2026-05-09-llm-wiki");
-        assert_eq!(out, "See also [[2026-05-09-llm-wiki__karpathy]] for more.");
-    }
-
-    #[test]
-    fn rewrite_cross_links_with_display_text() {
-        let body = "See also [[karpathy|Andrej Karpathy]] for more.";
-        let out = rewrite_cross_links(body, &["karpathy"], "2026-05-09-llm-wiki");
-        assert_eq!(
-            out,
-            "See also [[2026-05-09-llm-wiki__karpathy|Andrej Karpathy]] for more."
-        );
-    }
-
-    #[test]
-    fn rewrite_cross_links_leaves_unknown_slugs_alone() {
-        // `[[some-other-page]]` may reference an existing entry
-        // from a prior research run — don't mangle it.
-        let body = "See [[unknown-slug]] and [[karpathy]].";
-        let out = rewrite_cross_links(body, &["karpathy"], "run-2");
-        assert!(out.contains("[[unknown-slug]]"));
-        assert!(out.contains("[[run-2__karpathy]]"));
-    }
-
-    #[test]
-    fn rewrite_cross_links_handles_multiple_in_same_body() {
-        let body = "[[a]] then [[b|Bee]] then [[a|Aye]].";
-        let out = rewrite_cross_links(body, &["a", "b"], "r");
-        assert!(out.contains("[[r__a]]"));
-        assert!(out.contains("[[r__b|Bee]]"));
-        assert!(out.contains("[[r__a|Aye]]"));
-    }
-
-    #[test]
-    fn rewrite_cross_links_preserves_non_link_brackets() {
-        // `[1]` is a citation, not a wikilink. Single brackets
-        // shouldn't be touched.
-        let body = "Cite [1] and link [[karpathy]] in same line.";
-        let out = rewrite_cross_links(body, &["karpathy"], "r");
-        assert!(out.contains("[1]"));
-        assert!(out.contains("[[r__karpathy]]"));
-    }
-
-    #[test]
-    fn rewrite_cross_links_skips_overlong_inner() {
-        // > 120 chars between [[ and ]] = not a wikilink
-        let inner: String = "x".repeat(150);
-        let body = format!("[[{inner}]]");
-        let out = rewrite_cross_links(&body, &["x"], "r");
-        // Should pass through unchanged (no slug match anyway, but
-        // the length guard must fire first).
-        assert_eq!(out, body);
-    }
-
-    /// M6.39.10: regression test for UTF-8 mojibake in rewrite_cross_links.
-    /// Pre-fix the byte-walking loop pushed `bytes[i] as char` for the
-    /// non-wikilink default path — which silently corrupted every
-    /// multi-byte UTF-8 char. Em-dash `—` (e2 80 94) became `â` plus
-    /// two invisible control chars. Pin the fix.
-    #[test]
-    fn rewrite_cross_links_preserves_em_dash() {
-        let body = "Each note — keep things simple.";
-        let out = rewrite_cross_links(body, &[], "run");
-        assert_eq!(out, body, "em-dash must round-trip; got: {out:?}");
-        // Defensive: also confirm the bytes stayed identical.
-        assert_eq!(out.as_bytes(), body.as_bytes());
-    }
-
-    #[test]
-    fn rewrite_cross_links_preserves_thai_text() {
-        let body = "ภาษาไทย [[karpathy]] ทดสอบ.";
-        let out = rewrite_cross_links(body, &["karpathy"], "run");
-        assert!(out.contains("ภาษาไทย"));
-        assert!(out.contains("ทดสอบ"));
-        assert!(out.contains("[[run__karpathy]]"));
-    }
-
-    #[test]
-    fn rewrite_cross_links_preserves_curly_quotes_and_ellipsis() {
-        // Common mojibake culprits: curly apostrophe `'`, curly quotes
-        // `"` `"`, ellipsis `…`. All multi-byte UTF-8 — pre-fix all
-        // mangled.
-        let body = "It's \"quoted\" — really… and [[karpathy]]!";
-        let out = rewrite_cross_links(body, &["karpathy"], "run");
-        assert!(out.contains("It's"));
-        assert!(out.contains("\"quoted\""));
-        assert!(out.contains("…"));
-        assert!(out.contains("[[run__karpathy]]"));
-    }
-
-    #[test]
-    fn rewrite_cross_links_skips_multiline_inner() {
-        let body = "[[karpathy\nbroken]]";
-        let out = rewrite_cross_links(body, &["karpathy"], "r");
-        // Multiline = not a wikilink.
-        assert_eq!(out, body);
-    }
-
     // ── append_run_section + write_research_page integration ──────
 
     #[test]
-    fn write_research_page_creates_page_with_run_prefix() {
+    fn write_research_page_creates_bare_slug_filename() {
+        // M6.39.11: filename is just `<slug>.md`, no run prefix.
         let _g = scoped_home();
         let _ = crate::kms::create("multi-page-test", crate::kms::KmsScope::Project).unwrap();
         let path = write_research_page(
             "multi-page-test",
-            "2026-05-09-test-query",
             "karpathy",
             "Andrej Karpathy",
             "Karpathy's role as proponent",
@@ -1110,19 +942,21 @@ mod tests {
             "Andrej Karpathy is a researcher [1].\n\n## Background\n\nMore here.",
         )
         .unwrap();
-        assert!(path
-            .to_str()
-            .unwrap()
-            .ends_with("2026-05-09-test-query__karpathy.md"));
+        assert!(
+            path.to_str().unwrap().ends_with("/karpathy.md"),
+            "filename should be bare slug, got: {}",
+            path.display()
+        );
+        // Pre-fix would have produced `<run-prefix>__karpathy.md`.
+        assert!(!path.to_str().unwrap().contains("__"));
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("type: research-page"));
         assert!(body.contains("page_slug: karpathy"));
-        assert!(body.contains("run: 2026-05-09-test-query"));
         assert!(body.contains("Andrej Karpathy is a researcher"));
     }
 
     #[test]
-    fn append_run_section_creates_new_summary_with_section() {
+    fn append_run_section_creates_new_summary_with_bare_slug_links() {
         let _g = scoped_home();
         let _ = crate::kms::create("run-summary-test", crate::kms::KmsScope::Project).unwrap();
         let pages = vec![
@@ -1137,20 +971,15 @@ mod tests {
                 "Person page".to_string(),
             ),
         ];
-        append_run_section(
-            "run-summary-test",
-            "2026-05-09-llm-wiki",
-            "2026-05-09",
-            "what is llm-wiki",
-            &pages,
-        )
-        .unwrap();
+        append_run_section("run-summary-test", "2026-05-09", "what is llm-wiki", &pages).unwrap();
         let kref = crate::kms::resolve("run-summary-test").unwrap();
         let summary = std::fs::read_to_string(kref.pages_dir().join("_summary.md")).unwrap();
         assert!(summary.contains("type: research-summary"));
+        // Section heading carries the date; page links use bare slugs.
         assert!(summary.contains("## 2026-05-09 — what is llm-wiki"));
-        assert!(summary.contains("[[2026-05-09-llm-wiki__concept|Concept]]"));
-        assert!(summary.contains("[[2026-05-09-llm-wiki__karpathy|Karpathy]]"));
+        assert!(summary.contains("[[concept|Concept]]"));
+        assert!(summary.contains("[[karpathy|Karpathy]]"));
+        assert!(!summary.contains("__"));
     }
 
     #[test]
@@ -1159,7 +988,6 @@ mod tests {
         let _ = crate::kms::create("run-append-test", crate::kms::KmsScope::Project).unwrap();
         append_run_section(
             "run-append-test",
-            "2026-05-09-first",
             "2026-05-09",
             "first query",
             &[("a".into(), "A".into(), "first topic".into())],
@@ -1167,7 +995,6 @@ mod tests {
         .unwrap();
         append_run_section(
             "run-append-test",
-            "2026-05-10-second",
             "2026-05-10",
             "second query",
             &[("b".into(), "B".into(), "second topic".into())],
@@ -1177,8 +1004,8 @@ mod tests {
         let summary = std::fs::read_to_string(kref.pages_dir().join("_summary.md")).unwrap();
         assert!(summary.contains("first query"));
         assert!(summary.contains("second query"));
-        assert!(summary.contains("[[2026-05-09-first__a|A]]"));
-        assert!(summary.contains("[[2026-05-10-second__b|B]]"));
+        assert!(summary.contains("[[a|A]]"));
+        assert!(summary.contains("[[b|B]]"));
     }
 
     // ── parse_citation_indices ─────────────────────────────────────

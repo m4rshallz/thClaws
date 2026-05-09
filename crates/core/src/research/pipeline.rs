@@ -274,8 +274,11 @@ pub async fn run_with_tools(
         format!("synthesizing {} pages in parallel", plan.len()),
     );
     let today = kms_writer::today_str();
-    let query_slug = simple_slug(&query);
-    let run_prefix = format!("{today}-{query_slug}");
+    // M6.39.11: simple_slug(query) used to feed the run-prefix in
+    // page filenames; now bare slugs win (frontmatter has the
+    // metadata). The variable is kept locally only if some downstream
+    // step still needs it — none currently do.
+    let _ = simple_slug(&query);
 
     let mut page_futures = Vec::with_capacity(plan.len());
     for page in &plan {
@@ -314,10 +317,9 @@ pub async fn run_with_tools(
         }
     }
 
-    // ── 9. Cross-link rewrite + write each page ─────────────────────
+    // ── 9. Post-process + write each page ───────────────────────────
     check_alive(job_id, &cancel)?;
     mgr.update_phase(job_id, "writing pages to KMS");
-    let known_slugs: Vec<&str> = plan.iter().map(|p| p.slug.as_str()).collect();
     let mut all_cited_indices: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut last_page_path: Option<String> = None;
     // M6.39.7: shared (index, title, url) shape for the citation
@@ -329,7 +331,9 @@ pub async fn run_with_tools(
         .collect();
     for (idx, body) in bodies {
         let page = &plan[idx];
-        let mut rewritten = kms_writer::rewrite_cross_links(&body, &known_slugs, &run_prefix);
+        // M6.39.11: no cross-link rewriter — page filenames are bare
+        // slugs now, so `[[karpathy]]` resolves directly.
+        let mut rewritten = body;
         if !last_notes.is_empty() && idx == 0 {
             // Keep the iteration-evaluation notes attached to the
             // first page as a research-context appendix. Only the
@@ -357,7 +361,6 @@ pub async fn run_with_tools(
 
         let path = kms_writer::write_research_page(
             &kms_name,
-            &run_prefix,
             &page.slug,
             &page.title,
             &page.topic,
@@ -375,7 +378,7 @@ pub async fn run_with_tools(
         .iter()
         .map(|p| (p.slug.clone(), p.title.clone(), p.topic.clone()))
         .collect();
-    kms_writer::append_run_section(&kms_name, &run_prefix, &today, &query, &pages_for_summary)?;
+    kms_writer::append_run_section(&kms_name, &today, &query, &pages_for_summary)?;
 
     // ── 11. Persist cited sources to <kms>/sources/ ─────────────────
     for s in &sources {
