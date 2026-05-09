@@ -341,17 +341,25 @@ fn build_plan_pages_prompt(query: &str, sources: &[ResearchSource], max_pages: u
         ));
     }
     s.push_str(&format!(
-        "Plan a KMS page layout that captures these findings. Output {} pages \
-         maximum. Each page should cover ONE coherent thing — pick the shape \
-         that fits each topic:\n\
+        "Plan a KMS page layout that captures these findings.\n\n\
+         **Page count is a CEILING, not a target.** {} pages maximum — but \
+         output FEWER if the material doesn't naturally split that many ways. \
+         Forcing pages to fill a quota produces thin, repetitive pages that \
+         hurt the KMS more than they help. Common honest counts:\n\
+         - Narrow factual question → 1 page is fine (just one concept)\n\
+         - One entity with light surrounding context → 1-2 pages\n\
+         - Topic with a few distinct facets → 3-4 pages\n\
+         - Broad topic with multiple entities + comparisons → up to {0}\n\n\
+         Each page must cover ONE coherent thing. Pick the shape that fits:\n\
          - **Entity** page: a person, organization, paper, product (slug = the entity name)\n\
          - **Concept** page: a single idea / definition / mechanism\n\
          - **Comparison** page: X vs Y\n\
          - **How-to / Pattern** page: a procedure, recipe, or design pattern\n\
          - **Timeline** page: chronological events\n\n\
-         Granular pages with cross-links beat one mega-page. The user will \
-         later ask narrow questions; entity-targeted pages let `KmsSearch` \
-         find the right one.\n\n\
+         Reject thin pages: if a candidate page would have <3 sources or \
+         repeats material covered better by another page in the plan, drop \
+         it. Granular pages with cross-links beat one mega-page; thin pages \
+         padded to hit a count are worse than either.\n\n\
          Slug rules:\n\
          - Lowercase ASCII alphanumeric + hyphens (`a-z`, `0-9`, `-`)\n\
          - 2-5 words ideally\n\
@@ -969,6 +977,40 @@ mod tests {
     #[test]
     fn snippet_passes_through_short_strings() {
         assert_eq!(snippet("short", 100), "short");
+    }
+
+    // ── plan_pages prompt directives ───────────────────────────────
+
+    /// M6.39.6: pin the "ceiling not target" framing of max_pages so a
+    /// future "smooth out the wording" refactor can't regress to the
+    /// original "Output N pages" form. User reported the LLM was
+    /// over-splitting topics to fill the quota — page count must be
+    /// honest about source density, not a target.
+    #[test]
+    fn plan_pages_prompt_treats_max_as_ceiling_not_target() {
+        let sources = vec![ResearchSource {
+            index: 1,
+            title: "T".into(),
+            url: "https://x.example".into(),
+            body: "b".into(),
+        }];
+        let prompt = build_plan_pages_prompt("q", &sources, 5);
+        let lower = prompt.to_ascii_lowercase();
+        assert!(
+            lower.contains("ceiling, not a target"),
+            "prompt must frame max_pages as a ceiling"
+        );
+        assert!(
+            lower.contains("output fewer"),
+            "prompt must explicitly permit fewer pages"
+        );
+        // "Reject thin pages" rule guards against quota-padding.
+        assert!(
+            lower.contains("reject thin pages"),
+            "prompt must forbid thin pages padded to hit count"
+        );
+        // The numeric ceiling is still mentioned (was 5 in this test).
+        assert!(prompt.contains("5 pages maximum"));
     }
 
     // ── plan_pages JSON parser ─────────────────────────────────────
