@@ -4,21 +4,26 @@ import { marked } from "marked";
 import { send, subscribe } from "../hooks/useIPC";
 import type { ViewerTarget } from "./KmsBrowserSidebar";
 
-/// M6.39.9: full-pane overlay rendering a KMS file as HTML.
+/// M6.39.9: KMS viewer pane. Renders a KMS file as HTML inside the
+/// main content area — replaces the active tab visually, but tabs
+/// stay mounted so xterm/etc don't lose state. Mounted as an
+/// `absolute inset-0` sibling inside the main-pane container; close
+/// returns the user to whichever tab they were on.
+///
 /// Markdown → HTML via `marked` (already a dep, used by
 /// MarkdownEditor / InstructionsEditorModal too). Click handlers
 /// rewrite links so:
 ///   - `[[<run-prefix>__<slug>]]` Obsidian wikilinks → load that
-///     page in the same overlay
+///     page in the same pane
 ///   - relative markdown links `[..](../sources/foo.md)` and
-///     `[..](other-page.md)` → load that page/source in the overlay
-///   - http(s) links → open in external browser via `external_open`
+///     `[..](other-page.md)` → load that page/source in the pane
+///   - http(s) links → open in external browser via `open_external`
 ///     IPC (delegates to the OS default browser; doesn't navigate
 ///     the wry webview which is single-document)
 ///
 /// Keeps a small back-stack so the user can step backward through
-/// linked pages. ESC + the X button close the overlay; ArrowLeft
-/// in the title bar pops the back-stack one entry.
+/// linked pages. ESC + the X button close the pane; ArrowLeft in
+/// the title bar pops the back-stack one entry.
 
 marked.setOptions({ gfm: true, breaks: false, async: false });
 
@@ -131,70 +136,64 @@ export function KmsViewerOverlay({ initial, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center"
+      className="absolute inset-0 flex flex-col"
       style={{
-        background: "rgba(0,0,0,0.4)",
-      }}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        background: "var(--bg-primary)",
+        zIndex: 30, // above the tabs, below modals (which use fixed z-50)
       }}
     >
       <div
-        className="rounded-lg shadow-2xl flex flex-col max-h-[90vh] w-[80vw] max-w-4xl"
+        className="flex items-center justify-between px-4 py-2 border-b shrink-0"
         style={{
-          background: "var(--bg-primary)",
-          border: "1px solid var(--border)",
+          borderColor: "var(--border)",
+          background: "var(--bg-secondary)",
         }}
-        onMouseDown={(e) => e.stopPropagation()}
       >
-        <div
-          className="flex items-center justify-between px-4 py-2 border-b shrink-0"
-          style={{ borderColor: "var(--border)" }}
-        >
-          <div className="flex items-center gap-2 truncate">
-            <button
-              type="button"
-              onClick={goBack}
-              disabled={stack.length <= 1}
-              className="p-1 rounded hover:bg-white/10"
-              style={{
-                color: "var(--text-secondary)",
-                opacity: stack.length <= 1 ? 0.3 : 1,
-                cursor: stack.length <= 1 ? "default" : "pointer",
-              }}
-              title="Back"
-            >
-              <ArrowLeft size={14} />
-            </button>
-            <span
-              className="text-xs"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              {current.kms} / {current.kind}s /
-            </span>
-            <span
-              className="text-sm font-semibold truncate"
-              style={{ color: "var(--text-primary)" }}
-            >
-              {current.name}
-            </span>
-          </div>
+        <div className="flex items-center gap-2 truncate">
           <button
             type="button"
-            onClick={onClose}
+            onClick={goBack}
+            disabled={stack.length <= 1}
             className="p-1 rounded hover:bg-white/10"
-            style={{ color: "var(--text-secondary)" }}
-            title="Close (Esc)"
+            style={{
+              color: "var(--text-secondary)",
+              opacity: stack.length <= 1 ? 0.3 : 1,
+              cursor: stack.length <= 1 ? "default" : "pointer",
+            }}
+            title="Back"
           >
-            <X size={14} />
+            <ArrowLeft size={14} />
           </button>
+          <span
+            className="text-xs"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            {current.kms} / {current.kind}s /
+          </span>
+          <span
+            className="text-sm font-semibold truncate"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {current.name}
+          </span>
         </div>
-
-        <div
-          ref={containerRef}
-          className="flex-1 overflow-auto px-6 py-4 kms-viewer-prose"
-          style={{ color: "var(--text-primary)" }}
+        <button
+          type="button"
+          onClick={onClose}
+          className="p-1 rounded hover:bg-white/10"
+          style={{ color: "var(--text-secondary)" }}
+          title="Close (Esc) — return to active tab"
         >
+          <X size={14} />
+        </button>
+      </div>
+
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto kms-viewer-prose"
+        style={{ color: "var(--text-primary)" }}
+      >
+        <div className="max-w-4xl mx-auto px-8 py-6">
           {error && (
             <div
               className="px-3 py-2 rounded"

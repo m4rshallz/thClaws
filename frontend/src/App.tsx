@@ -497,7 +497,11 @@ export default function App() {
               making the terminal un-typeable after a tab switch. */}
           {TABS.map(({ id }) => {
             const isActive = effectiveTab === id;
-            const cls = `absolute inset-0 ${isActive ? "" : "invisible pointer-events-none"}`;
+            // M6.39.9: when KMS viewer is open, hide tabs visually
+            // (they stay mounted so xterm doesn't lose state) and
+            // let the viewer's absolute-positioned pane cover them.
+            const tabsHidden = !isActive || viewerTarget !== null;
+            const cls = `absolute inset-0 ${tabsHidden ? "invisible pointer-events-none" : ""}`;
             return (
               <div key={id} className={cls}>
                 {id === "terminal" && <TerminalView active={isActive} modalOpen={modalOpen} />}
@@ -507,6 +511,17 @@ export default function App() {
               </div>
             );
           })}
+          {/* KMS viewer pane (M6.39.9). When a file is open, mounts
+              over the active tab inside the same flex-1 container so
+              it feels like a tab swap rather than a modal. Tabs stay
+              mounted underneath; close button returns the user to
+              whichever tab they were on. */}
+          {viewerTarget && (
+            <KmsViewerOverlay
+              initial={viewerTarget}
+              onClose={() => setViewerTarget(null)}
+            />
+          )}
         </div>
         {/* Goal-state sidebar (M6.29 Phase A). Compact 240px column
             mounted to the LEFT of the plan sidebar. Renders nothing
@@ -543,15 +558,6 @@ export default function App() {
           />
         )}
       </div>
-      {/* KMS viewer overlay (M6.39.9). Modal-style; renders
-          markdown → HTML via `marked`. Wikilinks + relative
-          markdown links navigate within the overlay. */}
-      {viewerTarget && (
-        <KmsViewerOverlay
-          initial={viewerTarget}
-          onClose={() => setViewerTarget(null)}
-        />
-      )}
 
       {/* Status bar */}
       <div
