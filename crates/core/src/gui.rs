@@ -669,38 +669,39 @@ fn run_gui_inner(serve: Option<crate::server::ServeConfig>) {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     // Windows (WebView2) exposes custom protocols as `http://<scheme>.<host>`;
-    // Linux uses the raw `<scheme>://<host>` form. macOS takes a
-    // different path entirely — see comment block below.
+    // Linux uses the raw `<scheme>://<host>` form.
     #[cfg(windows)]
     let start_url = "http://thclaws.localhost/";
     #[cfg(target_os = "linux")]
     let start_url = "thclaws://localhost/";
 
-    // M6.43: On macOS WKWebView's protocol-handler path produces a
-    // blank page on Intel macOS 13 (and likely older arm64 macOS
-    // too — we hadn't tested). The handler is registered fine but
-    // never gets called for the initial navigation; only the empty
-    // about:blank stays. wry has no `with_https_scheme`-equivalent
-    // for macOS to fix this through scheme registration. Workaround:
-    // load FRONTEND_HTML directly via `with_html`, which uses
-    // WKWebView's `loadHTMLString:` — no scheme handler involved
-    // for the initial page. The custom protocol handler is still
-    // registered for `thclaws://localhost/file-asset/...` URLs the
-    // page navigates to later (Files-tab previews), so file-asset
-    // serving stays intact.
-    //
-    // Slight regression: the page loads with `about:blank` baseURL
-    // which means relative URLs in the embedded HTML resolve
-    // against `about:blank/`. Our singlefile vite build inlines
-    // every JS/CSS asset, so there are no relative URLs to fail —
-    // only file-asset URLs are absolute and use the custom scheme,
-    // which still works.
-    let builder = WebViewBuilder::new();
+    // M6.43: macOS — write FRONTEND_HTML to a temp file and load via
+    // `file://` URL. Two earlier attempts blanked on Intel macOS 13:
+    //   1. with_url("thclaws://localhost/") + protocol handler →
+    //      blank, the custom scheme leaves the page in null-origin
+    //      land, so the inlined `<script type="module">` tags from
+    //      vite never execute (modules require a real origin).
+    //   2. with_html(FRONTEND_HTML) → about:blank baseURL, same
+    //      module-origin problem (log shows didFinishLoadForFrame
+    //      fires but no JS runs and the page stays blank).
+    // file:// URL gives the page a proper file-scheme origin which
+    // WKWebView allows module scripts on. The temp file is recreated
+    // each launch from the embedded string — no install-time
+    // artifact to ship.
     #[cfg(target_os = "macos")]
-    let builder = builder.with_html(FRONTEND_HTML);
-    #[cfg(not(target_os = "macos"))]
-    let builder = builder.with_url(start_url);
-    let builder = builder
+    let start_url = {
+        let temp_dir = std::env::temp_dir().join("thclaws-gui");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let html_path = temp_dir.join("index.html");
+        // Always overwrite — embedded HTML changes per build.
+        let _ = std::fs::write(&html_path, FRONTEND_HTML.as_bytes());
+        format!("file://{}", html_path.display())
+    };
+    #[cfg(target_os = "macos")]
+    let start_url = start_url.as_str();
+
+    let builder = WebViewBuilder::new()
+        .with_url(start_url)
         .with_custom_protocol("thclaws".into(), |_webview_id, request| {
             // File-asset route: serves on-disk files so previewed HTML
             // can load its sibling CSS/JS with relative URLs. Example:
