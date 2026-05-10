@@ -228,9 +228,15 @@ jobs:
           # cwd). Workspace target/ stays at $repoRoot so cargo-wix
           # finds the binary fine. Output path needs to be absolute
           # since cwd is now crates/core.
-          # Strip the leading `v` from the tag for WiX (which only
-          # accepts `MAJOR.MINOR.PATCH[.BUILD]`).
-          $wixVersion = $version -replace '^v',''
+          #
+          # cargo-wix already exports `var.Version` from Cargo.toml
+          # automatically — passing `-dVersion=...` ourselves causes
+          # candle CNDL0288 (variable redeclaration). The MSI version
+          # therefore tracks Cargo.toml exactly; for release tags
+          # `make release V=X.Y.Z` keeps them in sync. Test tags like
+          # v0.8.5-test will produce an MSI with version 0.8.5 (the
+          # current Cargo.toml value) — fine since MSI versions don't
+          # accept pre-release suffixes anyway.
           $wixArch = if ('${{ matrix.target }}' -eq 'aarch64-pc-windows-msvc') { 'arm64' } else { 'x64' }
           Push-Location crates/core
           cargo wix `
@@ -238,8 +244,7 @@ jobs:
             --no-build `
             --nocapture `
             --output "$repoRoot/dist/$name.msi" `
-            -C "-arch" -C "$wixArch" `
-            -C "-dVersion=$wixVersion"
+            -C "-arch" -C "$wixArch"
           Pop-Location
 
           # Zip the bare exe (kept for users who don't want an installer).
