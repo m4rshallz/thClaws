@@ -62,10 +62,19 @@
       <Directory Id="ProgramFiles64Folder" Name="PFiles">
         <Directory Id="APPLICATIONFOLDER" Name="thClaws">
           <Directory Id="Bin" Name="bin">
-            <Component Id="Path" Guid="*" KeyPath="yes">
-              <!-- Per-machine PATH addition. Survives uninstall
-                   because we list it as a key path on its own
-                   component; uninstall drops the path entry. -->
+            <Component Id="Path" Guid="*">
+              <!-- Per-machine PATH addition. Component KeyPath cannot
+                   be a Directory when Guid="*" (WiX LGHT0230), so we
+                   add a tiny RegistryValue under HKLM\Software\thClaws
+                   as the keypath. Uninstall drops both the registry
+                   entry and the PATH addition. -->
+              <RegistryValue
+                  Root="HKLM"
+                  Key="Software\thClaws"
+                  Name="path_installed"
+                  Type="integer"
+                  Value="1"
+                  KeyPath="yes" />
               <Environment
                   Id="PATH"
                   Name="PATH"
