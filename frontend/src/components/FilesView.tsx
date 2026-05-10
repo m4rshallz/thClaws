@@ -5,11 +5,17 @@ import { useTheme } from "../hooks/useTheme";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { CodeEditor } from "./CodeEditor";
 
-// Round-trip a native-OS confirm dialog through the Rust backend so we
-// get a real modal on macOS / Linux / Windows instead of relying on
-// `window.confirm` (which wry WebViews don't implement consistently).
-// The backend shows the dialog on its IPC worker thread and replies
-// with a `confirm_result` message keyed by `id`.
+// Confirmation dialog with two backends.
+//
+// Desktop (`wry` WebView in `--gui`): the IPC bridge (`window.ipc`)
+// is present, so round-trip through the Rust backend to get a real
+// native modal on macOS / Linux / Windows. The backend shows the
+// dialog on its IPC worker thread and replies with a
+// `confirm_result` message keyed by `id`.
+//
+// `--serve` (web browser): no `window.ipc`, so the IPC round-trip
+// would never resolve. Fall back to the browser's built-in
+// `window.confirm()`.
 function platformConfirm(opts: {
   title: string;
   message: string;
@@ -17,29 +23,29 @@ function platformConfirm(opts: {
   noLabel?: string;
 }): Promise<boolean> {
   return new Promise((resolve) => {
-    if(typeof window < `u` && !window.ipc && window.confirm) {
-      resolve(Boolean(window.confirm(`${opts.title}\n\n${opts.message}`)));
+    const inBrowser = typeof window !== "undefined" && !window.ipc;
+    if (inBrowser) {
+      resolve(window.confirm(`${opts.title}\n\n${opts.message}`));
+      return;
     }
-    else {
-      const id =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `cf-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const unsub = subscribe((msg) => {
-        if (msg.type === "confirm_result" && msg.id === id) {
-          unsub();
-          resolve(Boolean(msg.ok));
-        }
-      });
-      send({
-        type: "confirm",
-        id,
-        title: opts.title,
-        message: opts.message,
-        yes_label: opts.yesLabel ?? "OK",
-        no_label: opts.noLabel ?? "Cancel",
-      });
-    }
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `cf-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const unsub = subscribe((msg) => {
+      if (msg.type === "confirm_result" && msg.id === id) {
+        unsub();
+        resolve(Boolean(msg.ok));
+      }
+    });
+    send({
+      type: "confirm",
+      id,
+      title: opts.title,
+      message: opts.message,
+      yes_label: opts.yesLabel ?? "OK",
+      no_label: opts.noLabel ?? "Cancel",
+    });
   });
 }
 
