@@ -289,9 +289,122 @@ jobs:
           name: thclaws-${{ matrix.target }}
           path: dist/*
 
+  # ── macOS Universal DMG (M6.41) ─────────────────────────────────────────
+  # Builds a universal (arm64 + x86_64) thClaws.app wrapped in a .dmg
+  # with a drag-to-/Applications symlink. Reuses the per-arch binaries
+  # the build matrix already produced — no re-build, just lipo merge.
+  #
+  # Phase 1 ships UNSIGNED. Apple Gatekeeper will warn on first launch
+  # ("cannot verify developer") and the user has to right-click → Open
+  # or System Settings → "Open Anyway". An ad-hoc codesign (sign with
+  # `-` identity, no cert) is still applied — without it, modern Apple
+  # Silicon kernels SIGKILL the binary on launch with "killed: 9"
+  # before the user even sees the Gatekeeper prompt. Ad-hoc signing
+  # is free and satisfies the hardened-runtime check.
+  #
+  # Phase 2 (when Apple Developer cert is available, $99/yr): swap the
+  # ad-hoc sign for a real Developer ID Application sign + notarize +
+  # staple. Same gating pattern as the DigiCert flow on Windows —
+  # `if: env.AC_API_KEY != ''` opt-in.
+  macos-dmg:
+    name: macos-universal-dmg
+    needs: build
+    runs-on: macos-14
+    environment: release
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: echo "name=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Download per-arch macOS artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: artifacts
+          pattern: thclaws-*-apple-darwin
+
+      - name: Build universal .app + .dmg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.tag.outputs.name }}"
+          SHORT_VERSION="${VERSION#v}"
+          NAME="thclaws-${VERSION}-universal-apple-darwin"
+
+          # Extract per-arch binaries from the .tar.gz artifacts
+          mkdir -p extracted
+          tar -xzf "artifacts/thclaws-aarch64-apple-darwin/thclaws-${VERSION}-aarch64-apple-darwin.tar.gz" -C extracted
+          mv extracted/thclaws extracted/thclaws-arm64
+          tar -xzf "artifacts/thclaws-x86_64-apple-darwin/thclaws-${VERSION}-x86_64-apple-darwin.tar.gz" -C extracted
+          mv extracted/thclaws extracted/thclaws-x86_64
+
+          # lipo into a fat binary the kernel picks the right slice from at exec time
+          mkdir -p "thclaws.app/Contents/MacOS"
+          lipo -create extracted/thclaws-arm64 extracted/thclaws-x86_64 \
+               -output "thclaws.app/Contents/MacOS/thclaws"
+          chmod +x "thclaws.app/Contents/MacOS/thclaws"
+
+          # Generate Info.plist. Kept minimal — bundle ID matches the
+          # public repo namespace so future Sparkle / auto-update can
+          # find a stable identity.
+          cat > "thclaws.app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>thclaws</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.thclaws.thclaws</string>
+              <key>CFBundleName</key>
+              <string>thClaws</string>
+              <key>CFBundleDisplayName</key>
+              <string>thClaws</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${SHORT_VERSION}</string>
+              <key>CFBundleVersion</key>
+              <string>${SHORT_VERSION}</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          # Ad-hoc codesign so the kernel's hardened runtime check
+          # passes on Apple Silicon. No cert required for `-` identity.
+          codesign --force --deep --sign - "thclaws.app"
+
+          # Stage for DMG: .app + Applications symlink for drag-to-install
+          mkdir -p dmg-staging
+          cp -R "thclaws.app" "dmg-staging/"
+          ln -s /Applications "dmg-staging/Applications"
+
+          mkdir -p dist
+          hdiutil create \
+            -volname "thClaws" \
+            -srcfolder "dmg-staging" \
+            -ov \
+            -format UDZO \
+            "dist/${NAME}.dmg"
+
+          shasum -a 256 "dist/${NAME}.dmg" > "dist/${NAME}.dmg.sha256"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: thclaws-macos-universal-dmg
+          path: dist/*
+
   release:
     name: Publish release
-    needs: build
+    needs: [build, macos-dmg]
     runs-on: ubuntu-22.04
     # Inherits the same `release` environment as the build job so
     # the GitHub Releases publish only happens after the same
