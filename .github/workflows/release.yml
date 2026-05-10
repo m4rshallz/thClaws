@@ -204,12 +204,17 @@ jobs:
           smctl sign verify --input "target\${{ matrix.target }}\release\thclaws.exe"
 
       - name: Install cargo-wix
-        if: matrix.os == 'windows'
+        # WiX 3.11 is pre-installed on the windows-2022 runner image
+        # (x86_64). The windows-11-arm image does NOT include it, and
+        # downloading + installing WiX 3.11 there is non-trivial
+        # because the official installer is x86 — runs via emulation
+        # but adds 30+ s per build for marginal user value (Windows
+        # ARM64 install base is small, devs mostly on x64). Phase 1
+        # ships ARM64 as a zip-only release; revisit if community
+        # asks for ARM MSI.
+        if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         run: |
-          # WiX 3.11 ships with the windows-2022 runner image.
-          # cargo-wix wraps `candle.exe` + `light.exe` to build the MSI
-          # from `crates/core/wix/main.wxs`.
           cargo install cargo-wix --version "^0.3" --locked
 
       - name: Package (windows)
@@ -222,37 +227,40 @@ jobs:
           New-Item -Force -ItemType Directory dist | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/thclaws.exe" "dist/thclaws.exe"
 
-          # Build the MSI from the (possibly signed) binary.
+          # Build the MSI from the (possibly signed) binary — x64 only.
           # cargo-wix doesn't accept --manifest-path; it has to run
           # from inside the crate dir (it discovers Cargo.toml via
           # cwd). Workspace target/ stays at $repoRoot so cargo-wix
           # finds the binary fine. Output path needs to be absolute
           # since cwd is now crates/core.
           #
-          # cargo-wix already exports `var.Version` from Cargo.toml
+          # cargo-wix exports `var.Version` from Cargo.toml
           # automatically — passing `-dVersion=...` ourselves causes
           # candle CNDL0288 (variable redeclaration). The MSI version
-          # therefore tracks Cargo.toml exactly; for release tags
-          # `make release V=X.Y.Z` keeps them in sync. Test tags like
-          # v0.8.5-test will produce an MSI with version 0.8.5 (the
-          # current Cargo.toml value) — fine since MSI versions don't
-          # accept pre-release suffixes anyway.
-          $wixArch = if ('${{ matrix.target }}' -eq 'aarch64-pc-windows-msvc') { 'arm64' } else { 'x64' }
-          Push-Location crates/core
-          cargo wix `
-            --target ${{ matrix.target }} `
-            --no-build `
-            --nocapture `
-            --output "$repoRoot/dist/$name.msi" `
-            -C "-arch" -C "$wixArch"
-          Pop-Location
+          # therefore tracks Cargo.toml exactly.
+          if ('${{ matrix.target }}' -eq 'x86_64-pc-windows-msvc') {
+            Push-Location crates/core
+            cargo wix `
+              --target ${{ matrix.target }} `
+              --no-build `
+              --nocapture `
+              --output "$repoRoot/dist/$name.msi" `
+              -C "-arch" -C "x64"
+            Pop-Location
+          }
 
-          # Zip the bare exe (kept for users who don't want an installer).
+          # Zip the bare exe (always — and the only artifact on ARM64
+          # since WiX isn't on the windows-11-arm image; see comment
+          # on the Install cargo-wix step above).
           Compress-Archive -Path dist/thclaws.exe -DestinationPath "dist/$name.zip" -Force
           Remove-Item dist/thclaws.exe
 
       - name: Sign Windows MSI
-        if: matrix.os == 'windows' && env.SM_API_KEY != ''
+        # MSI is built only on x86_64 (see "Install cargo-wix" step
+        # comment). Skip explicitly on ARM64 — the cmd `for` loop
+        # below would no-op anyway, but the step ordering is clearer
+        # this way.
+        if: matrix.target == 'x86_64-pc-windows-msvc' && env.SM_API_KEY != ''
         shell: cmd
         # smctl reads SM_HOST / SM_API_KEY / SM_CLIENT_CERT_FILE /
         # SM_CLIENT_CERT_PASSWORD from $GITHUB_ENV (set by the
