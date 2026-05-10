@@ -149,27 +149,47 @@ jobs:
       # Required secrets — set under repo Settings → Secrets and
       # variables → Actions:
       #   SM_API_KEY                 — DigiCert API key
-      #   SM_HOST                    — e.g. https://clientauth.one.digicert.com
       #   SM_CLIENT_CERT_FILE_B64    — base64-encoded PKCS#12 client auth cert
       #   SM_CLIENT_CERT_PASSWORD    — password for the PKCS#12 cert
-      #   SM_KEYPAIR_ALIAS           — KeyLocker keypair alias to sign with
-      #   SM_CERT_FINGERPRINT        — SHA1 thumbprint of the signing cert
+      #   SM_CERT_FINGERPRINT        — SHA1 thumbprint of the signing cert (uppercase, no spaces)
+      # SM_HOST is hardcoded to https://one.digicert.com — the public
+      # KeyLocker tenant. Override below if you're on a regional shard.
+      #
+      # Install pattern mirrors JimmySoftware/pinn-ai-2's working setup:
+      # download `smtools-windows-x64.msi` directly from KeyLocker
+      # using the API key as auth, install silently, add to PATH,
+      # then write the client cert + env vars for signtool.
       - name: Set up DigiCert KeyLocker
-        id: keylocker
         if: matrix.os == 'windows' && env.SM_API_KEY != ''
-        uses: digicert/ssm-code-signing@v1.0.0
+        shell: pwsh
         env:
           SM_API_KEY: ${{ secrets.SM_API_KEY }}
-          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
           SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
-          SM_HOST: ${{ secrets.SM_HOST }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_HOST: https://one.digicert.com
+        run: |
+          curl.exe -X GET "https://one.digicert.com/signingmanager/api-ui/v1/releases/smtools-windows-x64.msi/download" `
+            -H "x-api-key:$($env:SM_API_KEY)" -o smtools.msi
+          msiexec /i smtools.msi /quiet /qn
+          Start-Sleep -Seconds 5
+          echo "C:\Program Files\DigiCert\DigiCert One Signing Manager Tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $b64 = $env:SM_CLIENT_CERT_FILE_B64 -replace '\s','' -replace '[^A-Za-z0-9+/=]',''
+          $certBytes = [Convert]::FromBase64String($b64)
+          [System.IO.File]::WriteAllBytes("C:\sm_client_cert.p12", $certBytes)
+          echo "SM_CLIENT_CERT_FILE=C:\sm_client_cert.p12" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "SM_CLIENT_CERT_PASSWORD=$env:SM_CLIENT_CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "SM_API_KEY=$env:SM_API_KEY" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "SM_HOST=https://one.digicert.com" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify KeyLocker connectivity
+        if: matrix.os == 'windows' && env.SM_API_KEY != ''
+        shell: pwsh
+        run: smctl healthcheck
 
       - name: Sign Windows binary
         if: matrix.os == 'windows' && env.SM_API_KEY != ''
         shell: cmd
         env:
-          SM_API_KEY: ${{ secrets.SM_API_KEY }}
-          SM_HOST: ${{ secrets.SM_HOST }}
           SM_CERT_FINGERPRINT: ${{ secrets.SM_CERT_FINGERPRINT }}
         run: |
           smctl sign --fingerprint %SM_CERT_FINGERPRINT% --input "target\${{ matrix.target }}\release\thclaws.exe"
