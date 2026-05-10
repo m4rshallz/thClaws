@@ -214,10 +214,7 @@ export function KmsViewerOverlay({ initial, onClose }: Props) {
             </div>
           )}
           {content !== null && (
-            <div
-              dangerouslySetInnerHTML={{ __html: html }}
-              style={{ fontSize: "14px", lineHeight: "1.6" }}
-            />
+            <div dangerouslySetInnerHTML={{ __html: html }} />
           )}
         </div>
       </div>

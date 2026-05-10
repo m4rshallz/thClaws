@@ -482,6 +482,41 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             (ctx.dispatch)(payload.to_string());
         }
 
+        // M6.39.13: KMS graph data — Obsidian-style nodes + edges
+        // for the right-pane graph view. Fronted by clicking the
+        // "Graph" button in `KmsBrowserSidebar`.
+        "kms_graph" => {
+            let name = msg
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let include_sources = msg
+                .get("include_sources")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let payload = match crate::kms::graph(&name, include_sources) {
+                Some(g) => serde_json::json!({
+                    "type": "kms_graph_result",
+                    "kms": g.kms,
+                    "nodes": g.nodes,
+                    "edges": g.edges,
+                    "include_sources": include_sources,
+                    "ok": true,
+                }),
+                None => serde_json::json!({
+                    "type": "kms_graph_result",
+                    "kms": name,
+                    "nodes": [],
+                    "edges": [],
+                    "include_sources": include_sources,
+                    "ok": false,
+                    "error": format!("KMS '{name}' not found"),
+                }),
+            };
+            (ctx.dispatch)(payload.to_string());
+        }
+
         // M6.39.9: KMS file reader for the viewer overlay. Returns
         // raw markdown content; the frontend renders to HTML via
         // `marked`. `kind` is "page" or "source"; `name` is the

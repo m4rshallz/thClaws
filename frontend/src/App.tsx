@@ -14,6 +14,7 @@ import {
   type ViewerTarget,
 } from "./components/KmsBrowserSidebar";
 import { KmsViewerOverlay } from "./components/KmsViewerOverlay";
+import { KmsGraphView } from "./components/KmsGraphView";
 import { SettingsModal } from "./components/SettingsModal";
 import { SettingsMenu } from "./components/SettingsMenu";
 import { InstructionsEditorModal } from "./components/InstructionsEditorModal";
@@ -353,6 +354,10 @@ export default function App() {
   // their respective close handlers.
   const [browsingKms, setBrowsingKms] = useState<string | null>(null);
   const [viewerTarget, setViewerTarget] = useState<ViewerTarget | null>(null);
+  // M6.39.13: Obsidian-style graph view of the focused KMS. Mutually
+  // exclusive with `viewerTarget` — opening one clears the other so
+  // the main pane only ever shows one KMS surface at a time.
+  const [graphKms, setGraphKms] = useState<string | null>(null);
 
   // Post-key-entry model picker (issue #13). Backend broadcasts
   // `model_picker_open` after a successful api_key_set when the
@@ -466,6 +471,7 @@ export default function App() {
               // and the KMS browse session is implicitly done.
               setViewerTarget(null);
               setBrowsingKms(null);
+              setGraphKms(null);
             }}
             className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors"
             style={{
@@ -508,7 +514,8 @@ export default function App() {
             // M6.39.9: when KMS viewer is open, hide tabs visually
             // (they stay mounted so xterm doesn't lose state) and
             // let the viewer's absolute-positioned pane cover them.
-            const tabsHidden = !isActive || viewerTarget !== null;
+            const tabsHidden =
+              !isActive || viewerTarget !== null || graphKms !== null;
             const cls = `absolute inset-0 ${tabsHidden ? "invisible pointer-events-none" : ""}`;
             return (
               <div key={id} className={cls}>
@@ -528,6 +535,17 @@ export default function App() {
             <KmsViewerOverlay
               initial={viewerTarget}
               onClose={() => setViewerTarget(null)}
+            />
+          )}
+          {/* KMS graph view (M6.39.13). Obsidian-style force-directed
+              visualization of pages + wikilinks. Stacks above the
+              tabs; clicking a node opens the viewer overlay (which
+              then sits on top of the graph). */}
+          {graphKms && !viewerTarget && (
+            <KmsGraphView
+              kmsName={graphKms}
+              onClose={() => setGraphKms(null)}
+              onOpenFile={(target) => setViewerTarget(target)}
             />
           )}
         </div>
@@ -569,8 +587,17 @@ export default function App() {
               // it from.
               setBrowsingKms(null);
               setViewerTarget(null);
+              setGraphKms(null);
             }}
-            onOpenFile={(target) => setViewerTarget(target)}
+            onOpenFile={(target) => {
+              setGraphKms(null);
+              setViewerTarget(target);
+            }}
+            onOpenGraph={(name) => {
+              setViewerTarget(null);
+              setGraphKms((cur) => (cur === name ? null : name));
+            }}
+            graphActive={graphKms === browsingKms}
           />
         )}
       </div>

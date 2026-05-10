@@ -198,9 +198,10 @@
           "verified_at": "2026-04-24"
         },
         "gpt-4.1": {
-          "context": 1000000,
+          "context": 1047576,
+          "max_output": 32768,
           "source": "https://platform.openai.com/docs/models",
-          "verified_at": "2026-04-24"
+          "verified_at": "2026-05-09"
         },
         "gpt-5.2-chat-latest": {
           "context": 128000,
@@ -3755,6 +3756,36 @@
           "max_output": 32768,
           "source": "https://help.aliyun.com/zh/model-studio/developer-reference/what-is-qwen-llm",
           "verified_at": "2026-04-24"
+        }
+      }
+    },
+    "zai": {
+      "list_url": "https://api.z.ai/api/coding/paas/v4/models",
+      "default_context": 131072,
+      "models": {
+        "zai/glm-4.6": {
+          "context": 204800,
+          "max_output": 204800,
+          "source": "https://docs.z.ai/guides/llm/glm-4.6",
+          "verified_at": "2026-05-10"
+        },
+        "zai/glm-4.5": {
+          "context": 131072,
+          "max_output": 98304,
+          "source": "https://docs.z.ai/guides/llm/glm-4.5",
+          "verified_at": "2026-05-10"
+        },
+        "zai/glm-4.5-air": {
+          "context": 131072,
+          "max_output": 98304,
+          "source": "https://docs.z.ai/guides/llm/glm-4.5",
+          "verified_at": "2026-05-10"
+        },
+        "zai/glm-5.1": {
+          "context": 202752,
+          "max_output": 65535,
+          "source": "https://docs.z.ai/guides/llm/glm-5.1",
+          "verified_at": "2026-05-10"
         }
       }
     },

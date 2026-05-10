@@ -2138,6 +2138,43 @@ async fn handle_line(
         return;
     }
 
+    // `/kms html <name> [<output-dir>]` intercept — same agent-loop
+    // rewrite path. Agent reads the KMS via tools and writes the
+    // result via the regular `Write` tool to a workspace directory
+    // (default `./<name>-site/`).
+    if let Some(crate::repl::SlashCommand::KmsHtml { name, output_dir }) =
+        crate::repl::parse_slash(trimmed)
+    {
+        if crate::kms::resolve(&name).is_none() {
+            let _ = events_tx.send(ViewEvent::SlashOutput(format!("no KMS named '{name}'")));
+            let _ = events_tx.send(ViewEvent::TurnDone);
+            return;
+        }
+        if state.config.kms_active.is_empty() {
+            let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+                "/kms html {name}: no KMS attached to this session. Run `/kms use {name}` first."
+            )));
+            let _ = events_tx.send(ViewEvent::TurnDone);
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let outdir = match output_dir.as_deref() {
+            Some(p) if std::path::Path::new(p).is_absolute() => std::path::PathBuf::from(p),
+            Some(p) => cwd.join(p),
+            None => cwd.join(format!("{name}-site")),
+        };
+        let outdir_str = outdir.to_string_lossy().to_string();
+        let rewritten = crate::repl::build_kms_html_prompt(&name, &outdir_str);
+        let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+            "(/kms html {name} → workspace site at {outdir_str})"
+        )));
+        let stream = Box::pin(state.agent.run_turn(rewritten));
+        let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
+        let _ = lead_mb.write_status("lead", "working", None);
+        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+        return;
+    }
+
     // `/kms challenge <name> <idea>` intercept — same agent-loop rewrite
     // path as KmsDump, but read-only (search + analysis, no writes).
     if let Some(crate::repl::SlashCommand::KmsChallenge { name, idea }) =

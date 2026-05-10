@@ -486,6 +486,18 @@ pub enum SlashCommand {
         name: String,
         title: String,
     },
+    /// `/kms html <name> [<output-dir>]` — agent-loop workflow that
+    /// reads the KMS via tools, designs a component vocabulary, and
+    /// writes a single-file interactive HTML site to the workspace
+    /// (defaults to `./<name>-site/index.html`). The result lives in
+    /// the user's cwd because it's a derived artifact, not part of
+    /// the KMS itself. Same dispatch shape as `/kms dump` /
+    /// `/kms challenge` — the slash is rewritten into a long agent
+    /// prompt via [`build_kms_html_prompt`].
+    KmsHtml {
+        name: String,
+        output_dir: Option<String>,
+    },
     /// `/schedule` — list schedules (same as `/schedule list`).
     Schedule,
     /// `/schedule show <id>` — pretty-print one schedule's record.
@@ -1777,6 +1789,20 @@ pub fn build_kms_dump_prompt(kms_name: &str, dump_text: &str) -> String {
     )
 }
 
+/// Compose the agent-facing prompt for `/kms html <name>`. The agent
+/// runs an explore → design components → assemble workflow against
+/// the KMS, using `KmsRead`/`KmsSearch` (and `Read` for sources) to
+/// fetch content itself, then writes the resulting single-file SPA
+/// to `<output_dir>/index.html` in the workspace. Loaded from
+/// `default_prompts/kms_html.md` and post-processed for
+/// `{kms_name}` / `{output_dir}` substitution.
+pub fn build_kms_html_prompt(kms_name: &str, output_dir: &str) -> String {
+    const TEMPLATE: &str = include_str!("default_prompts/kms_html.md");
+    TEMPLATE
+        .replace("{kms_name}", kms_name)
+        .replace("{output_dir}", output_dir)
+}
+
 /// Compose the agent-facing prompt for `/kms challenge <name> <idea>`. The
 /// agent searches the vault for counter-evidence to the user's position
 /// and produces a structured Red Team analysis. Read-only — no writes.
@@ -2277,6 +2303,35 @@ fn parse_kms_subcommand(args: &str) -> SlashCommand {
                 ),
             }
         }
+        "html" | "site" | "export" => {
+            // `/kms html <name> [<output-dir>]` — order-insensitive
+            // positional parse. First non-flag is the kms name, the
+            // optional second positional is the output directory
+            // (defaults to `./<name>-site` resolved by the caller).
+            let mut name: Option<String> = None;
+            let mut output_dir: Option<String> = None;
+            for tok in rest.split_whitespace() {
+                if tok.starts_with("--") {
+                    return SlashCommand::Unknown(format!(
+                        "unknown flag '{tok}' — usage: /kms html <name> [<output-dir>]"
+                    ));
+                }
+                if name.is_none() {
+                    name = Some(tok.to_string());
+                } else if output_dir.is_none() {
+                    output_dir = Some(tok.to_string());
+                }
+            }
+            match name {
+                Some(n) => SlashCommand::KmsHtml {
+                    name: n,
+                    output_dir,
+                },
+                None => SlashCommand::Unknown(
+                    "usage: /kms html <name> [<output-dir>]".into(),
+                ),
+            }
+        }
         "migrate" | "upgrade" => {
             // `/kms migrate <name> [--apply]` — dry-run by default, --apply
             // to execute. Order-insensitive so `--apply <name>` also works.
@@ -2323,7 +2378,7 @@ fn parse_kms_subcommand(args: &str) -> SlashCommand {
             }
         }
         other => SlashCommand::Unknown(format!(
-            "unknown kms subcommand: '{other}' (try: /kms, /kms new …, /kms use …, /kms off …, /kms show …, /kms ingest …, /kms dump …, /kms challenge …, /kms lint …, /kms wrap-up …, /kms reconcile …, /kms migrate …, /kms file-answer …)"
+            "unknown kms subcommand: '{other}' (try: /kms, /kms new …, /kms use …, /kms off …, /kms show …, /kms ingest …, /kms dump …, /kms challenge …, /kms html …, /kms lint …, /kms wrap-up …, /kms reconcile …, /kms migrate …, /kms file-answer …)"
         )),
     }
 }
@@ -4533,6 +4588,38 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         text.len()
                     );
                     line = build_kms_dump_prompt(&name, &text);
+                }
+            }
+
+            // `/kms html <name> [<output-dir>]` — same agent-loop
+            // rewrite. The agent reads the KMS via tools, designs a
+            // component vocabulary, and writes the result to the
+            // workspace via the Write tool. Default output dir is
+            // `./<name>-site`.
+            if let Some(SlashCommand::KmsHtml { name, output_dir }) = parse_slash(&line) {
+                if crate::kms::resolve(&name).is_none() {
+                    // falls through to dispatch arm
+                } else if config.kms_active.is_empty() {
+                    println!(
+                        "{COLOR_YELLOW}/kms html {name}: no KMS attached to this session. \
+                         Run `/kms use {name}` first.{COLOR_RESET}"
+                    );
+                    continue;
+                } else {
+                    let cwd = std::env::current_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let outdir_pb = match output_dir.as_deref() {
+                        Some(p) if std::path::Path::new(p).is_absolute() => {
+                            std::path::PathBuf::from(p)
+                        }
+                        Some(p) => cwd.join(p),
+                        None => cwd.join(format!("{name}-site")),
+                    };
+                    let outdir_str = outdir_pb.to_string_lossy().to_string();
+                    println!(
+                        "{COLOR_DIM}(/kms html {name} → workspace site at {outdir_str}){COLOR_RESET}"
+                    );
+                    line = build_kms_html_prompt(&name, &outdir_str);
                 }
             }
 
@@ -6967,6 +7054,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         );
                     }
                 }
+                SlashCommand::KmsHtml { .. } => {
+                    // Handled via the line-rewrite path in the input
+                    // pre-processor (search this file for
+                    // `build_kms_html_prompt`). This arm only fires
+                    // when the KMS doesn't resolve — by then the
+                    // pre-processor will already have printed the
+                    // error and `continue`d, so reaching here is a
+                    // no-op safety net.
+                }
                 SlashCommand::KmsMigrate { name, apply } => {
                     let Some(k) = crate::kms::resolve(&name) else {
                         println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
@@ -8918,6 +9014,42 @@ mod tests {
     }
 
     // ─── /kms reconcile ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_slash_kms_html_basic() {
+        match parse_slash("/kms html llm-wiki") {
+            Some(SlashCommand::KmsHtml { name, output_dir }) => {
+                assert_eq!(name, "llm-wiki");
+                assert!(output_dir.is_none());
+            }
+            other => panic!("expected KmsHtml, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_kms_html_with_output_dir() {
+        match parse_slash("/kms html llm-wiki ./out") {
+            Some(SlashCommand::KmsHtml { name, output_dir }) => {
+                assert_eq!(name, "llm-wiki");
+                assert_eq!(output_dir, Some("./out".into()));
+            }
+            other => panic!("expected KmsHtml with output_dir, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_kms_html_prompt_substitutes_placeholders() {
+        let p = build_kms_html_prompt("llm-wiki", "/Users/x/site");
+        assert!(p.contains("llm-wiki"));
+        assert!(p.contains("/Users/x/site"));
+        assert!(!p.contains("{kms_name}"));
+        assert!(!p.contains("{output_dir}"));
+        // Workflow phase markers must be present so the prompt
+        // actually drives the explore-design-assemble flow.
+        assert!(p.contains("Phase 1: Explore"));
+        assert!(p.contains("Phase 2: Design"));
+        assert!(p.contains("Phase 3:"));
+    }
 
     #[test]
     fn parse_slash_kms_reconcile_basic() {

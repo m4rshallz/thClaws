@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronRight, X, BookOpen, FileText, Link2 } from "lucide-react";
+import { ChevronRight, X, BookOpen, FileText, Link2, Network } from "lucide-react";
 import { send, subscribe } from "../hooks/useIPC";
 
 /// M6.39.9: right-edge KMS browser. Activated by clicking a KMS row's
@@ -36,9 +36,17 @@ interface Props {
   kmsName: string;
   onClose: () => void;
   onOpenFile: (target: ViewerTarget) => void;
+  onOpenGraph: (kms: string) => void;
+  graphActive: boolean;
 }
 
-export function KmsBrowserSidebar({ kmsName, onClose, onOpenFile }: Props) {
+export function KmsBrowserSidebar({
+  kmsName,
+  onClose,
+  onOpenFile,
+  onOpenGraph,
+  graphActive,
+}: Props) {
   const [pages, setPages] = useState<BrowseFile[] | null>(null);
   const [sources, setSources] = useState<BrowseFile[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -151,6 +159,42 @@ export function KmsBrowserSidebar({ kmsName, onClose, onOpenFile }: Props) {
         )}
         {pages !== null && (
           <>
+            <button
+              type="button"
+              onClick={() => onOpenGraph(kmsName)}
+              className="flex items-center gap-2 w-full px-3 py-2 text-xs font-medium border-b transition-colors"
+              style={{
+                color: graphActive
+                  ? "var(--accent, #61afef)"
+                  : "var(--text-primary)",
+                background: graphActive
+                  ? "color-mix(in srgb, var(--accent, #61afef) 12%, transparent)"
+                  : "transparent",
+                borderColor: "var(--border)",
+              }}
+              onMouseEnter={(e) => {
+                if (!graphActive)
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "rgba(255,255,255,0.04)";
+              }}
+              onMouseLeave={(e) => {
+                if (!graphActive)
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "transparent";
+              }}
+              title="Open Obsidian-style graph view"
+            >
+              <Network size={13} />
+              <span>Graph View</span>
+              {graphActive && (
+                <span
+                  className="ml-auto text-[9px] uppercase tracking-wider"
+                  style={{ opacity: 0.7 }}
+                >
+                  open
+                </span>
+              )}
+            </button>
             <Section
               icon={<FileText size={11} />}
               title={`Pages (${pages.length})`}

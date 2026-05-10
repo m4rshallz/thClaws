@@ -2090,6 +2090,23 @@ pub async fn dispatch(
                 }
             }
         }
+        SlashCommand::KmsHtml { name, .. } => {
+            // Same shape as KmsDump / KmsChallenge — handled by the
+            // turn-rewrite in shared_session.rs. This arm only fires
+            // when the KMS doesn't resolve, or when dispatch is
+            // called directly (which it shouldn't be).
+            if crate::kms::resolve(&name).is_none() {
+                emit(events_tx, format!("no KMS named '{name}'"));
+            } else {
+                emit(
+                    events_tx,
+                    format!(
+                        "/kms html {name} requires the agent loop — invoke from chat / CLI, \
+                         not via shell_dispatch::dispatch directly."
+                    ),
+                );
+            }
+        }
         SlashCommand::KmsMigrate { name, apply } => {
             let Some(k) = crate::kms::resolve(&name) else {
                 emit(events_tx, format!("no KMS named '{name}'"));

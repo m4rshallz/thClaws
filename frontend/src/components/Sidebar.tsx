@@ -6,8 +6,11 @@ import { ModelPickerDropdown } from "./ModelPickerDropdown";
 type SessionInfo = { id: string; model: string; messages: number; title?: string | null };
 type KmsInfo = { name: string; scope: "user" | "project"; active: boolean };
 
-// Wry blocks `window.confirm`, so we proxy through a native OS dialog
-// via IPC. Mirrors `platformConfirm` in FilesView.
+// Confirmation dialog with two backends. Mirrors `platformConfirm`
+// in FilesView. Desktop (`wry` WebView in `--gui`): the IPC bridge
+// is present, so round-trip through the Rust backend for a real
+// native modal. `--serve` (web browser): no `window.ipc`, fall
+// back to the browser's built-in `window.confirm()`.
 function platformConfirm(opts: {
   title: string;
   message: string;
@@ -15,30 +18,29 @@ function platformConfirm(opts: {
   noLabel?: string;
 }): Promise<boolean> {
   return new Promise((resolve) => {
-    if(typeof window < `u` && !window.ipc && window.confirm) {
-      resolve(Boolean(window.confirm(`${opts.title}\n\n${opts.message}`)));
+    const inBrowser = typeof window !== "undefined" && !window.ipc;
+    if (inBrowser) {
+      resolve(window.confirm(`${opts.title}\n\n${opts.message}`));
+      return;
     }
-    else {
-      const id =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `cf-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const unsub = subscribe((msg) => {
-        if (msg.type === "confirm_result" && msg.id === id) {
-          unsub();
-          resolve(Boolean(msg.ok));
-        }
-      });
-      
-      send({
-        type: "confirm",
-        id,
-        title: opts.title,
-        message: opts.message,
-        yes_label: opts.yesLabel ?? "OK",
-        no_label: opts.noLabel ?? "Cancel",
-      });
-    }
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `cf-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const unsub = subscribe((msg) => {
+      if (msg.type === "confirm_result" && msg.id === id) {
+        unsub();
+        resolve(Boolean(msg.ok));
+      }
+    });
+    send({
+      type: "confirm",
+      id,
+      title: opts.title,
+      message: opts.message,
+      yes_label: opts.yesLabel ?? "OK",
+      no_label: opts.noLabel ?? "Cancel",
+    });
   });
 }
 
