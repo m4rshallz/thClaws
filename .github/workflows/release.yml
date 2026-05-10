@@ -398,9 +398,16 @@ jobs:
           ln -s /Applications "dmg-staging/Applications"
 
           mkdir -p dist
+          # Explicit -size 200m: hdiutil's auto-size (srcfolder + 12%
+          # padding) is too tight for the universal binary (~37 MB
+          # binary × 2 copies for .app + staging + filesystem
+          # overhead → "No space left on device" on the mounted
+          # sparse image). 200 MB is comfortably more than we need
+          # and gets compressed away by UDZO into a ~37 MB final dmg.
           hdiutil create \
             -volname "thClaws" \
             -srcfolder "dmg-staging" \
+            -size 200m \
             -ov \
             -format UDZO \
             "dist/${NAME}.dmg"
