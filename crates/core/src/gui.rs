@@ -669,36 +669,19 @@ fn run_gui_inner(serve: Option<crate::server::ServeConfig>) {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     // Windows (WebView2) exposes custom protocols as `http://<scheme>.<host>`;
-    // Linux uses the raw `<scheme>://<host>` form.
+    // mac/Linux use the raw `<scheme>://<host>` form.
+    //
+    // M6.43: We tried `with_html` and `file://` workarounds for an
+    // Intel macOS 13 blank-page bug — both regressed Apple Silicon
+    // worse than they fixed Intel. The custom scheme path works on
+    // macOS 15+ (any arch) and on Apple Silicon at all recent
+    // versions. Drop pre-15 macOS support (LSMinimumSystemVersion
+    // = 15.0 in the .dmg packaging step) instead of fighting
+    // WKWebView's older module-script restrictions.
     #[cfg(windows)]
     let start_url = "http://thclaws.localhost/";
-    #[cfg(target_os = "linux")]
+    #[cfg(not(windows))]
     let start_url = "thclaws://localhost/";
-
-    // M6.43: macOS — write FRONTEND_HTML to a temp file and load via
-    // `file://` URL. Two earlier attempts blanked on Intel macOS 13:
-    //   1. with_url("thclaws://localhost/") + protocol handler →
-    //      blank, the custom scheme leaves the page in null-origin
-    //      land, so the inlined `<script type="module">` tags from
-    //      vite never execute (modules require a real origin).
-    //   2. with_html(FRONTEND_HTML) → about:blank baseURL, same
-    //      module-origin problem (log shows didFinishLoadForFrame
-    //      fires but no JS runs and the page stays blank).
-    // file:// URL gives the page a proper file-scheme origin which
-    // WKWebView allows module scripts on. The temp file is recreated
-    // each launch from the embedded string — no install-time
-    // artifact to ship.
-    #[cfg(target_os = "macos")]
-    let start_url = {
-        let temp_dir = std::env::temp_dir().join("thclaws-gui");
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let html_path = temp_dir.join("index.html");
-        // Always overwrite — embedded HTML changes per build.
-        let _ = std::fs::write(&html_path, FRONTEND_HTML.as_bytes());
-        format!("file://{}", html_path.display())
-    };
-    #[cfg(target_os = "macos")]
-    let start_url = start_url.as_str();
 
     let builder = WebViewBuilder::new()
         .with_url(start_url)
