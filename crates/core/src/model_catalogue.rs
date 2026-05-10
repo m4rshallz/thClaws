@@ -677,6 +677,7 @@ pub fn provider_kind_name(k: crate::providers::ProviderKind) -> &'static str {
         ProviderKind::DeepSeek => "deepseek",
         ProviderKind::ThaiLLM => "thaillm",
         ProviderKind::Nvidia => "nvidia",
+        ProviderKind::Minimax => "minimax",
     }
 }
 

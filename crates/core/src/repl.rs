@@ -3084,6 +3084,26 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
                     .with_strip_model_prefix("thaillm/"),
             ))
         }
+        ProviderKind::Minimax => {
+            // MiniMax (minimax.io) — Chinese AI lab. OpenAI-compatible
+            // endpoint at api.minimax.io/v1 (international). Models use
+            // the `minimax/<id>` form (e.g. `minimax/MiniMax-M2`); the
+            // prefix is stripped before the request reaches the
+            // upstream. Override via MINIMAX_BASE_URL for the China
+            // endpoint (api.minimax.chat) or self-hosted proxies.
+            let base = std::env::var("MINIMAX_BASE_URL")
+                .unwrap_or_else(|_| "https://api.minimax.io/v1".to_string());
+            let url = if base.ends_with("/chat/completions") {
+                base
+            } else {
+                format!("{}/chat/completions", base.trim_end_matches('/'))
+            };
+            Ok(Arc::new(
+                OpenAIProvider::new(api_key)
+                    .with_base_url(url)
+                    .with_strip_model_prefix("minimax/"),
+            ))
+        }
         ProviderKind::Nvidia => {
             // NVIDIA NIM — OpenAI-compatible hosted inference at
             // integrate.api.nvidia.com. The `/v1/models` endpoint serves
@@ -4606,8 +4626,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     );
                     continue;
                 } else {
-                    let cwd = std::env::current_dir()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let cwd =
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let outdir_pb = match output_dir.as_deref() {
                         Some(p) if std::path::Path::new(p).is_absolute() => {
                             std::path::PathBuf::from(p)

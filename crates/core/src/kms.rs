@@ -1342,9 +1342,9 @@ fn scan_dir_md(dir: &Path) -> Vec<BrowseFile> {
 /// orphan archives are useful to surface.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GraphNode {
-    pub id: String,    // page slug (filename stem); for sources we use `source:<stem>` to namespace
+    pub id: String, // page slug (filename stem); for sources we use `source:<stem>` to namespace
     pub label: String, // title from frontmatter, falls back to id
-    pub size: u32,     // total link count (in + out) — sized in UI
+    pub size: u32,  // total link count (in + out) — sized in UI
     pub kind: GraphNodeKind,
 }
 
@@ -1390,8 +1390,7 @@ pub fn graph(kms_name: &str, include_sources: bool) -> Option<GraphData> {
     // research page) so the graph isn't dominated by it.
     let mut nodes: std::collections::BTreeMap<String, GraphNode> =
         std::collections::BTreeMap::new();
-    let mut bodies: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut bodies: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Some(entries) = pages_iter {
         for entry in entries.flatten() {
             let Ok(ft) = entry.file_type() else { continue };
@@ -1433,8 +1432,7 @@ pub fn graph(kms_name: &str, include_sources: bool) -> Option<GraphData> {
     // register their stems for citation-edge resolution. Title comes
     // from frontmatter if the source archive has it (HAL-fetched
     // markdown often does), else falls back to the bare stem.
-    let mut source_stems: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut source_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
     if include_sources {
         let sources_dir = kref.root.join("sources");
         if let Ok(entries) = std::fs::read_dir(&sources_dir) {
@@ -1539,10 +1537,7 @@ fn extract_source_link_targets(body: &str) -> Vec<String> {
             .next()
             .unwrap_or(target)
             .trim_end_matches(".md");
-        if !cleaned.is_empty()
-            && !cleaned.contains('/')
-            && cleaned.len() <= 200
-        {
+        if !cleaned.is_empty() && !cleaned.contains('/') && cleaned.len() <= 200 {
             out.push(cleaned.to_string());
         }
         search_from = abs + end;
@@ -2484,8 +2479,7 @@ mod tests {
 
     #[test]
     fn graph_extracts_wikilink_targets() {
-        let body =
-            "see [[alpha]] and [[beta|Beta Display]]\nrandom [text](http://x).\n[[gamma]]";
+        let body = "see [[alpha]] and [[beta|Beta Display]]\nrandom [text](http://x).\n[[gamma]]";
         let targets = extract_wikilink_targets(body);
         assert_eq!(targets, vec!["alpha", "beta", "gamma"]);
     }
