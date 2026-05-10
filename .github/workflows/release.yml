@@ -203,16 +203,33 @@ jobs:
           smctl sign --fingerprint %SM_CERT_FINGERPRINT% --input "target\${{ matrix.target }}\release\thclaws.exe"
           smctl sign verify --input "target\${{ matrix.target }}\release\thclaws.exe"
 
+      - name: Install WiX 3.11 (ARM64 runner only)
+        # windows-2022 image ships WiX 3.11 pre-installed; the
+        # windows-11-arm image does NOT, so we install it explicitly.
+        # The official WiX 3 installer is x86 — runs on Windows ARM64
+        # via Microsoft's x86-on-ARM emulation. Adds ~30s to the ARM
+        # build but lets us ship MSI for both architectures.
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314.exe"
+          $installer = "$env:TEMP\wix314.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          # /quiet runs the bundled WiX 3.14 (3.11 successor on the
+          # 3.x line) installer with no prompts. /norestart suppresses
+          # the post-install reboot offer (we don't need a reboot for
+          # standalone MSI build tools).
+          Start-Process -FilePath $installer -ArgumentList "/quiet","/norestart" -Wait
+          # Add WiX bin to PATH for this job's subsequent steps.
+          $wixBin = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin"
+          if (-not (Test-Path $wixBin)) {
+            $wixBin = "$env:ProgramFiles\WiX Toolset v3.14\bin"
+          }
+          echo $wixBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "Added WiX bin to PATH: $wixBin"
+
       - name: Install cargo-wix
-        # WiX 3.11 is pre-installed on the windows-2022 runner image
-        # (x86_64). The windows-11-arm image does NOT include it, and
-        # downloading + installing WiX 3.11 there is non-trivial
-        # because the official installer is x86 — runs via emulation
-        # but adds 30+ s per build for marginal user value (Windows
-        # ARM64 install base is small, devs mostly on x64). Phase 1
-        # ships ARM64 as a zip-only release; revisit if community
-        # asks for ARM MSI.
-        if: matrix.target == 'x86_64-pc-windows-msvc'
+        if: matrix.os == 'windows'
         shell: pwsh
         run: |
           cargo install cargo-wix --version "^0.3" --locked
@@ -227,7 +244,7 @@ jobs:
           New-Item -Force -ItemType Directory dist | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/thclaws.exe" "dist/thclaws.exe"
 
-          # Build the MSI from the (possibly signed) binary — x64 only.
+          # Build the MSI from the (possibly signed) binary.
           # cargo-wix doesn't accept --manifest-path; it has to run
           # from inside the crate dir (it discovers Cargo.toml via
           # cwd). Workspace target/ stays at $repoRoot so cargo-wix
@@ -238,29 +255,22 @@ jobs:
           # automatically — passing `-dVersion=...` ourselves causes
           # candle CNDL0288 (variable redeclaration). The MSI version
           # therefore tracks Cargo.toml exactly.
-          if ('${{ matrix.target }}' -eq 'x86_64-pc-windows-msvc') {
-            Push-Location crates/core
-            cargo wix `
-              --target ${{ matrix.target }} `
-              --no-build `
-              --nocapture `
-              --output "$repoRoot/dist/$name.msi" `
-              -C "-arch" -C "x64"
-            Pop-Location
-          }
+          $wixArch = if ('${{ matrix.target }}' -eq 'aarch64-pc-windows-msvc') { 'arm64' } else { 'x64' }
+          Push-Location crates/core
+          cargo wix `
+            --target ${{ matrix.target }} `
+            --no-build `
+            --nocapture `
+            --output "$repoRoot/dist/$name.msi" `
+            -C "-arch" -C "$wixArch"
+          Pop-Location
 
-          # Zip the bare exe (always — and the only artifact on ARM64
-          # since WiX isn't on the windows-11-arm image; see comment
-          # on the Install cargo-wix step above).
+          # Zip the bare exe alongside the MSI.
           Compress-Archive -Path dist/thclaws.exe -DestinationPath "dist/$name.zip" -Force
           Remove-Item dist/thclaws.exe
 
       - name: Sign Windows MSI
-        # MSI is built only on x86_64 (see "Install cargo-wix" step
-        # comment). Skip explicitly on ARM64 — the cmd `for` loop
-        # below would no-op anyway, but the step ordering is clearer
-        # this way.
-        if: matrix.target == 'x86_64-pc-windows-msvc' && env.SM_API_KEY != ''
+        if: matrix.os == 'windows' && env.SM_API_KEY != ''
         shell: cmd
         # smctl reads SM_HOST / SM_API_KEY / SM_CLIENT_CERT_FILE /
         # SM_CLIENT_CERT_PASSWORD from $GITHUB_ENV (set by the
