@@ -26,6 +26,13 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    # M6.40: surface DigiCert KeyLocker secret presence at job level so
+    # `if: env.SM_API_KEY != ''` gating in Windows steps works (you
+    # can't reference `secrets.*` directly inside `if:` expressions).
+    # Empty/missing secrets evaluate to "" so the signing steps cleanly
+    # skip when keys aren't configured (e.g. on forks / first-run).
+    env:
+      SM_API_KEY: ${{ secrets.SM_API_KEY }}
     strategy:
       fail-fast: false
       matrix:
@@ -135,6 +142,48 @@ jobs:
             sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
           fi
 
+      # ── Windows code signing (DigiCert KeyLocker) ──────────────────────
+      # M6.40: optional. Runs only when DigiCert KeyLocker secrets are
+      # configured on the repo. Without them, the binary + MSI ship
+      # unsigned (SmartScreen will warn until they earn reputation).
+      # Required secrets — set under repo Settings → Secrets and
+      # variables → Actions:
+      #   SM_API_KEY                 — DigiCert API key
+      #   SM_HOST                    — e.g. https://clientauth.one.digicert.com
+      #   SM_CLIENT_CERT_FILE_B64    — base64-encoded PKCS#12 client auth cert
+      #   SM_CLIENT_CERT_PASSWORD    — password for the PKCS#12 cert
+      #   SM_KEYPAIR_ALIAS           — KeyLocker keypair alias to sign with
+      #   SM_CERT_FINGERPRINT        — SHA1 thumbprint of the signing cert
+      - name: Set up DigiCert KeyLocker
+        id: keylocker
+        if: matrix.os == 'windows' && env.SM_API_KEY != ''
+        uses: digicert/ssm-code-signing@v1.0.0
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          SM_HOST: ${{ secrets.SM_HOST }}
+
+      - name: Sign Windows binary
+        if: matrix.os == 'windows' && env.SM_API_KEY != ''
+        shell: cmd
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ secrets.SM_HOST }}
+          SM_CERT_FINGERPRINT: ${{ secrets.SM_CERT_FINGERPRINT }}
+        run: |
+          smctl sign --fingerprint %SM_CERT_FINGERPRINT% --input "target\${{ matrix.target }}\release\thclaws.exe"
+          smctl sign verify --input "target\${{ matrix.target }}\release\thclaws.exe"
+
+      - name: Install cargo-wix
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          # WiX 3.11 ships with the windows-2022 runner image.
+          # cargo-wix wraps `candle.exe` + `light.exe` to build the MSI
+          # from `crates/core/wix/main.wxs`.
+          cargo install cargo-wix --version "^0.3" --locked
+
       - name: Package (windows)
         if: matrix.os == 'windows'
         shell: pwsh
@@ -143,10 +192,48 @@ jobs:
           $name = "thclaws-$version-${{ matrix.target }}"
           New-Item -Force -ItemType Directory dist | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/thclaws.exe" "dist/thclaws.exe"
+
+          # Build the MSI from the (possibly signed) binary.
+          # `--no-build` skips a redundant cargo build; we already built
+          # the exe in the previous step. cargo-wix invokes WiX 3.11 +
+          # produces dist/<name>.msi.
+          # Strip the leading `v` from the tag for WiX (which only
+          # accepts `MAJOR.MINOR.PATCH[.BUILD]`).
+          $wixVersion = $version -replace '^v',''
+          cargo wix `
+            --manifest-path crates/core/Cargo.toml `
+            --target ${{ matrix.target }} `
+            --no-build `
+            --nocapture `
+            --output "dist/$name.msi" `
+            -C "-arch" -C "${{ matrix.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'x64' }}" `
+            -C "-dVersion=$wixVersion"
+
+          # Zip the bare exe (kept for users who don't want an installer).
           Compress-Archive -Path dist/thclaws.exe -DestinationPath "dist/$name.zip" -Force
           Remove-Item dist/thclaws.exe
-          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          Set-Content "dist/$name.zip.sha256" "$hash  $name.zip"
+
+      - name: Sign Windows MSI
+        if: matrix.os == 'windows' && env.SM_API_KEY != ''
+        shell: cmd
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_HOST: ${{ secrets.SM_HOST }}
+          SM_CERT_FINGERPRINT: ${{ secrets.SM_CERT_FINGERPRINT }}
+        run: |
+          for %%f in (dist\*.msi) do (
+            smctl sign --fingerprint %SM_CERT_FINGERPRINT% --input "%%f"
+            smctl sign verify --input "%%f"
+          )
+
+      - name: Hash Windows artifacts
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*.zip,dist/*.msi | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            Set-Content "$($_.FullName).sha256" "$hash  $($_.Name)"
+          }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
