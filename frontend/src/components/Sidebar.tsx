@@ -7,32 +7,38 @@ type SessionInfo = { id: string; model: string; messages: number; title?: string
 type KmsInfo = { name: string; scope: "user" | "project"; active: boolean };
 
 // Wry blocks `window.confirm`, so we proxy through a native OS dialog
-// via IPC. Mirrors `confirmNative` in FilesView.
-function confirmNative(opts: {
+// via IPC. Mirrors `platformConfirm` in FilesView.
+function platformConfirm(opts: {
   title: string;
   message: string;
   yesLabel?: string;
   noLabel?: string;
 }): Promise<boolean> {
   return new Promise((resolve) => {
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `cf-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const unsub = subscribe((msg) => {
-      if (msg.type === "confirm_result" && msg.id === id) {
-        unsub();
-        resolve(Boolean(msg.ok));
-      }
-    });
-    send({
-      type: "confirm",
-      id,
-      title: opts.title,
-      message: opts.message,
-      yes_label: opts.yesLabel ?? "OK",
-      no_label: opts.noLabel ?? "Cancel",
-    });
+    if(typeof window < `u` && !window.ipc && window.confirm) {
+      resolve(Boolean(window.confirm(`${opts.title}\n\n${opts.message}`)));
+    }
+    else {
+      const id =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `cf-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const unsub = subscribe((msg) => {
+        if (msg.type === "confirm_result" && msg.id === id) {
+          unsub();
+          resolve(Boolean(msg.ok));
+        }
+      });
+      
+      send({
+        type: "confirm",
+        id,
+        title: opts.title,
+        message: opts.message,
+        yes_label: opts.yesLabel ?? "OK",
+        no_label: opts.noLabel ?? "Cancel",
+      });
+    }
   });
 }
 
@@ -540,7 +546,7 @@ export function Sidebar({ onBrowseKms }: SidebarProps = {}) {
               // OS dialog on macOS (NSAlert pauses the whole app).
               await new Promise((r) => requestAnimationFrame(() => r(undefined)));
               const label = s.title && s.title.trim().length > 0 ? s.title : s.id;
-              const ok = await confirmNative({
+              const ok = await platformConfirm({
                 title: "Delete session",
                 message: `Delete session "${label}"? This removes it from disk and can't be undone.`,
                 yesLabel: "Delete",
