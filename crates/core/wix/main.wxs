@@ -99,12 +99,20 @@
       <Directory Id="ProgramMenuFolder" Name="Programs">
         <Directory Id="ApplicationProgramsFolder" Name="thClaws">
           <Component Id="ApplicationShortcut" Guid="*">
+            <!-- Working directory MUST NOT be Bin (= C:\Program Files\
+                 thClaws\bin\) — that's read-only for non-admin users
+                 and the GUI's startup writes session/config files
+                 relative to cwd, causing a silent SIGTERM on launch.
+                 PersonalFolder = %USERPROFILE%\Documents which every
+                 user can write to. The user can also override via
+                 right-click → Properties → "Start in" if they prefer
+                 a different default workspace. -->
             <Shortcut
                 Id="ApplicationStartMenuShortcut"
                 Name="thClaws"
                 Description="thClaws — AI agent workspace (GUI)"
                 Target="[Bin]thclaws.exe"
-                WorkingDirectory="Bin" />
+                WorkingDirectory="PersonalFolder" />
             <Shortcut
                 Id="UninstallShortcut"
                 Name="Uninstall thClaws"
