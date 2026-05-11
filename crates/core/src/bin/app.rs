@@ -696,9 +696,13 @@ fn warn_about_stale_binaries() {
     #[cfg(not(windows))]
     const RM_HINT: &str = "rm <path-above>";
 
-    let Ok(current_exe) = std::env::current_exe() else { return };
+    let Ok(current_exe) = std::env::current_exe() else {
+        return;
+    };
     let current_canon = std::fs::canonicalize(&current_exe).ok();
-    let Some(path_var) = std::env::var_os("PATH") else { return };
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return;
+    };
 
     let mut duplicates: Vec<std::path::PathBuf> = Vec::new();
     for dir in std::env::split_paths(&path_var) {

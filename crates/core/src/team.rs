@@ -1280,10 +1280,16 @@ impl Tool for SpawnTeammateTool {
         let name = crate::tools::req_str(&input, "name")?;
         let prompt = crate::tools::req_str(&input, "prompt")?;
         let cwd = input.get("cwd").and_then(Value::as_str);
+        // Trim + drop empty so an LLM passing `"model": ""` (or only
+        // whitespace) is treated as "not specified" and falls through
+        // to agent_def / config default rather than tripping the
+        // "doesn't map to any known provider" pre-flight error.
         let runtime_model = input
             .get("model")
             .and_then(Value::as_str)
-            .map(|s| s.to_string());
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
 
         // M6.44 / #79: pre-flight auth check for cross-provider spawn.
         // If the runtime model maps to a provider whose API key isn't
