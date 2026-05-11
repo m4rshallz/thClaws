@@ -53,7 +53,9 @@ pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use hal::{WebScrapeTool, YouTubeTranscriptTool};
-pub use kms::{KmsAppendTool, KmsDeleteTool, KmsReadTool, KmsSearchTool, KmsWriteTool};
+pub use kms::{
+    KmsAppendTool, KmsCreateTool, KmsDeleteTool, KmsReadTool, KmsSearchTool, KmsWriteTool,
+};
 pub use ls::LsTool;
 pub use memory::{MemoryAppendTool, MemoryReadTool, MemoryWriteTool};
 pub use pdf_create::PdfCreateTool;

@@ -630,6 +630,24 @@ pub fn build_system_prompt(
         system.push_str(&kms_section);
     }
 
+    let services_section = services_prompt_section();
+    if !services_section.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&services_section);
+    }
+
+    // Documents section is unconditional — its tools are always
+    // registered, so the prompt section's only job is to nudge the
+    // model away from Bash + Python libraries toward the native
+    // bundled tools. Sits after Services so all "capabilities"
+    // sections cluster together, before Team (collaboration) and
+    // Skills (workflows).
+    let documents_section = documents_prompt_section();
+    if !documents_section.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&documents_section);
+    }
+
     let team_enabled = crate::config::ProjectConfig::load()
         .and_then(|c| c.team_enabled)
         .unwrap_or(false);
@@ -655,6 +673,127 @@ pub fn build_system_prompt(
     }
 
     system
+}
+
+/// Build the "External services" section of the system prompt. Only
+/// surfaces services whose API key is currently in the process env
+/// (so a key paste mid-session lights up on the next
+/// `rebuild_system_prompt`). Returns an empty string when nothing is
+/// configured — caller skips the section entirely in that case.
+///
+/// Motivation: `ToolRegistry::tool_defs` already hides
+/// `WebScrape` / `YouTubeTranscript` when `HAL_API_KEY` is absent,
+/// and surfaces them when present — but the model has to *notice*
+/// the presence of an unfamiliar tool name in a long tools-param
+/// list. Pre-fix the model defaulted to `WebFetch` for everything
+/// (the name it recognised from training data) and never reached for
+/// the HAL-backed tools, even though they were technically visible.
+/// This section names them explicitly with a one-line "when to pick"
+/// hint so the model has the discovery shortcut it was missing.
+fn services_prompt_section() -> String {
+    let mut bullets: Vec<String> = Vec::new();
+
+    let hal_ok = std::env::var("HAL_API_KEY")
+        .ok()
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false);
+    if hal_ok {
+        bullets.push(
+            "**HAL Public API** (key set). \
+             `WebFetch` now runs **both** a HAL headless-browser scrape **and** \
+             a plain HTTP GET in parallel on every call, returning a single \
+             combined response with each section clearly labelled (`[via HAL …]` \
+             then `[via plain HTTP GET …]`). Pick the slice that answers your \
+             question — HAL for SPA / JS-rendered / docs / blog content; plain \
+             GET for JSON APIs / sitemaps / robots.txt / anything where the raw \
+             body matters. Set `prefer_raw: true` on `WebFetch` to skip HAL \
+             entirely when you know the URL is a JSON endpoint or similar \
+             (saves wall-clock + tokens). Reach directly for `WebScrape` only \
+             when you need advanced HAL parameters (`wait_for` CSS selector, \
+             `scroll_to_bottom`, `remove_selectors`, `output_format`). Use \
+             `YouTubeTranscript` for video captions (en/th preference by default)."
+                .to_string(),
+        );
+    }
+
+    // `WebSearch` is always registered — it auto-selects Tavily →
+    // Brave → DuckDuckGo at call time, with DuckDuckGo as the always-
+    // available no-key fallback. Surface it here so the model reaches
+    // for the structured tool instead of shelling out via `Bash` +
+    // `curl 'https://duckduckgo.com/html/...'` (a recurring failure
+    // mode pre-fix: descriptions in the API tools-param weren't
+    // enough to dislodge the model's `curl` habit).
+    let tavily_ok = std::env::var("TAVILY_API_KEY")
+        .ok()
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false);
+    let brave_ok = std::env::var("BRAVE_SEARCH_API_KEY")
+        .ok()
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false);
+    let backend_hint = match (tavily_ok, brave_ok) {
+        (true, _) => "currently Tavily (best quality)",
+        (false, true) => "currently Brave",
+        (false, false) => "currently DuckDuckGo (no key set — paste a Tavily or Brave key in Settings for better results)",
+    };
+    bullets.push(format!(
+        "**Web search**. `WebSearch` returns titles, URLs, and snippets \
+         from the live web — {backend_hint}. Auto-picks the best \
+         available backend at call time: Tavily → Brave → DuckDuckGo. \
+         Each result starts with a `Source: <engine>` line — mention \
+         the engine when summarising so the user knows result quality. \
+         Reach for this instead of `Bash` + `curl` for any web lookup."
+    ));
+
+    if bullets.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("# External services\n\n");
+    for b in bullets {
+        out.push_str("- ");
+        out.push_str(&b);
+        out.push('\n');
+    }
+    out
+}
+
+/// Document- and spreadsheet-generation tool surface. Always rendered
+/// — these tools are unconditionally registered in
+/// `ToolRegistry::with_builtins`, so the prompt section's job is
+/// purely discoverability: the model otherwise defaults to
+/// `Bash` + `python-docx` / `openpyxl` / `python-pptx` / `reportlab`
+/// (often broken on the user's machine, slow, and produces inconsistent
+/// output). Mentioning the native tools dislodges that habit.
+///
+/// Critical motivation: pre-fix the only place these tools appeared
+/// was the API tools-param schema list — a 25+ entry list where the
+/// model's eye glides past unfamiliar names like `DocxCreate`. Users
+/// reported "make a PDF" requests resolving to bash scripts that
+/// failed three times before the model considered the native tool.
+fn documents_prompt_section() -> String {
+    String::from(
+        "# Document & spreadsheet generation\n\n\
+         When the user asks to create or read Word docs, Excel sheets, \
+         PowerPoint decks, or PDFs, reach for these native tools instead \
+         of shelling out to Python libraries. They are bundled (no setup \
+         on the user's machine), embed Noto Sans Thai (mixed Thai/Latin \
+         renders correctly), and produce predictable output.\n\n\
+         - **DocxCreate** / **DocxRead** — Word `.docx`. Markdown in, \
+         supports tables, inline images, H1–H4. Read extracts to text.\n\
+         - **XlsxCreate** / **XlsxRead** — Excel `.xlsx`. Accepts CSV \
+         string, JSON 2D array, or `[{sheet, rows}]` for multi-sheet \
+         workbooks. Numeric cells stay numeric.\n\
+         - **PptxCreate** / **PptxRead** — PowerPoint `.pptx`. Markdown \
+         outline: `# Heading` starts a new slide, bullets become body. \
+         Read extracts slide text.\n\
+         - **PdfCreate** / **PdfRead** — PDF. Markdown in, supports \
+         tables, inline images, embedded fonts. A4 / Letter / Legal.\n\n\
+         Use these for the matching format every time. Do NOT call \
+         generic `Read` on `.docx` / `.xlsx` / `.pptx` / `.pdf` — it \
+         returns raw bytes the model can't parse; the dedicated `*Read` \
+         tool extracts to model-readable text.\n",
+    )
 }
 
 /// dev-plan/06 P2 helper. Renders the Available-skills section of the
@@ -917,15 +1056,28 @@ async fn run_worker(
         });
     }
 
-    if !config.kms_active.is_empty() {
-        tools.register(std::sync::Arc::new(crate::tools::KmsReadTool));
-        tools.register(std::sync::Arc::new(crate::tools::KmsSearchTool));
-        // M6.25 BUG #1: KmsWrite + KmsAppend make the LLM an active
-        // wiki maintainer (not just a passive reader).
-        tools.register(std::sync::Arc::new(crate::tools::KmsWriteTool));
-        tools.register(std::sync::Arc::new(crate::tools::KmsAppendTool));
-        tools.register(std::sync::Arc::new(crate::tools::KmsDeleteTool));
-    }
+    // KMS tools are always-on, not gated by `kms_active`. Pre-fix the
+    // gate skipped registration when `kms_active` was empty — but the
+    // /dream side-channel agent inherits this tool registry as
+    // `base_tools`, and dream needs `KmsCreate`/`KmsWrite` to bootstrap
+    // its `dreams` audit KMS *regardless* of whether the user has
+    // run `/kms use ...` to mark anything active. Without these tools
+    // available, /dream silently exits in 30-60s with no real work
+    // done. The minor cost (a few extra tool defs in the system
+    // prompt when no KMS is configured) is far smaller than /dream
+    // appearing to succeed while doing nothing.
+    tools.register(std::sync::Arc::new(crate::tools::KmsReadTool));
+    tools.register(std::sync::Arc::new(crate::tools::KmsSearchTool));
+    // M6.25 BUG #1: KmsWrite + KmsAppend make the LLM an active
+    // wiki maintainer (not just a passive reader).
+    tools.register(std::sync::Arc::new(crate::tools::KmsWriteTool));
+    tools.register(std::sync::Arc::new(crate::tools::KmsAppendTool));
+    tools.register(std::sync::Arc::new(crate::tools::KmsDeleteTool));
+    // KmsCreate bootstraps the dedicated `dreams` KMS used by
+    // /dream's Pass 4 audit page — defense-in-depth so a stale
+    // build or filesystem race can't trap the dream agent in a
+    // retry loop on "no KMS named 'dreams'".
+    tools.register(std::sync::Arc::new(crate::tools::KmsCreateTool));
 
     // M6.26 BUG #1: Memory tools always-on. The model needs them even
     // when no entries exist yet (so it can create the first one). Sandbox
@@ -1469,6 +1621,18 @@ async fn run_worker(
                     let _ = events_tx.send(ViewEvent::ProviderUpdate(payload.to_string()));
                 }
                 state.agent.set_history(loaded.messages.clone());
+                // Rehydrate the provider-side session id BEFORE
+                // `state.session = loaded` overwrites the in-memory
+                // session — the next `agent.run_turn` will then pass
+                // `--resume <uuid>` to the SDK subprocess and the
+                // server-side conversation comes back instead of
+                // restarting from scratch. Pre-fix this hop was
+                // missing and resumed sessions silently lost their
+                // SDK-side history.
+                state
+                    .agent
+                    .provider()
+                    .set_provider_session_id(loaded.provider_session_id.clone());
                 state.session = loaded;
                 state.warned_file_size = false;
                 // /load: repoint persistence at the loaded session's
@@ -1903,6 +2067,20 @@ pub(crate) fn save_history(agent: &Agent, session: &mut Session, store: &Option<
     session.sync(history);
     if let Some(ref store) = store {
         let _ = store.save(session);
+        // Capture any provider-side session id that surfaced during
+        // this turn (anthropic-agent SDK populates this from the
+        // first response frame) and persist it to the JSONL so a
+        // future `/load` can rehydrate it via
+        // `Provider::set_provider_session_id`. Without this hop,
+        // resume sessions started a fresh SDK conversation that saw
+        // only the latest user message — the "LLM forgot previous
+        // turns" bug. Skip the append when nothing changed to avoid
+        // event-log spam.
+        let provider_sid = agent.provider().provider_session_id();
+        if provider_sid != session.provider_session_id {
+            let path = store.path_for(&session.id);
+            let _ = session.append_provider_state_to(&path, provider_sid);
+        }
     }
 }
 
@@ -3184,6 +3362,172 @@ pub(crate) fn maybe_warn_file_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialises tests that mutate `HAL_API_KEY` so they don't race
+    /// each other or any other test reading the env var in parallel.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn services_section_always_mentions_web_search() {
+        // WebSearch is always-available (DuckDuckGo fallback) so the
+        // services section should ALWAYS surface it, even when no
+        // HAL/Tavily/Brave key is set. This is the new floor:
+        // services section is no longer HAL-conditional — it's a
+        // capability index that's never empty.
+        let _g = env_lock();
+        let prev_hal = std::env::var("HAL_API_KEY").ok();
+        let prev_tav = std::env::var("TAVILY_API_KEY").ok();
+        let prev_brv = std::env::var("BRAVE_SEARCH_API_KEY").ok();
+        std::env::remove_var("HAL_API_KEY");
+        std::env::remove_var("TAVILY_API_KEY");
+        std::env::remove_var("BRAVE_SEARCH_API_KEY");
+        let section = services_prompt_section();
+        assert!(
+            section.contains("WebSearch"),
+            "section must always mention WebSearch (DuckDuckGo fallback is always available): {section}"
+        );
+        assert!(
+            section.contains("DuckDuckGo"),
+            "should note the no-key fallback so the user understands what's running: {section}"
+        );
+        assert!(
+            !section.contains("HAL Public API"),
+            "should NOT mention HAL when key is absent: {section}"
+        );
+        match prev_hal {
+            Some(p) => std::env::set_var("HAL_API_KEY", p),
+            None => std::env::remove_var("HAL_API_KEY"),
+        }
+        match prev_tav {
+            Some(p) => std::env::set_var("TAVILY_API_KEY", p),
+            None => std::env::remove_var("TAVILY_API_KEY"),
+        }
+        match prev_brv {
+            Some(p) => std::env::set_var("BRAVE_SEARCH_API_KEY", p),
+            None => std::env::remove_var("BRAVE_SEARCH_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn services_section_picks_tavily_when_key_set() {
+        let _g = env_lock();
+        let prev = std::env::var("TAVILY_API_KEY").ok();
+        std::env::set_var("TAVILY_API_KEY", "test-key");
+        let section = services_prompt_section();
+        assert!(
+            section.contains("Tavily (best quality)"),
+            "should highlight Tavily as active backend when key set: {section}"
+        );
+        match prev {
+            Some(p) => std::env::set_var("TAVILY_API_KEY", p),
+            None => std::env::remove_var("TAVILY_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn services_section_mentions_hal_tools_when_key_set() {
+        let _g = env_lock();
+        let prev = std::env::var("HAL_API_KEY").ok();
+        std::env::set_var("HAL_API_KEY", "test-key");
+        let section = services_prompt_section();
+        assert!(
+            section.contains("# External services"),
+            "missing header: {section}"
+        );
+        assert!(
+            section.contains("HAL Public API"),
+            "missing HAL marker: {section}"
+        );
+        assert!(
+            section.contains("WebScrape"),
+            "must surface WebScrape so model knows it exists: {section}"
+        );
+        assert!(
+            section.contains("YouTubeTranscript"),
+            "must surface YouTubeTranscript: {section}"
+        );
+        assert!(
+            section.contains("WebFetch"),
+            "must explain WebFetch behavior so model picks the right tool: {section}"
+        );
+        // Combined-mode language — model needs to understand that
+        // WebFetch returns two labelled sections, not one or the
+        // other. Without this hint the model would be confused by
+        // the dual-section output.
+        assert!(
+            section.contains("both") || section.contains("parallel"),
+            "services section must surface the combined fetch behavior: {section}"
+        );
+        match prev {
+            Some(p) => std::env::set_var("HAL_API_KEY", p),
+            None => std::env::remove_var("HAL_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn services_section_treats_blank_hal_key_as_unset() {
+        let _g = env_lock();
+        let prev = std::env::var("HAL_API_KEY").ok();
+        std::env::set_var("HAL_API_KEY", "   ");
+        let section = services_prompt_section();
+        // Section is no longer empty (WebSearch always mentioned),
+        // but the HAL-specific bullet should NOT appear with a
+        // whitespace-only key.
+        assert!(
+            !section.contains("HAL Public API"),
+            "whitespace-only HAL key should not light up HAL bullet; got: {section}"
+        );
+        // WebSearch should still be there as the always-on floor.
+        assert!(
+            section.contains("WebSearch"),
+            "WebSearch always-on bullet should remain regardless of HAL key state: {section}"
+        );
+        match prev {
+            Some(p) => std::env::set_var("HAL_API_KEY", p),
+            None => std::env::remove_var("HAL_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn documents_section_lists_all_format_pairs() {
+        // Documents section is unconditional so we don't need env
+        // setup. Each format pair (Docx / Xlsx / Pptx / Pdf) must be
+        // mentioned with both Create and Read variants — the model
+        // looks for "DocxCreate" specifically when the user asks for
+        // a .docx, and for "DocxRead" when given one to parse.
+        let section = documents_prompt_section();
+        assert!(
+            section.contains("# Document & spreadsheet generation"),
+            "missing header: {section}"
+        );
+        for name in [
+            "DocxCreate",
+            "DocxRead",
+            "XlsxCreate",
+            "XlsxRead",
+            "PptxCreate",
+            "PptxRead",
+            "PdfCreate",
+            "PdfRead",
+        ] {
+            assert!(
+                section.contains(name),
+                "documents section must surface `{name}` so the model finds it without scanning the tools-param list: {section}"
+            );
+        }
+        // The anti-pattern guard — explicit nudge away from calling
+        // generic `Read` on these binaries.
+        assert!(
+            section.contains("Do NOT call generic `Read`"),
+            "must warn against calling generic Read on binary doc formats: {section}"
+        );
+    }
 
     fn store_with_two() -> crate::skills::SkillStore {
         let mut store = crate::skills::SkillStore::default();

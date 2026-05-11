@@ -671,6 +671,30 @@ pub trait Provider: Send + Sync {
             "list_models not supported by this provider".into(),
         ))
     }
+
+    /// Provider-side session identifier for resume support. The
+    /// `anthropic-agent` SDK provider holds this in an internal
+    /// `Arc<Mutex<Option<String>>>` populated from the first response
+    /// frame that surfaces a `session_id`. Other providers don't
+    /// maintain server-side conversation state and return `None`.
+    ///
+    /// Callers (the worker / REPL loop) read this after each
+    /// `stream()` completes and persist any change to the session
+    /// JSONL via `Session::append_provider_state_to` so a process
+    /// restart or `/load` can rehydrate the id via
+    /// [`Self::set_provider_session_id`] and the next `stream()` call
+    /// passes `--resume <uuid>` to the subprocess.
+    fn provider_session_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Reapply a previously-persisted provider session id, used by
+    /// the worker right after `Session::load_from` so the next
+    /// `stream()` call resumes the SDK's server-side conversation
+    /// instead of starting fresh (the bug this trait method exists
+    /// to fix). Default impl is a no-op — only the
+    /// `anthropic-agent` provider overrides.
+    fn set_provider_session_id(&self, _id: Option<String>) {}
 }
 
 /// Does the active provider have credentials (env var set) or is it

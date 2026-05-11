@@ -808,7 +808,7 @@ fn parse_schedule_preset_subcommand(args: &str) -> SlashCommand {
 ///   --kms <name>           — explicit KMS target (default: auto-derive)
 ///   --min-iter N           — hard floor (default 2)
 ///   --max-iter K           — hard ceiling (default 8)
-///   --score-threshold 0.X  — early-stop threshold (default 0.75)
+///   --score-threshold 0.X  — early-stop threshold (default 0.80)
 ///   --budget-tokens N      — token budget (informational; deferred)
 ///   --budget-time SEC      — wall-clock budget seconds (default 900)
 fn parse_research_subcommand(args: &str) -> SlashCommand {
@@ -3356,14 +3356,19 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str, verbose: bool) -> R
     }
 
     let mut tool_registry = ToolRegistry::with_builtins();
-    if !config.kms_active.is_empty() {
-        tool_registry.register(Arc::new(crate::tools::KmsReadTool));
-        tool_registry.register(Arc::new(crate::tools::KmsSearchTool));
-        // M6.25 BUG #1: write tools alongside read tools.
-        tool_registry.register(Arc::new(crate::tools::KmsWriteTool));
-        tool_registry.register(Arc::new(crate::tools::KmsAppendTool));
-        tool_registry.register(Arc::new(crate::tools::KmsDeleteTool));
-    }
+    // KMS tools always-on (pre-fix this was gated by
+    // `!kms_active.is_empty()`, but /dream's side-channel agent
+    // inherits this registry and needs KmsCreate/KmsWrite to
+    // bootstrap its `dreams` audit KMS even when the user hasn't
+    // run `/kms use ...` yet). Same reasoning as shared_session.rs.
+    tool_registry.register(Arc::new(crate::tools::KmsReadTool));
+    tool_registry.register(Arc::new(crate::tools::KmsSearchTool));
+    // M6.25 BUG #1: write tools alongside read tools.
+    tool_registry.register(Arc::new(crate::tools::KmsWriteTool));
+    tool_registry.register(Arc::new(crate::tools::KmsAppendTool));
+    tool_registry.register(Arc::new(crate::tools::KmsDeleteTool));
+    // KmsCreate for /dream's `dreams` audit-log KMS bootstrap.
+    tool_registry.register(Arc::new(crate::tools::KmsCreateTool));
     // M6.26 BUG #1: Memory tools always-on (model can create first entry).
     tool_registry.register(Arc::new(crate::tools::MemoryReadTool));
     tool_registry.register(Arc::new(crate::tools::MemoryWriteTool));
@@ -3486,14 +3491,19 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     // Build the tool registry once, with built-ins + task tools + MCP tools.
     // Override WebSearch with the configured engine (with_builtins uses "auto").
     let mut tool_registry = ToolRegistry::with_builtins();
-    if !config.kms_active.is_empty() {
-        tool_registry.register(Arc::new(crate::tools::KmsReadTool));
-        tool_registry.register(Arc::new(crate::tools::KmsSearchTool));
-        // M6.25 BUG #1: write tools alongside read tools.
-        tool_registry.register(Arc::new(crate::tools::KmsWriteTool));
-        tool_registry.register(Arc::new(crate::tools::KmsAppendTool));
-        tool_registry.register(Arc::new(crate::tools::KmsDeleteTool));
-    }
+    // KMS tools always-on (pre-fix this was gated by
+    // `!kms_active.is_empty()`, but /dream's side-channel agent
+    // inherits this registry and needs KmsCreate/KmsWrite to
+    // bootstrap its `dreams` audit KMS even when the user hasn't
+    // run `/kms use ...` yet). Same reasoning as shared_session.rs.
+    tool_registry.register(Arc::new(crate::tools::KmsReadTool));
+    tool_registry.register(Arc::new(crate::tools::KmsSearchTool));
+    // M6.25 BUG #1: write tools alongside read tools.
+    tool_registry.register(Arc::new(crate::tools::KmsWriteTool));
+    tool_registry.register(Arc::new(crate::tools::KmsAppendTool));
+    tool_registry.register(Arc::new(crate::tools::KmsDeleteTool));
+    // KmsCreate for /dream's `dreams` audit-log KMS bootstrap.
+    tool_registry.register(Arc::new(crate::tools::KmsCreateTool));
     // M6.26 BUG #1: Memory tools always-on (model can create first entry).
     tool_registry.register(Arc::new(crate::tools::MemoryReadTool));
     tool_registry.register(Arc::new(crate::tools::MemoryWriteTool));
@@ -3837,6 +3847,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
             };
             if let Some(s) = loaded {
                 agent.set_history(s.messages.clone());
+                // Rehydrate the provider-side session id so the SDK
+                // subprocess resumes its server-side conversation
+                // on the first `--resume <uuid>` call instead of
+                // starting fresh. Mirrors shared_session.rs's load
+                // path — without this, CLI `/resume` lost SDK
+                // history the same way GUI /load did pre-fix.
+                agent
+                    .provider()
+                    .set_provider_session_id(s.provider_session_id.clone());
                 session = s;
                 println!(
                     "{COLOR_DIM}resumed session {} ({} messages){COLOR_RESET}",
@@ -5003,6 +5022,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             match loaded_result {
                                 Ok(loaded) => {
                                     agent.set_history(loaded.messages.clone());
+                                    agent.provider().set_provider_session_id(
+                                        loaded.provider_session_id.clone(),
+                                    );
                                     session = loaded;
                                     // M6.20 BUG M2 + M3: clear yolo
                                     // flag and reset permission mode
