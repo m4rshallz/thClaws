@@ -933,6 +933,8 @@ async fn run_worker(
     tools.register(std::sync::Arc::new(crate::tools::MemoryReadTool));
     tools.register(std::sync::Arc::new(crate::tools::MemoryWriteTool));
     tools.register(std::sync::Arc::new(crate::tools::MemoryAppendTool));
+    // M6.46: SessionRename — for dream + power-user manual rename.
+    tools.register(std::sync::Arc::new(crate::tools::SessionRenameTool));
 
     // M6.11 (H1): daily auto-refresh of the marketplace catalog. No-op
     // when the cache is < 24h old; otherwise spawns a fail-silent

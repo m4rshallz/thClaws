@@ -558,6 +558,12 @@ pub enum SlashCommand {
     /// hint pointing at the desktop tab.
     Dream {
         focus: String,
+        /// `--all` flag — process every `.jsonl` session file rather
+        /// than the default last-10 cap. Heavier but catches insights
+        /// from older sessions when the user hasn't `/dream`-ed in a
+        /// while. Also widens the targeted-reconciliation scope (Pass
+        /// 3b inside dream.md) to every page Pass 3 touched.
+        all_sessions: bool,
     },
     Unknown(String),
 }
@@ -1346,9 +1352,23 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "schedule" | "sched" => parse_schedule_subcommand(args),
         "agent" => parse_agent_subcommand(args),
         "agents" => SlashCommand::AgentsList,
-        "dream" => SlashCommand::Dream {
-            focus: args.to_string(),
-        },
+        "dream" => {
+            // Parse `--all` flag (order-insensitive). Anything else is
+            // the focus topic. `/dream auth --all` and `/dream --all
+            // auth` both work.
+            let mut focus_parts: Vec<&str> = Vec::new();
+            let mut all_sessions = false;
+            for tok in args.split_whitespace() {
+                match tok {
+                    "--all" => all_sessions = true,
+                    other => focus_parts.push(other),
+                }
+            }
+            SlashCommand::Dream {
+                focus: focus_parts.join(" "),
+                all_sessions,
+            }
+        }
         // Parse-time alias: `/translate xxx` → `/agent translator xxx`.
         // Same dispatch path as /agent, so behavior, permissions, and
         // settings.json model overrides (translator_subagent_model)
@@ -3348,6 +3368,11 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str, verbose: bool) -> R
     tool_registry.register(Arc::new(crate::tools::MemoryReadTool));
     tool_registry.register(Arc::new(crate::tools::MemoryWriteTool));
     tool_registry.register(Arc::new(crate::tools::MemoryAppendTool));
+    // M6.46: SessionRename — primarily for the dream subagent so it
+    // can re-title sessions while mining them. Registered always-on
+    // because tool filtering happens via per-agent allow-lists, not
+    // here.
+    tool_registry.register(Arc::new(crate::tools::SessionRenameTool));
     let (_mcp_clients, _mcp_summary) =
         load_mcp_servers(&config.mcp_servers, &mut tool_registry).await;
 
@@ -3473,6 +3498,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     tool_registry.register(Arc::new(crate::tools::MemoryReadTool));
     tool_registry.register(Arc::new(crate::tools::MemoryWriteTool));
     tool_registry.register(Arc::new(crate::tools::MemoryAppendTool));
+    // M6.46: SessionRename — for dream + power-user manual rename.
+    tool_registry.register(Arc::new(crate::tools::SessionRenameTool));
     if config.search_engine != "auto" {
         tool_registry.register(Arc::new(crate::tools::WebSearchTool::new(
             &config.search_engine,
@@ -7820,8 +7847,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         );
                     }
                 }
-                SlashCommand::Dream { focus } => {
-                    let _ = focus;
+                SlashCommand::Dream { focus, all_sessions } => {
+                    let _ = (focus, all_sessions);
                     #[cfg(feature = "gui")]
                     {
                         println!(
@@ -9609,12 +9636,14 @@ mod tests {
             parse_slash("/dream auth"),
             Some(SlashCommand::Dream {
                 focus: "auth".into(),
+                all_sessions: false,
             }),
         );
         assert_eq!(
             parse_slash("/dream consolidate the marketplace KMS"),
             Some(SlashCommand::Dream {
                 focus: "consolidate the marketplace KMS".into(),
+                all_sessions: false,
             }),
         );
     }
@@ -9627,6 +9656,34 @@ mod tests {
             parse_slash("/dream"),
             Some(SlashCommand::Dream {
                 focus: String::new(),
+                all_sessions: false,
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_slash_dream_all_flag() {
+        // `/dream --all` sets the flag, empty focus.
+        assert_eq!(
+            parse_slash("/dream --all"),
+            Some(SlashCommand::Dream {
+                focus: String::new(),
+                all_sessions: true,
+            }),
+        );
+        // Order-insensitive: focus + flag in either order.
+        assert_eq!(
+            parse_slash("/dream --all auth"),
+            Some(SlashCommand::Dream {
+                focus: "auth".into(),
+                all_sessions: true,
+            }),
+        );
+        assert_eq!(
+            parse_slash("/dream auth --all"),
+            Some(SlashCommand::Dream {
+                focus: "auth".into(),
+                all_sessions: true,
             }),
         );
     }
