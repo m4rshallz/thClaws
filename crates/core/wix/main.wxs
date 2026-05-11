@@ -75,12 +75,20 @@
                   Type="integer"
                   Value="1"
                   KeyPath="yes" />
+              <!-- Part="first" prepends the install dir to PATH so a
+                   plain `thclaws` command always resolves to THIS
+                   MSI install, even when the user previously copied
+                   thclaws.exe into a custom dir already on PATH (e.g.
+                   C:\tools\). Without this, the stale binary won at
+                   PATH-search time and the new MSI install effectively
+                   sat unused. The app itself still warns about
+                   duplicates so the user can clean them up. -->
               <Environment
                   Id="PATH"
                   Name="PATH"
                   Value="[Bin]"
                   Permanent="no"
-                  Part="last"
+                  Part="first"
                   Action="set"
                   System="yes" />
             </Component>

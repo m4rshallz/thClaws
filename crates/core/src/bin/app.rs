@@ -223,6 +223,15 @@ async fn main() {
     load_dotenv();
     let _ = Sandbox::init();
 
+    // M6.45 / #79-followup: Windows-only — warn if there are stale
+    // thclaws.exe copies elsewhere on PATH. Pairs with the MSI's
+    // Part="first" PATH addition (which makes the new install win
+    // PATH-search regardless of older entries) — this surfaces the
+    // duplicates so the user can clean them up. Not gated on any
+    // mode (CLI / GUI / --serve / --print) — silent on Mac/Linux
+    // since brew/apt manage uniqueness.
+    warn_about_stale_binaries();
+
     // Org policy file enforcement (Enterprise Edition foundation).
     // Runs before CLI parse so a fail-closed refusal happens identically
     // whether the user invoked GUI, CLI, or print mode. Open-core builds
@@ -661,3 +670,60 @@ fn run_schedule_subcommand(cmd: ScheduleCmd) -> i32 {
         }
     }
 }
+
+/// M6.45 / #79-followup: scan PATH for additional thclaws.exe copies
+/// and warn the user. Windows-only — Linux/macOS package managers
+/// (apt, brew) prevent the duplicate-binary scenario.
+///
+/// The MSI install's `Part="first"` ensures the new install wins
+/// PATH-search regardless, so this function is informational only —
+/// it doesn't change behavior, just nudges the user to clean up
+/// stale copies (e.g. the manual `C:\tools\thclaws.exe` from before
+/// the installer existed).
+#[cfg(windows)]
+fn warn_about_stale_binaries() {
+    let Ok(current_exe) = std::env::current_exe() else { return };
+    let current_canon = std::fs::canonicalize(&current_exe).ok();
+    let Ok(path_var) = std::env::var("PATH") else { return };
+
+    let mut duplicates: Vec<std::path::PathBuf> = Vec::new();
+    for dir in path_var.split(';') {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = std::path::Path::new(dir).join("thclaws.exe");
+        if !candidate.is_file() {
+            continue;
+        }
+        let canon = match std::fs::canonicalize(&candidate) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        // Skip if same file as we're running.
+        if let Some(curr) = &current_canon {
+            if &canon == curr {
+                continue;
+            }
+        }
+        if !duplicates.iter().any(|p| p == &canon) {
+            duplicates.push(canon);
+        }
+    }
+    if duplicates.is_empty() {
+        return;
+    }
+    eprintln!(
+        "\x1b[33m[thclaws] warning: {} additional thclaws.exe install(s) found on PATH:\x1b[0m",
+        duplicates.len()
+    );
+    eprintln!("  running:  {}", current_exe.display());
+    for d in &duplicates {
+        eprintln!("  also at:  {}", d.display());
+    }
+    eprintln!(
+        "\x1b[33m[thclaws] PATH order picks the new install first, but the old copies still take ~17 MB each.\nTo clean up:  del \"<path-above>\"\x1b[0m"
+    );
+}
+
+#[cfg(not(windows))]
+fn warn_about_stale_binaries() {}
