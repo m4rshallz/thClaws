@@ -2099,9 +2099,7 @@ pub async fn dispatch(
                     // there, otherwise the kms_active config keeps a
                     // dangling name that will fail to resolve on the
                     // next system-prompt rebuild.
-                    if let Some(pos) =
-                        state.config.kms_active.iter().position(|n| n == &name)
-                    {
+                    if let Some(pos) = state.config.kms_active.iter().position(|n| n == &name) {
                         state.config.kms_active.remove(pos);
                     }
                     emit(
