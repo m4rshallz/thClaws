@@ -73,10 +73,12 @@ export function TodoSidebar() {
     };
   }, [todos]);
 
-  /// Empty + dismissed → don't even show the chevron tab. There's
-  /// nothing to peek at, and the user has already opted out of seeing
-  /// the empty state.
-  if (todos.length === 0 && dismissed) return null;
+  /// Empty list → render nothing at all. The sidebar has nothing to
+  /// show until the model calls `TodoWrite`; previously we rendered a
+  /// "No todos yet" empty-state panel that opened unsolicited on
+  /// every session start (and alongside the research sidebar on
+  /// `/research` launch). Wait until todos exist, then auto-open.
+  if (todos.length === 0) return null;
 
   // Collapsed: chevron tab on the right edge re-opens.
   if (dismissed) {
@@ -146,17 +148,8 @@ export function TodoSidebar() {
       </div>
 
       <div className="flex-1 overflow-auto">
-        {todos.length === 0 ? (
-          <div
-            className="px-3 py-4 text-xs italic"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            No todos yet. The model will populate this list when it
-            calls <code>TodoWrite</code> on multi-step work.
-          </div>
-        ) : (
-          <ul className="px-3 py-2 space-y-1.5">
-            {todos.map((todo, idx) => {
+        <ul className="px-3 py-2 space-y-1.5">
+          {todos.map((todo, idx) => {
               const status = (todo.status as TodoStatus) ?? "pending";
               const inProgress = status === "in_progress";
               const done = status === "completed";
@@ -200,11 +193,10 @@ export function TodoSidebar() {
                   >
                     {todo.content}
                   </span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+              </li>
+            );
+          })}
+        </ul>
       </div>
 
       <div

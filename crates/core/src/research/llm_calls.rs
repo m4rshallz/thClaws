@@ -1043,6 +1043,11 @@ async fn oneshot(
         tools: Vec::new(),
         max_tokens: 4096,
         thinking_budget: None,
+        // Research synthesizes long pages — the model may go silent
+        // for minutes mid-stream. Force the per-chunk idle ceiling to
+        // the pipeline's `llm_timeout` (default 900s) regardless of
+        // the user's `stream_chunk_timeout_secs` setting.
+        stream_chunk_timeout_override: Some(timeout),
     };
     let stream_fut = provider.stream(req);
     let mut stream = match tokio::time::timeout(timeout, stream_fut).await {

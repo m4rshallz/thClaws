@@ -608,7 +608,22 @@ pub struct StreamRequest {
     pub max_tokens: u32,
     /// Anthropic extended-thinking budget. `None` disables thinking.
     pub thinking_budget: Option<u32>,
+    /// Per-call override for the per-chunk idle timeout. `None` falls
+    /// back to the global `stream_chunk_timeout()` (driven by the user
+    /// `stream_chunk_timeout_secs` setting). `Some(d)` forces `d` for
+    /// this one request only — used by known long-running features
+    /// (research pipeline, `/kms html`) that legitimately need ≥15 min
+    /// of stream idleness without raising the user's default.
+    pub stream_chunk_timeout_override: Option<std::time::Duration>,
 }
+
+/// Hard 15-minute idle ceiling reserved for features that orchestrate
+/// long-running single LLM calls (research synthesis, KMS HTML
+/// generation). Passed in `StreamRequest::stream_chunk_timeout_override`
+/// so each call overrides the user's `stream_chunk_timeout_secs`
+/// setting without changing the global default for normal chat.
+pub const LONG_RUNNING_STREAM_CHUNK_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(900);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usage {

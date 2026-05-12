@@ -538,12 +538,14 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                 .unwrap_or("")
                 .to_string();
             let payload = match crate::kms::read_browse_file(&kms_name, &kind, &file) {
-                Ok(content) => serde_json::json!({
+                Ok(read) => serde_json::json!({
                     "type": "kms_file_content",
                     "kms": kms_name,
                     "kind": kind,
                     "name": file,
-                    "content": content,
+                    "content": read.content,
+                    "total_bytes": read.total_bytes,
+                    "truncated": read.truncated,
                     "ok": true,
                 }),
                 Err(e) => serde_json::json!({
