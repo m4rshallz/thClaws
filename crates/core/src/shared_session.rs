@@ -941,6 +941,11 @@ async fn run_worker(
 ) {
     let cwd = std::env::current_dir().unwrap_or_default();
     let config = AppConfig::load().unwrap_or_default();
+    // Push the configured stream-chunk timeout into the global the
+    // providers read on every `byte_stream.next()`. Live; subsequent
+    // `/reload` paths re-apply via the same setter (see lines ~1877,
+    // ~1965 where AppConfig::load is re-invoked).
+    crate::providers::set_stream_chunk_timeout_secs(config.stream_chunk_timeout_secs);
 
     // Shared SkillTool store — we keep a handle in WorkerState so
     // `/skill install` can repopulate it without restarting.
@@ -1875,7 +1880,12 @@ async fn run_worker(
                 // when the user launched without any keys configured.
                 let prev_model = state.config.model.clone();
                 match crate::config::AppConfig::load() {
-                    Ok(new_config) => state.config = new_config,
+                    Ok(new_config) => {
+                        crate::providers::set_stream_chunk_timeout_secs(
+                            new_config.stream_chunk_timeout_secs,
+                        );
+                        state.config = new_config;
+                    }
                     Err(e) => {
                         let _ = events_tx.send(ViewEvent::ErrorText(format!(
                             "[reload] config load failed, keeping old: {e}"
@@ -1963,7 +1973,12 @@ async fn run_worker(
                 // (which the GUI just changed). Result: project settings
                 // from the NEW workspace win.
                 match crate::config::AppConfig::load() {
-                    Ok(new_config) => state.config = new_config,
+                    Ok(new_config) => {
+                        crate::providers::set_stream_chunk_timeout_secs(
+                            new_config.stream_chunk_timeout_secs,
+                        );
+                        state.config = new_config;
+                    }
                     Err(e) => {
                         let _ = events_tx.send(ViewEvent::ErrorText(format!(
                             "[cwd-change] config reload failed, keeping old: {e}"
@@ -2039,6 +2054,35 @@ async fn run_worker(
                     state.config.model,
                     prev_model
                 )));
+            }
+        }
+    }
+
+    // Discard-on-exit for sessions the user never engaged with.
+    // Every thclaws launch mints a fresh session and writes its
+    // header to disk on the first event (`write_header_if_missing`
+    // fires from plan_state::clear's snapshot broadcaster + similar
+    // boot-time events even before the user types anything).
+    // Without this hook, opening + immediately closing the app
+    // leaves behind a JSONL with just a header + a couple of null
+    // plan/goal snapshots — clutter that piles up in the sessions
+    // sidebar and gets auto-loaded as "the most recent session" on
+    // next launch, which is confusing. If the user never sent a
+    // single message AND never gave the session a title, the
+    // session has zero user-meaningful content; delete it
+    // entirely. Errors are logged but non-fatal — orphan empty
+    // session is annoying but not damaging.
+    if state.session.messages.is_empty() && state.session.title.is_none() {
+        if let Some(ref store) = state.session_store {
+            match store.delete(&state.session.id) {
+                Ok(()) => eprintln!(
+                    "\x1b[2m[session] discarded empty session {} on exit\x1b[0m",
+                    state.session.id
+                ),
+                Err(e) => eprintln!(
+                    "\x1b[33m[session] could not discard empty session {}: {e}\x1b[0m",
+                    state.session.id
+                ),
             }
         }
     }

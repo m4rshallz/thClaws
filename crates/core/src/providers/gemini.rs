@@ -394,13 +394,13 @@ impl Provider for GeminiProvider {
 
             loop {
                 let maybe_chunk = tokio::time::timeout(
-                    super::STREAM_CHUNK_TIMEOUT,
+                    super::stream_chunk_timeout(),
                     byte_stream.next(),
                 )
                 .await
                 .map_err(|_| Error::Provider(format!(
                     "stream idle for {}s — provider stopped sending; try again",
-                    super::STREAM_CHUNK_TIMEOUT.as_secs()
+                    super::stream_chunk_timeout().as_secs()
                 )))?;
                 let Some(chunk) = maybe_chunk else { break };
                 let chunk = chunk.map_err(|e| Error::Provider(format!("stream: {e}")))?;

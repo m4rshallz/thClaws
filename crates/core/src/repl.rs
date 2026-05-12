@@ -3458,6 +3458,12 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str, verbose: bool) -> R
 /// Interactive REPL. Reads from stdin via `rustyline`, streams assistant
 /// output live, handles slash commands. Runs until `/quit`, EOF, or Ctrl-C.
 pub async fn run_repl(mut config: AppConfig) -> Result<()> {
+    // Push the configured stream-chunk timeout into the providers'
+    // global atomic. Same hook the GUI/serve worker uses at boot —
+    // ensures CLI users get the configurable timeout too (default
+    // 120s, override via `stream_chunk_timeout_secs` in settings.json).
+    crate::providers::set_stream_chunk_timeout_secs(config.stream_chunk_timeout_secs);
+
     let cwd = std::env::current_dir()?;
     let ctx = ProjectContext::discover(&cwd)?;
     let memory_store = MemoryStore::default_path().map(MemoryStore::new);
@@ -8097,6 +8103,28 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     lead_log!("{COLOR_RESET}\n{COLOR_YELLOW}error: {e}{COLOR_RESET}\n");
                     break;
                 }
+            }
+        }
+    }
+
+    // Discard-on-exit for sessions the user never engaged with —
+    // same rule as the GUI worker (see shared_session.rs near
+    // `SessionEnd` for the rationale). A fresh CLI launch mints a
+    // session whose JSONL header lands on disk on first event;
+    // exiting without a single message leaves an empty file that
+    // shows up in the sidebar / `--resume last` flow as a
+    // confusing ghost entry.
+    if session.messages.is_empty() && session.title.is_none() {
+        if let Some(ref store) = session_store {
+            match store.delete(&session.id) {
+                Ok(()) => eprintln!(
+                    "{COLOR_DIM}[session] discarded empty session {} on exit{COLOR_RESET}",
+                    session.id
+                ),
+                Err(e) => eprintln!(
+                    "{COLOR_YELLOW}[session] could not discard empty session {}: {e}{COLOR_RESET}",
+                    session.id
+                ),
             }
         }
     }
