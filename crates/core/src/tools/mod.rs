@@ -139,6 +139,16 @@ pub struct UiResource {
     pub uri: String,
     pub html: String,
     pub mime: Option<String>,
+    /// When true, the frontend's `McpAppIframe` mounts the widget with
+    /// `sandbox="allow-scripts allow-popups allow-forms allow-same-origin"`
+    /// instead of the default (`allow-same-origin` omitted). MCP-Apps
+    /// widgets from arbitrary servers leave this `false` so the widget
+    /// gets an opaque origin and can't reach back into thClaws state.
+    /// First-party tools that need to load `<script src>` and assets
+    /// from a localhost preview server (e.g. `GamedevPreview`'s game
+    /// iframe) set it `true`; the trust is implicit because the tool
+    /// ships inside the thClaws binary.
+    pub allow_same_origin: bool,
 }
 
 #[derive(Default, Clone)]

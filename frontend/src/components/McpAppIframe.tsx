@@ -81,6 +81,12 @@ type Props = {
   /// the widget after init handshake completes so its `ontoolresult`
   /// fires.
   toolResult: ToolResultContent;
+  /// Add `allow-same-origin` to the iframe sandbox. Opt-in for
+  /// first-party tools that need to load `<script src>` / images
+  /// from a localhost preview server (`GamedevPreview`). Untrusted
+  /// MCP-server widgets leave this `false` so they stay on an opaque
+  /// origin and can't reach back into host state.
+  allowSameOrigin?: boolean;
 };
 
 type JsonRpcMessage = {
@@ -155,6 +161,7 @@ export function McpAppIframe({
   html,
   parentToolName,
   toolResult,
+  allowSameOrigin = false,
 }: Props) {
   const [mode, setMode] = useState<DisplayMode>("inline");
   const [pipRect, setPipRect] = useState<PipRect>(() => loadPipRect(uri));
@@ -557,7 +564,11 @@ export function McpAppIframe({
       // with `allow-same-origin` would defeat the srcdoc origin
       // isolation, so we don't. The widget can still postMessage to
       // the parent and fetch its declared resourceDomains.
-      sandbox="allow-scripts allow-popups allow-forms"
+      sandbox={
+        allowSameOrigin
+          ? "allow-scripts allow-popups allow-forms allow-same-origin"
+          : "allow-scripts allow-popups allow-forms"
+      }
       style={{
         display: "block",
         flex: "1 1 auto",

@@ -75,6 +75,7 @@ pub fn render_chat_dispatches(ev: &ViewEvent) -> Vec<String> {
                     "uri": ui.uri,
                     "html": ui.html,
                     "mime": ui.mime,
+                    "allow_same_origin": ui.allow_same_origin,
                 });
             }
             vec![env.to_string()]
