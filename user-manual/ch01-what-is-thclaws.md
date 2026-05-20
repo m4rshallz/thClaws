@@ -220,14 +220,15 @@ software hire thClaws to do work:
   main's.
 - **Offline-capable.** Ollama (native and Anthropic-compat) lets you run
   entirely against a local model.
-- **Deploy what you build.** thClaws doesn't stop at authoring —
-  ship the landing pages, web apps, APIs, and AI agents you create
-  through [Agentic Press Hosting](https://agentic-press.com)
-  (partnered with SIS Cloud Service and Artech.Cloud) or any other
-  host you prefer. Schedule agents on cron, respond to webhooks,
-  stream from public URLs. The deploy flow ships as a plugin
-  (`/plugin install …-deploy`) so hosts are swappable — the client
-  never locks you in.
+- **Host thClaws anywhere.** Run it locally on your own machine, or
+  deploy it to [thCompany.ai](https://thcompany.ai) so a cloud-hosted
+  thClaws runs under your account — either *hired by a Company* (as
+  employee or freelancer via [Chapter 22](ch22-paperclip-adapter.md))
+  or standing alone to take work directly. The deploy flow ships as a
+  plugin (`/plugin install …-deploy`) so hosts are swappable — the
+  client never locks you in. (Agentic Press Hosting, our partnership
+  with SIS Cloud Service and Artech.Cloud, is staged for a later
+  release.)
 - **Shell escape.** Prefix any REPL line with `!` to run the rest as a
   shell command directly in your terminal — no tokens, no approval
   prompt, no agent round-trip (e.g. `! git status`).

@@ -140,11 +140,13 @@ registry ชุดเดียวกัน — ห้า surface แรกสำ
   ล่าสุด, `thclaws --resume <id>` กระโดดไป session ที่ระบุ session
   เก็บเป็น JSONL ที่ `.thclaws/sessions/` — git-friendly, grep-friendly
   ([บทที่ 7](ch07-sessions.md))
-- **Deploy งานที่สร้างเสร็จได้เลย** — landing page, web app, API และ
-  agent ไปอยู่บน [Agentic Press Hosting](https://agentic-press.com)
-  (ร่วมมือกับ SIS Cloud Service และ Artech.Cloud) ได้ หรือใช้ host
-  อื่นก็ได้ — flow การ deploy มาในรูป plugin host จึงสลับเปลี่ยนได้
-  ไม่มีการล็อก client
+- **Host thClaws ที่ไหนก็ได้** — ใช้บนเครื่องตัวเองได้ หรือ deploy ขึ้น
+  [thCompany.ai](https://thcompany.ai) เพื่อให้ thClaws รันบน cloud
+  ในชื่อของคุณ — จะถูก *Company จ้าง* (เป็น employee / freelancer ผ่าน
+  [บทที่ 22](ch22-paperclip-adapter.md)) หรือยืนเดี่ยวรับงานเองก็ได้
+  flow การ deploy มาในรูป plugin host จึงสลับเปลี่ยนได้ ไม่มีการล็อก
+  client (Agentic Press Hosting ที่ร่วมมือกับ SIS Cloud Service และ
+  Artech.Cloud อยู่ระหว่างเตรียมเปิด)
 - **Shell escape** — ใส่ `!` นำหน้าบรรทัดใน REPL เพื่อรันคำสั่ง shell
   โดยตรง ไม่เสีย token ไม่มี prompt ขออนุมัติ (เช่น `! git status`)
 
