@@ -42,6 +42,11 @@ software hire thClaws to do work:
 
 ## What makes it different
 
+- **Runs on every major platform.** A single native Rust binary runs
+  on macOS (Apple Silicon + Intel), Windows, and Linux. Drop the same
+  binary into a Docker container to deploy on a VPS, cloud, or
+  Kubernetes — one codebase covers everything from a personal laptop
+  to a pod on a cluster.
 - **Multi-provider.** Anthropic (native + Claude Agent SDK via Claude
   Code auth), OpenAI (Chat Completions + Responses/Codex), Google
   Gemini & Gemma, Alibaba DashScope (Qwen), DeepSeek, Z.ai (GLM Coding

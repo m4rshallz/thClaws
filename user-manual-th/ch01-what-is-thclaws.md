@@ -39,6 +39,10 @@ registry ชุดเดียวกัน — ห้า surface แรกสำ
 
 - **native บนเครื่อง คุมข้อมูลเอง** — Rust binary ตัวเดียว ไม่ต้องมี service
   เบื้องหลัง ไม่ต้อง cloud จะรันกับ Ollama แบบ offline ล้วน ๆ ก็ได้
+- **รันได้ทุกแพลตฟอร์ม** — binary ตัวเดียวกันรันบน macOS (Apple Silicon
+  + Intel), Windows, Linux ได้ ใส่ใน Docker container เพื่อ deploy ขึ้น
+  VPS / cloud / Kubernetes ก็ได้ — code ตัวเดียวรองรับตั้งแต่ laptop
+  ส่วนตัวจนถึง pod บน cluster
 - **รองรับหลาย provider อย่างเท่าเทียม** — Anthropic (native + Claude
   Agent SDK), OpenAI (Chat + Responses/Codex), Google Gemini & Gemma,
   Alibaba DashScope (Qwen), DeepSeek, Z.ai (GLM Coding Plan), NVIDIA
