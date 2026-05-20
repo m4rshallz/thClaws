@@ -183,7 +183,7 @@ key ที่ไหนและอย่างไร
 - [บทที่ 20](ch20-research.md) — `/research` (background research)
 
 **เข้าถึงจากที่อื่น**
-- [บทที่ 21](../user-manual/ch21-line-and-browser-chat.md) — LINE chat + browser bridge *(ภาษาอังกฤษ — ฉบับไทยกำลังตามมา)*
+- [บทที่ 21](ch21-line-and-browser-chat.md) — LINE chat + browser bridge
 - [บทที่ 22](ch22-paperclip-adapter.md) — Paperclip adapter (จ้าง thClaws ไปทำงานใน orchestrator)
 
 ถ้าเพิ่งเริ่ม อ่านบทที่ 2 ต่อได้เลย ถ้าย้ายมาจาก Claude Code แนะนำให้
