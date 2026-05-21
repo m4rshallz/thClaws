@@ -65,13 +65,13 @@ pub mod policy;
 pub mod prompts;
 pub mod providers;
 pub mod recent_dirs;
+pub mod remote_agent;
 pub mod repl;
 pub mod research;
 pub mod sandbox;
 pub mod schedule;
 pub mod schedule_presets;
 pub mod sdk_mcp;
-pub mod remote_agent;
 pub mod secrets;
 #[cfg(feature = "gui")]
 pub mod server;

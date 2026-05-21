@@ -805,6 +805,26 @@ pub async fn dispatch(
                 ),
             );
         }
+        SlashCommand::Reload => {
+            emit(
+                events_tx,
+                "[reload] re-executing thclaws — in-memory state will be reset, on-disk sessions survive…".into(),
+            );
+            let events_tx_clone = events_tx.clone();
+            // Hand off to a detached task so the slash dispatcher can
+            // return cleanly and the SlashOutput message reaches the
+            // user before the process image is replaced. exec() on
+            // Unix only returns on error; on success there's nothing
+            // to clean up because we've stopped existing.
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let err = crate::util::reexec_self();
+                let _ = events_tx_clone.send(ViewEvent::SlashOutput(format!(
+                    "[reload] re-exec failed: {err}"
+                )));
+            });
+            return;
+        }
         SlashCommand::Fork => {
             // Flush the current session to disk so the archive reflects
             // everything up to this moment, then build an LLM-summary
@@ -2522,7 +2542,24 @@ pub async fn dispatch(
         }
         SlashCommand::McpRemove { name, user } => {
             match crate::config::remove_mcp_server(&name, user) {
-                Ok((true, p)) => {
+                Ok((true, p, removed_url)) => {
+                    // Also drop the cached OAuth token for the removed
+                    // server's URL. Leaving it behind would let a
+                    // future re-`/mcp add` of the same URL silently
+                    // reuse a token the user thought they'd cleared.
+                    let token_msg = if let Some(url) = removed_url {
+                        let mut store = crate::oauth::TokenStore::load();
+                        let had_token = store.get(&url).is_some();
+                        store.remove(&url);
+                        store.save();
+                        if had_token {
+                            " + cached OAuth token cleared"
+                        } else {
+                            ""
+                        }
+                    } else {
+                        ""
+                    };
                     // We can't cleanly remove just this server's tools
                     // from the live registry (they're interleaved with
                     // other MCP tools by name and we don't track the
@@ -2531,7 +2568,7 @@ pub async fn dispatch(
                     emit(
                         events_tx,
                         format!(
-                            "mcp '{name}' removed from {} (tools active in this session will be dropped on restart)",
+                            "mcp '{name}' removed from {}{token_msg} (tools active in this session will be dropped on restart)",
                             p.display()
                         ),
                     );
@@ -2541,7 +2578,7 @@ pub async fn dispatch(
                     // explicitly removed it.
                     broadcast_mcp_update(events_tx);
                 }
-                Ok((false, p)) => emit(
+                Ok((false, p, _)) => emit(
                     events_tx,
                     format!("no server named '{name}' in {}", p.display()),
                 ),

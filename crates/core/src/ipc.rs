@@ -845,10 +845,7 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             // worker — without this, an edit-and-save cycle in the
             // Settings menu only takes effect on the next session.
             if ok {
-                let _ = ctx
-                    .shared
-                    .input_tx
-                    .send(ShellInput::InstructionsChanged);
+                let _ = ctx.shared.input_tx.send(ShellInput::InstructionsChanged);
             }
             let payload = serde_json::json!({
                 "type": "instructions_save_result",
@@ -1225,6 +1222,92 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                 "enabled": enabled,
             });
             (ctx.dispatch)(payload.to_string());
+        }
+
+        // ── Auto-learn project setting ─────────────────────────────
+        // Exposes `ProjectConfig.auto_learn` as a webui toggle so the
+        // setting isn't desktop-GUI-only. See #105.
+        // ── Mid-turn user input injection (issue #106) ──────────────
+        // Push a user-typed message into the agent's injection queue
+        // while the agent is busy. The agent drains the queue at the
+        // next tool_result boundary inside `run_turn`. Frontend uses
+        // this to let the user "steer" the leader between tool calls
+        // without `/stop`-and-restart.
+        "user_input_inject" => {
+            let text = msg
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let id = msg
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if text.is_empty() {
+                let payload = serde_json::json!({
+                    "type": "user_input_inject_result",
+                    "id": id,
+                    "ok": false,
+                    "error": "empty text",
+                    "pending": 0,
+                });
+                (ctx.dispatch)(payload.to_string());
+                return true;
+            }
+            let pending = {
+                let mut q = ctx
+                    .shared
+                    .injection_queue
+                    .lock()
+                    .expect("injection_queue lock");
+                q.push_back(text);
+                q.len()
+            };
+            let payload = serde_json::json!({
+                "type": "user_input_inject_result",
+                "id": id,
+                "ok": true,
+                "pending": pending,
+            });
+            (ctx.dispatch)(payload.to_string());
+        }
+
+        "auto_learn_get" => {
+            let enabled = crate::config::AppConfig::load()
+                .map(|c| c.auto_learn)
+                .unwrap_or(false);
+            let payload = serde_json::json!({
+                "type": "auto_learn",
+                "enabled": enabled,
+            });
+            (ctx.dispatch)(payload.to_string());
+        }
+
+        "auto_learn_set" => {
+            let enabled = msg
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let mut cfg = crate::config::ProjectConfig::load().unwrap_or_default();
+            cfg.auto_learn = Some(enabled);
+            let (ok, error) = match cfg.save() {
+                Ok(()) => (true, String::new()),
+                Err(e) => (false, e.to_string()),
+            };
+            let payload = serde_json::json!({
+                "type": "auto_learn_result",
+                "enabled": enabled,
+                "ok": ok,
+                "error": error,
+            });
+            (ctx.dispatch)(payload.to_string());
+            // Reload AppConfig so the next session-end ingest /
+            // reconcile pass sees the new value without a restart.
+            let _ = ctx
+                .shared
+                .input_tx
+                .send(crate::shared_session::ShellInput::ReloadConfig);
         }
 
         "openrouter_free_only_set" => {

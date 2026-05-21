@@ -96,8 +96,12 @@ fn parse_query(q: Option<&str>) -> HashMap<String, String> {
             continue;
         }
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        let k = urlencoding::decode(k).map(|c| c.into_owned()).unwrap_or_else(|_| k.to_string());
-        let v = urlencoding::decode(v).map(|c| c.into_owned()).unwrap_or_else(|_| v.to_string());
+        let k = urlencoding::decode(k)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| k.to_string());
+        let v = urlencoding::decode(v)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| v.to_string());
         out.insert(k, v);
     }
     out

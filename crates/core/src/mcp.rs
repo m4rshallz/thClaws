@@ -1399,7 +1399,10 @@ pub enum ReauthOutcome {
     /// owner must click in their laptop browser. After they consent
     /// the provider's redirect lands on `/v1/oauth/callback` and the
     /// token writes itself; no further user action in thClaws.
-    Pending { auth_url: String, server_name: String },
+    Pending {
+        auth_url: String,
+        server_name: String,
+    },
 }
 
 /// Re-authorize the MCP server named `name`. Looks up the URL from
@@ -1416,11 +1419,15 @@ pub async fn reauth_server(
     base_url_override: Option<&str>,
 ) -> crate::error::Result<ReauthOutcome> {
     let config = crate::config::AppConfig::load()?;
-    let server = config.mcp_servers.iter().find(|s| s.name == name).ok_or_else(|| {
-        crate::error::Error::Config(format!(
-            "no MCP server named '{name}' in mcp.json (try /mcp to list)"
-        ))
-    })?;
+    let server = config
+        .mcp_servers
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| {
+            crate::error::Error::Config(format!(
+                "no MCP server named '{name}' in mcp.json (try /mcp to list)"
+            ))
+        })?;
     if !server.transport.eq_ignore_ascii_case("http") {
         return Err(crate::error::Error::Config(format!(
             "server '{name}' has transport '{}' — /mcp reauth only applies to HTTP servers (OAuth)",

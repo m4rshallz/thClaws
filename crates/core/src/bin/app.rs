@@ -314,17 +314,15 @@ async fn main() {
             full,
             no_restart,
         }) => {
-            let code = thclaws_core::deploy_client::run(
-                thclaws_core::deploy_client::DeployArgs {
-                    pod,
-                    token,
-                    include_memory,
-                    allow_stdio_mcp,
-                    dry_run,
-                    full,
-                    restart: !no_restart,
-                },
-            )
+            let code = thclaws_core::deploy_client::run(thclaws_core::deploy_client::DeployArgs {
+                pod,
+                token,
+                include_memory,
+                allow_stdio_mcp,
+                dry_run,
+                full,
+                restart: !no_restart,
+            })
             .await;
             std::process::exit(code);
         }

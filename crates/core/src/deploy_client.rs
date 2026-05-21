@@ -90,7 +90,10 @@ where
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => {
-            sink(&format!("[deploy] cannot resolve current dir: {e}"), DeployLog::Error);
+            sink(
+                &format!("[deploy] cannot resolve current dir: {e}"),
+                DeployLog::Error,
+            );
             return 1;
         }
     };
@@ -196,7 +199,10 @@ where
             DeployLog::Info,
         );
         for (path, meta) in &candidates {
-            sink(&format!("  {} ({} bytes)", path, meta.size), DeployLog::Info);
+            sink(
+                &format!("  {} ({} bytes)", path, meta.size),
+                DeployLog::Info,
+            );
         }
         return 0;
     }
@@ -220,7 +226,10 @@ where
     {
         Ok(c) => c,
         Err(e) => {
-            sink(&format!("[deploy] reqwest build failed: {e}"), DeployLog::Error);
+            sink(
+                &format!("[deploy] reqwest build failed: {e}"),
+                DeployLog::Error,
+            );
             return 1;
         }
     };
@@ -307,7 +316,10 @@ where
     let text = match resp.text().await {
         Ok(t) => t,
         Err(e) => {
-            sink(&format!("[deploy] read SSE body failed: {e}"), DeployLog::Error);
+            sink(
+                &format!("[deploy] read SSE body failed: {e}"),
+                DeployLog::Error,
+            );
             return 1;
         }
     };
@@ -337,11 +349,7 @@ where
     sink("[deploy] requesting pod restart...", DeployLog::Info);
 
     let restart_url = format!("{}/v1/restart", pod_url.trim_end_matches('/'));
-    let resp = client
-        .post(&restart_url)
-        .bearer_auth(token)
-        .send()
-        .await;
+    let resp = client.post(&restart_url).bearer_auth(token).send().await;
     match resp {
         Ok(r) if r.status().is_success() => {}
         Ok(r) => {
@@ -484,11 +492,7 @@ fn collect_files(
 /// server enforces a strict allow-list of names under this prefix.
 pub const ROOT_PREFIX: &str = "__root__";
 
-fn insert_file(
-    out: &mut BTreeMap<String, FileMeta>,
-    rel: &str,
-    abs: &Path,
-) -> std::io::Result<()> {
+fn insert_file(out: &mut BTreeMap<String, FileMeta>, rel: &str, abs: &Path) -> std::io::Result<()> {
     let bytes = std::fs::read(abs)?;
     let mut h = Sha256::new();
     h.update(&bytes);

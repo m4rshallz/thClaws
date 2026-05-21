@@ -284,6 +284,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         <div className="flex flex-col gap-3">
           <GatewaySettingsSection />
           <DeployTargetSection />
+          <AutoLearnSection />
 
           {llmEntries.map(([provider, row]) =>
             renderProviderCard(
@@ -969,6 +970,82 @@ function DeployTargetSection() {
           title="Clear stored token"
         />
       </div>
+      <FlashLine flash={flash} />
+    </div>
+  );
+}
+
+/// Project-scope toggle for `auto_learn` (dev-plan/27). The setting
+/// drives session-end ingestion into the project's KMS plus the
+/// throttled reconcile pass. Reading via `auto_learn_get` returns
+/// the effective AppConfig value (project overlay wins over user
+/// settings); writing via `auto_learn_set` updates the project's
+/// `.thclaws/settings.json`. The shell reloads its AppConfig
+/// immediately so the next session-end pass sees the new state
+/// without a restart.
+function AutoLearnSection() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [flash, setFlash] = useState<{ ok: boolean; msg: string } | undefined>(undefined);
+
+  useEffect(() => {
+    const unsub = subscribe((msg) => {
+      if (msg.type === "auto_learn") {
+        setEnabled(Boolean((msg as { enabled?: boolean }).enabled));
+      } else if (msg.type === "auto_learn_result") {
+        const r = msg as { ok?: boolean; error?: string; enabled?: boolean };
+        if (r.ok === false) {
+          setFlash({ ok: false, msg: r.error ?? "failed" });
+        } else {
+          setEnabled(Boolean(r.enabled));
+          setFlash({ ok: true, msg: r.enabled ? "auto-learn enabled" : "auto-learn disabled" });
+          setTimeout(() => setFlash(undefined), 2500);
+        }
+      }
+    });
+    send({ type: "auto_learn_get" });
+    return unsub;
+  }, []);
+
+  const onToggle = (next: boolean) => {
+    // Optimistic update — the `auto_learn_result` reply will
+    // overwrite this with the canonical value if the save failed.
+    setEnabled(next);
+    send({ type: "auto_learn_set", enabled: next });
+  };
+
+  return (
+    <div
+      className="rounded p-3"
+      style={{ background: "var(--bg-tertiary)", border: "1px solid var(--border)" }}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+          Auto-learn
+        </span>
+        <span className="text-[10px]" style={{ color: "var(--text-secondary)" }}>
+          project-scope · saved to .thclaws/settings.json
+        </span>
+      </div>
+      <p className="text-xs mb-2" style={{ color: "var(--text-secondary)" }}>
+        At the end of each session, ingest the conversation into the project's KMS
+        (one page per session) and reconcile the index periodically. The model
+        can search and cite prior sessions on later turns. Token cost applies on
+        ingest + reconcile.
+      </p>
+      <label
+        className="flex items-center gap-2 text-xs select-none cursor-pointer"
+        style={{ color: "var(--text-primary)" }}
+      >
+        <input
+          type="checkbox"
+          checked={enabled === true}
+          disabled={enabled === null}
+          onChange={(e) => onToggle(e.target.checked)}
+        />
+        <span>
+          Enable auto-learn for this project
+        </span>
+      </label>
       <FlashLine flash={flash} />
     </div>
   );

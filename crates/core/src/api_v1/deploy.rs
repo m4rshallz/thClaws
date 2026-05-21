@@ -163,10 +163,7 @@ pub async fn deploy_manifest(
 /// Pruning: `.thclaws.prev-*` directories older than 7 days are best-
 /// effort-deleted after the swap. Not configurable here (kept simple
 /// for Phase 1 — bump to a config knob if the default isn't right).
-pub async fn deploy_files(
-    _auth: AuthOk,
-    body: Bytes,
-) -> Result<Response, Response> {
+pub async fn deploy_files(_auth: AuthOk, body: Bytes) -> Result<Response, Response> {
     if body.len() > MAX_DEPLOY_BYTES {
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -268,7 +265,9 @@ pub async fn deploy_files(
         yield ok_event("done", json!({ "ok": true }));
     };
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::new()).into_response())
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::new())
+        .into_response())
 }
 
 // ── extract + swap helpers ────────────────────────────────────────────
@@ -371,11 +370,7 @@ fn extract_tar_blocking(body: &[u8], dest: &Path) -> std::io::Result<ExtractStat
 /// Resolve a client-supplied relative path to its on-pod absolute
 /// destination. `__root__/<NAME>` → `<workspace>/<NAME>` (with name in
 /// [`PROJECT_ROOT_ALLOWED`]); everything else → `<workspace>/.thclaws/<path>`.
-fn resolve_entry_path(
-    workspace: &Path,
-    thclaws_root: &Path,
-    rel: &str,
-) -> Result<PathBuf, String> {
+fn resolve_entry_path(workspace: &Path, thclaws_root: &Path, rel: &str) -> Result<PathBuf, String> {
     if let Some(stripped) = rel.strip_prefix(&format!("{ROOT_PREFIX}/")) {
         if stripped.contains('/') || !PROJECT_ROOT_ALLOWED.contains(&stripped) {
             return Err(format!(
@@ -492,7 +487,11 @@ pub async fn restart(_auth: AuthOk) -> Response {
         eprintln!("[restart] /v1/restart received — exiting process");
         std::process::exit(0);
     });
-    (StatusCode::OK, Json(json!({ "restarting": true, "delay_secs": 1 }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({ "restarting": true, "delay_secs": 1 })),
+    )
+        .into_response()
 }
 
 // ── small helpers ─────────────────────────────────────────────────────

@@ -355,6 +355,13 @@ pub enum SlashCommand {
     /// session's on-disk JSONL has grown past the working threshold
     /// and continuing in-place would keep bloating the file.
     Fork,
+    /// `/reload` — re-execute the current thclaws binary in place.
+    /// Drops in-memory state (MCP handles, system prompt, skill
+    /// caches, current chat) and starts fresh; on-disk sessions
+    /// survive so the user can resume. Works the same on pod
+    /// (--serve) and laptop (GUI/CLI). For a real container restart
+    /// that picks up a new image, use `/deploy --restart` instead.
+    Reload,
     Doctor,
     Skills,
     /// Org-policy SSO subcommands (Phase 4).
@@ -1328,6 +1335,7 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "thinking" => SlashCommand::Thinking(args.to_string()),
         "compact" => SlashCommand::Compact,
         "fork" => SlashCommand::Fork,
+        "reload" | "restart" => SlashCommand::Reload,
         "doctor" | "diag" => SlashCommand::Doctor,
         "sso" => match args.trim() {
             "" | "status" => SlashCommand::Sso {
@@ -2877,6 +2885,7 @@ pub fn built_in_commands() -> &'static [BuiltInCommand] {
         BuiltInCommand { name: "clear",    description: "Clear conversation history",                 category: "Session", usage: "" },
         BuiltInCommand { name: "compact",  description: "Compact history (drop oldest, keep recent)", category: "Session", usage: "" },
         BuiltInCommand { name: "fork",     description: "Save + start a new session seeded with a summary", category: "Session", usage: "" },
+        BuiltInCommand { name: "reload",   description: "Re-exec thclaws (re-init MCP / system prompt; sessions survive)", category: "Session", usage: "" },
         BuiltInCommand { name: "save",     description: "Force-save the current session",             category: "Session", usage: "" },
         BuiltInCommand { name: "load",     description: "Load a saved session by id or name",         category: "Session", usage: "ID|NAME" },
         BuiltInCommand { name: "sessions", description: "List saved sessions",                        category: "Session", usage: "" },
@@ -3567,23 +3576,15 @@ pub async fn build_provider_with_fallback(
     }
     let original = config.model.clone();
 
-    // 2. Walk a preference list. Cloud providers only succeed when a
-    //    matching key exists (shell export > keychain > .env). Ollama
-    //    variants always *build* successfully, so we probe the endpoint
-    //    before offering them as a fallback — otherwise a user with no
-    //    keys AND no local Ollama gets a noisy "model not found" loop
-    //    on the first prompt.
+    // 2. Walk a free-fallback list ONLY. Paid providers are
+    //    deliberately excluded: silently swapping a user's
+    //    openrouter (or other) configuration to Anthropic when a
+    //    transient build failure happens has caused real bill
+    //    surprises. Ollama variants always *build* successfully so
+    //    we probe the daemon before offering them — otherwise a
+    //    user with no key AND no local Ollama gets a noisy
+    //    "model not found" loop on the first prompt.
     let fallback_order: &[ProviderKind] = &[
-        ProviderKind::Anthropic,
-        ProviderKind::OpenAI,
-        ProviderKind::AgenticPress,
-        ProviderKind::OpenRouter,
-        ProviderKind::Gemini,
-        ProviderKind::DashScope,
-        ProviderKind::QwenCloud,
-        ProviderKind::ZAi,
-        ProviderKind::ThaiLLM,
-        ProviderKind::OpenCodeGo,
         ProviderKind::Ollama,
         ProviderKind::OllamaAnthropic,
         ProviderKind::OllamaCloud,
@@ -3597,7 +3598,7 @@ pub async fn build_provider_with_fallback(
         config.model = kind.default_model().to_string();
         if let Ok(p) = build_provider(config) {
             let warning = format!(
-                "no API key for {} — falling back to {} (model: {})",
+                "{} couldn't be built — falling back to local {} (model: {}). Fix the credential or run `/model <provider>/<model>` to switch.",
                 ProviderKind::detect(&original)
                     .map(|k| k.name())
                     .unwrap_or("<unknown>"),
@@ -3608,12 +3609,15 @@ pub async fn build_provider_with_fallback(
         }
     }
 
-    // 3. Nothing works — restore the original model so the rest of the
-    //    REPL still shows what the user had configured, and let the
-    //    caller degrade gracefully.
+    // 3. Nothing free works — restore the original model so the
+    //    user's settings.json is untouched and let the caller
+    //    degrade gracefully. No silent swap to a paid provider.
     config.model = original;
     (None, Some(
-        "no usable LLM provider — set an API key via Settings → Provider API keys, or start Ollama (see Chapter 2)".into(),
+        format!(
+            "no usable LLM provider for `{}` and no local fallback (Ollama / LMStudio) reachable. Set an API key via Settings → Provider API keys, run `/model <provider>/<model>` to switch, or start a local runtime (see Chapter 2).",
+            config.model
+        ),
     ))
 }
 
@@ -6343,13 +6347,26 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 }
                 SlashCommand::McpRemove { name, user } => {
                     match crate::config::remove_mcp_server(&name, user) {
-                        Ok((true, path)) => {
+                        Ok((true, path, removed_url)) => {
+                            let token_msg = if let Some(url) = removed_url {
+                                let mut store = crate::oauth::TokenStore::load();
+                                let had_token = store.get(&url).is_some();
+                                store.remove(&url);
+                                store.save();
+                                if had_token {
+                                    " + cached OAuth token cleared"
+                                } else {
+                                    ""
+                                }
+                            } else {
+                                ""
+                            };
                             println!(
-                                "{COLOR_DIM}mcp '{name}' removed from {} (restart to drop active tools){COLOR_RESET}",
+                                "{COLOR_DIM}mcp '{name}' removed from {}{token_msg} (restart to drop active tools){COLOR_RESET}",
                                 path.display()
                             );
                         }
-                        Ok((false, path)) => {
+                        Ok((false, path, _)) => {
                             println!(
                                 "{COLOR_YELLOW}no server named '{name}' in {}{COLOR_RESET}",
                                 path.display()
@@ -6418,6 +6435,17 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         history.len(),
                         compacted.len()
                     );
+                }
+                SlashCommand::Reload => {
+                    println!(
+                        "{COLOR_DIM}[reload] re-executing thclaws — in-memory state will be reset, on-disk sessions survive…{COLOR_RESET}"
+                    );
+                    // Best-effort flush of stdout before exec() vanishes the
+                    // process. On Unix exec() only returns on failure.
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    let err = crate::util::reexec_self();
+                    println!("{COLOR_YELLOW}[reload] re-exec failed: {err}{COLOR_RESET}");
                 }
                 SlashCommand::Fork => {
                     // Save → build LLM summary → seed a fresh session
@@ -8578,6 +8606,13 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
             let Some(ev) = ev else { break };
             match ev {
                 Ok(AgentEvent::IterationStart { .. }) => {}
+                Ok(AgentEvent::UserMessageInjected { text }) => {
+                    // Mid-turn user message landed at the tool_result
+                    // boundary (issue #106). Surface inline so the
+                    // CLI user sees their steering was applied.
+                    println!("\n{COLOR_DIM}[injected mid-turn]{COLOR_RESET} {text}");
+                    let _ = std::io::stdout().flush();
+                }
                 Ok(AgentEvent::Text(s)) => {
                     if last_was_thinking {
                         println!();
