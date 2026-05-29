@@ -23,7 +23,7 @@ A native-Rust AI agent workspace that codes, automates, remembers, and coordinat
 
 ## ✨ New in v0.23 — dynamic workflows
 
-**Claude writes the code. Boa runs the workers.**
+**LLM writes the code. Boa runs the workers.**
 
 `/workflow run <prompt>` lets the model author a small JavaScript orchestration script that fans your task out across as many parallel subagents as it needs. You review the script before it executes — then thClaws runs it deterministically inside a sandboxed Boa engine. Cancel, resume, set time/token budgets, validate worker output against a JSON schema, all from one line.
 
@@ -36,7 +36,7 @@ A native-Rust AI agent workspace that codes, automates, remembers, and coordinat
 </div>
 
 ```js
-// claude wrote this
+// llm wrote this
 const files = await thclaws.subagent({
   prompt: "list all .ts files in src/",
 });
