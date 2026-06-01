@@ -44,6 +44,10 @@ clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
 sha2 = "0.10"
 tar = "0.4"
+# Gzip codec for the thClaws.cloud agent package format (dev-plan/34).
+# `tar` alone produces uncompressed archives; pairing with flate2 gives
+# us `.tar.gz` for catalog upload/download.
+flate2 = "1"
 walkdir = "2"
 getrandom = "0.2"
 shell-words = "1"

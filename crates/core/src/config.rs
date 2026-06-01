@@ -563,6 +563,48 @@ pub struct ProjectConfig {
     /// `~/.config/thclaws/telegram.json` is the GUI's source of truth;
     /// this project layer is read at load for headless / shipped setups.
     pub telegram: Option<crate::telegram::TelegramConfig>,
+    /// thClaws.cloud catalog client binding (dev-plan/34). When set,
+    /// `thclaws cloud {login, publish, get, list}` talks to this URL
+    /// instead of the public `https://thclaws.cloud` default. Override
+    /// at runtime with `--cloud-url` or `THCLAWS_CLOUD_URL`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<crate::cloud::CloudConfig>,
+    /// Agent identity (dev-plan/34 Option A). This folder's
+    /// authoritative `{id, name, description, uuid}`. The UUID is
+    /// server-assigned on first `cloud publish` and written back here so
+    /// subsequent publishes update the same catalog entry. The engine
+    /// surfaces `agent.name` in the GUI title bar / CLI prompt so the
+    /// user always knows which agent they're running.
+    ///
+    /// Identity moved out of `manifest.json` to a single source of
+    /// truth — `manifest.json` keeps version, pricing, requires,
+    /// permissions, etc. CLI fuses both at publish time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentConfig>,
+}
+
+/// On-disk shape of the `agent` block in `./.thclaws/settings.json`.
+/// See [`crate::config::ProjectConfig::agent`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// URL-safe slug used as the catalog path component
+    /// (`/a/<id>` on thclaws.cloud) and as the folder's stable name.
+    /// User-chosen; lowercase letters/digits/hyphens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Display name shown in the catalog grid + GUI title bar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Short pitch (≤500 chars). Shown on the agent detail page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Server-assigned UUID. Empty/absent on a fresh local agent.
+    /// `cloud publish` populates it from the server's response and
+    /// reads it on subsequent publishes to identify the same agent
+    /// (even if the folder is renamed). `cloud unbind` clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
 }
 
 fn null_team_enabled_is_false<'de, D>(d: D) -> std::result::Result<Option<bool>, D::Error>
@@ -600,6 +642,8 @@ impl Default for ProjectConfig {
             gateway_use_for: None,
             remote_agent_url: None,
             telegram: None,
+            cloud: None,
+            agent: None,
         }
     }
 }
@@ -833,6 +877,57 @@ impl ProjectConfig {
     /// [`crate::secrets`]) for the bearer token.
     pub fn set_remote_agent_url(&mut self, url: Option<&str>) {
         self.remote_agent_url = url.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    }
+
+    /// Merge an [`AgentConfig`] block into project settings. Fields
+    /// passed as `Some` overwrite; `None` leaves existing values
+    /// untouched (so a partial update — e.g. just `uuid` — preserves
+    /// name/description).
+    pub fn merge_agent(&mut self, updates: AgentConfig) {
+        let mut current = self.agent.clone().unwrap_or_default();
+        if updates.id.is_some() {
+            current.id = updates.id;
+        }
+        if updates.name.is_some() {
+            current.name = updates.name;
+        }
+        if updates.description.is_some() {
+            current.description = updates.description;
+        }
+        if updates.uuid.is_some() {
+            current.uuid = updates.uuid;
+        }
+        let empty = current.id.is_none()
+            && current.name.is_none()
+            && current.description.is_none()
+            && current.uuid.is_none();
+        self.agent = if empty { None } else { Some(current) };
+    }
+
+    /// Drop just the server-assigned UUID — used by `cloud unbind`
+    /// when the user wants to fork a copy into a fresh catalog entry.
+    /// Leaves id / name / description in place.
+    pub fn clear_agent_uuid(&mut self) {
+        if let Some(agent) = self.agent.as_mut() {
+            agent.uuid = None;
+        }
+    }
+
+    /// Persist the thClaws.cloud catalog URL (dev-plan/34). Pair with
+    /// the `cloud-token` keychain entry (managed by [`crate::cloud`])
+    /// for the bearer token.
+    pub fn set_cloud_url(&mut self, url: Option<&str>) {
+        let normalized = url
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty());
+        self.cloud = match (self.cloud.take(), normalized) {
+            (Some(mut existing), v) => {
+                existing.url = v;
+                Some(existing)
+            }
+            (None, Some(v)) => Some(crate::cloud::CloudConfig { url: Some(v) }),
+            (None, None) => None,
+        };
     }
 
     /// Persist the GUI zoom factor. Clamped to a sane range so a

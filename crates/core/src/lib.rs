@@ -21,6 +21,11 @@ pub mod auto_learn;
 pub mod branding;
 pub mod cancel;
 mod cli_completer;
+/// thClaws.cloud catalog client — login/publish/get/list against the
+/// catalog backend at `thclaws.cloud`. See `dev-plan/34`. An "AI Agent"
+/// in thClaws is a working folder; this module wraps the tar/upload/
+/// download mechanics for shipping that folder to/from the catalog.
+pub mod cloud;
 /// ChatGPT/Codex OAuth token model (ported from themion).
 pub mod codex_auth;
 /// ChatGPT/Codex auth file persistence under `~/.config/thclaws/auth/`.

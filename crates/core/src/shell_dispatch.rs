@@ -12,7 +12,7 @@
 
 #![cfg(feature = "gui")]
 
-use crate::repl::{default_model_for_provider, parse_slash, render_help, SlashCommand};
+use crate::repl::{default_model_for_provider, parse_slash, render_help, CloudSlash, SlashCommand};
 use crate::session::Session;
 use crate::shared_session::{
     build_session_list, save_history, DisplayMessage, ViewEvent, WorkerState,
@@ -3271,6 +3271,24 @@ pub async fn dispatch(
                 let _ = events_tx_clone.send(ViewEvent::SlashOutput(format!(
                     "[deploy] finished (exit code {code})"
                 )));
+            });
+        }
+        SlashCommand::Cloud(sub) => {
+            let cloud_cfg = crate::config::ProjectConfig::load().and_then(|c| c.cloud.clone());
+            let events_tx_clone = events_tx.clone();
+            tokio::spawn(async move {
+                let lines = match sub {
+                    CloudSlash::Status => crate::cloud::cmd::status_lines(None, cloud_cfg.as_ref()),
+                    CloudSlash::List { mine } => {
+                        crate::cloud::cmd::list_lines(mine, None, cloud_cfg.as_ref()).await
+                    }
+                    CloudSlash::Get { slug } => {
+                        crate::cloud::cmd::get_into_cwd_lines(slug, None, cloud_cfg.as_ref()).await
+                    }
+                };
+                for line in lines {
+                    let _ = events_tx_clone.send(ViewEvent::SlashOutput(line));
+                }
             });
         }
         SlashCommand::WorkflowRun(prompt) => {

@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Check, Copy, Paperclip } from "lucide-react";
-import { send, subscribe } from "../hooks/useIPC";
+import { basePath, send, subscribe } from "../hooks/useIPC";
 import { useTheme } from "../hooks/useTheme";
 import { useVersion } from "../hooks/useVersion";
 import logoDark from "../assets/thClaws-logo-dark.png";
@@ -318,7 +318,7 @@ export function ChatView({ active, modalOpen }: Props) {
     }
     setUploading(true);
     try {
-      const resp = await fetch("/upload", { method: "POST", body: form });
+      const resp = await fetch(`${basePath()}upload`, { method: "POST", body: form });
       if (!resp.ok) {
         const detail = await resp.text().catch(() => "");
         showAttachmentError(`Upload failed (${resp.status}) ${detail}`);

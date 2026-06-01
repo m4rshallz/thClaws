@@ -749,7 +749,25 @@ pub enum SlashCommand {
     /// its persisted script. Completed workers come from state.jsonl;
     /// only the calls past the resume point spawn fresh.
     WorkflowResume(String),
+    /// dev-plan/34: thClaws.cloud catalog. URL + token live in
+    /// Settings → thClaws.cloud (or `~/.config/thclaws/settings.json`).
+    /// `/cloud list` → browse the catalog; `/cloud status` → show
+    /// resolved URL + whether a token is stored.
+    Cloud(CloudSlash),
     Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudSlash {
+    /// `/cloud list [--mine]` — list catalog agents.
+    List { mine: bool },
+    /// `/cloud status` — show resolved URL + whether a token is stored.
+    Status,
+    /// `/cloud get <slug>` — install/update the given agent into cwd.
+    /// Empty cwd → fresh extract. Non-empty cwd + matching agent UUID
+    /// → safe overwrite. Non-empty cwd + mismatching/missing UUID →
+    /// abort. CLI `--force` bypass not exposed at the slash surface.
+    Get { slug: String },
 }
 
 /// Subcommands of `/sso`. `/sso` with no arg defaults to `Status`.
@@ -1668,6 +1686,7 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "agent" => parse_agent_subcommand(args),
         "agents" => SlashCommand::AgentsList,
         "deploy" => parse_deploy_subcommand(args),
+        "cloud" => parse_cloud_subcommand(args),
         "dream" => {
             // Parse `--all` flag (order-insensitive). Anything else is
             // the focus topic. `/dream auth --all` and `/dream --all
@@ -1705,6 +1724,36 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         }
         _ => SlashCommand::Unknown(cmd.to_string()),
     })
+}
+
+/// Parse `/cloud <subcommand>` — `list [--mine]` / `status`. URL +
+/// token come from settings.json::cloud.url + the secrets backend, both
+/// editable via Settings → thClaws.cloud or the CLI's `cloud login`.
+fn parse_cloud_subcommand(args: &str) -> SlashCommand {
+    let trimmed = args.trim();
+    let (sub, rest) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
+    match sub {
+        "" | "status" => SlashCommand::Cloud(CloudSlash::Status),
+        "list" => {
+            let mine = rest.split_whitespace().any(|t| t == "--mine");
+            SlashCommand::Cloud(CloudSlash::List { mine })
+        }
+        "get" => {
+            let slug = rest.split_whitespace().next().unwrap_or("").to_string();
+            if slug.is_empty() {
+                SlashCommand::Unknown(
+                    "usage: /cloud get <slug>   (installs/updates the agent into cwd)".into(),
+                )
+            } else {
+                SlashCommand::Cloud(CloudSlash::Get { slug })
+            }
+        }
+        other => SlashCommand::Unknown(format!(
+            "unknown cloud subcommand: '{other}' (try: /cloud list, /cloud get <slug>, /cloud status)"
+        )),
+    }
 }
 
 /// Parse `/deploy [--pod URL] [--token TOKEN] [--dry-run] [--full]
@@ -3222,6 +3271,9 @@ pub fn built_in_commands() -> &'static [BuiltInCommand] {
         // Deploy
         BuiltInCommand { name: "deploy",   description: "Ship .thclaws/ to a remote pod (dev-plan/28)", category: "Deploy", usage: "[--pod URL] [--token T] [--dry-run] [--full] [--no-restart]" },
 
+        // Cloud (dev-plan/34)
+        BuiltInCommand { name: "cloud",    description: "thClaws.cloud catalog — list / get / status (dev-plan/34)", category: "Cloud", usage: "list [--mine] | get <slug> | status" },
+
         // Learn
         BuiltInCommand { name: "quiz",     description: "Generate & play a study quiz from a URL, file, or topic", category: "Learn", usage: "<topic|url|file>" },
 
@@ -3472,7 +3524,15 @@ pub fn render_help() -> &'static str {
      /translate PROMPT    Alias for /agent translator PROMPT (GUI-only).\n  \
      \x20                   Runs the built-in translator subagent in the\n  \
      \x20                   background. Override its model via settings.json\n  \
-     \x20                   `translator_subagent_model`.\n\n  \
+     \x20                   `translator_subagent_model`.\n  \
+     /cloud list [--mine] Browse thClaws.cloud catalog (dev-plan/34).\n  \
+     /cloud get <slug>    Install or update an agent into the current\n  \
+     \x20                   folder. Empty folder → fresh install.\n  \
+     \x20                   Matching UUID → safe update. Mismatched\n  \
+     \x20                   UUID or no agent block → abort.\n  \
+     /cloud status        Show the configured catalog URL + whether a\n  \
+     \x20                   CLI token is stored. Configure both via\n  \
+     \x20                   Settings → thClaws.cloud or `cloud login`.\n\n  \
      ! <command>       Run a shell command directly (e.g. ! git status)"
 }
 
@@ -9300,6 +9360,35 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         restart,
                     };
                     let _ = crate::deploy_client::run(args).await;
+                }
+                SlashCommand::Cloud(sub) => {
+                    let cloud_cfg = crate::config::ProjectConfig::load()
+                        .and_then(|c| c.cloud.clone());
+                    match sub {
+                        CloudSlash::Status => {
+                            for line in crate::cloud::cmd::status_lines(None, cloud_cfg.as_ref()) {
+                                println!("{line}");
+                            }
+                        }
+                        CloudSlash::List { mine } => {
+                            for line in
+                                crate::cloud::cmd::list_lines(mine, None, cloud_cfg.as_ref()).await
+                            {
+                                println!("{line}");
+                            }
+                        }
+                        CloudSlash::Get { slug } => {
+                            for line in crate::cloud::cmd::get_into_cwd_lines(
+                                slug,
+                                None,
+                                cloud_cfg.as_ref(),
+                            )
+                            .await
+                            {
+                                println!("{line}");
+                            }
+                        }
+                    }
                 }
                 SlashCommand::WorkflowRun(prompt) => {
                     let prompt = prompt.trim();

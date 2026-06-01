@@ -292,6 +292,76 @@ enum Command {
         #[command(subcommand)]
         cmd: MessengerCmd,
     },
+    /// thClaws.cloud catalog client (dev-plan/34) — browse, publish, and
+    /// install folder-shaped AI Agents.
+    ///
+    /// An "AI Agent" in thClaws is a working folder (AGENTS.md +
+    /// ./.thclaws/ + workspace files). These subcommands let you tar
+    /// such a folder and publish it to the catalog (`publish`), pull a
+    /// catalog folder onto your machine (`get`), browse what you've
+    /// purchased/published (`list`), or sign in (`login`).
+    Cloud {
+        #[command(subcommand)]
+        cmd: CloudCmd,
+        /// Override the catalog URL for this invocation. Usually
+        /// unnecessary — the URL is persisted to settings.json on
+        /// first `cloud login` (or from the GUI Settings → thClaws.cloud
+        /// panel). Precedence: this flag > `THCLAWS_CLOUD_URL` env >
+        /// `settings.json::cloud.url` > default `https://thclaws.cloud`.
+        #[arg(long, global = true, value_name = "URL")]
+        cloud_url: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CloudCmd {
+    /// Sign in by pasting a CLI token from the web dashboard.
+    /// (Go to /dashboard → "Mint CLI token" → copy → paste here.)
+    Login {
+        /// Provide the token inline instead of prompting.
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Forget the cached CLI token.
+    Logout,
+    /// Tar the agent folder (default: cwd), strip secrets/sessions,
+    /// upload to the catalog as a new version.
+    Publish {
+        /// Path to the agent folder. Defaults to cwd.
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
+        /// Show what would be uploaded without sending.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Download an agent from the catalog and extract into a target dir.
+    Get {
+        /// Catalog slug (`manifest.id`).
+        slug: String,
+        /// Target directory. Defaults to ./<slug>/. Refuses to overwrite
+        /// non-empty dirs unless --force.
+        #[arg(default_value = "")]
+        target: String,
+        /// Specific version to download. Defaults to latest.
+        #[arg(long)]
+        version: Option<String>,
+        /// Allow extracting into a non-empty directory.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List agents from the catalog. With --mine, lists agents you
+    /// have published.
+    List {
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Print the resolved catalog URL + whether a CLI token is stored.
+    /// Mirrors what the GUI Settings → Cloud panel shows.
+    Status,
+    /// Clear `./.thclaws/settings.json::agent.uuid` so the next publish
+    /// from this folder creates a fresh catalog entry instead of
+    /// updating the bound one. Use when forking a downloaded agent.
+    Unbind,
 }
 
 #[derive(Subcommand)]
@@ -565,6 +635,10 @@ async fn main() {
         }
         Some(Command::Messenger { cmd }) => {
             let code = run_messenger_subcommand(cmd);
+            std::process::exit(code);
+        }
+        Some(Command::Cloud { cmd, cloud_url }) => {
+            let code = run_cloud_subcommand(cmd, cloud_url).await;
             std::process::exit(code);
         }
         None => {}
@@ -942,6 +1016,55 @@ fn run_messenger_subcommand(cmd: MessengerCmd) -> i32 {
                  Run `thclaws messenger status` to confirm the binding is detected."
             );
             0
+        }
+    }
+}
+
+async fn run_cloud_subcommand(cmd: CloudCmd, cloud_url: Option<String>) -> i32 {
+    use thclaws_core::cloud::cmd as cloud_cmd;
+
+    let cloud_cfg = thclaws_core::config::ProjectConfig::load().and_then(|c| c.cloud.clone());
+    let url_override = cloud_url.as_deref();
+
+    let result = match cmd {
+        CloudCmd::Login { token } => {
+            cloud_cmd::login(url_override, token, cloud_cfg.as_ref()).await
+        }
+        CloudCmd::Logout => cloud_cmd::logout(),
+        CloudCmd::Publish { path, dry_run } => {
+            cloud_cmd::publish(path, url_override, dry_run, cloud_cfg.as_ref()).await
+        }
+        CloudCmd::Get {
+            slug,
+            target,
+            version,
+            force,
+        } => {
+            let target_path = if target.is_empty() {
+                std::path::PathBuf::from(&slug)
+            } else {
+                std::path::PathBuf::from(target)
+            };
+            cloud_cmd::get(
+                slug,
+                target_path,
+                version,
+                force,
+                url_override,
+                cloud_cfg.as_ref(),
+            )
+            .await
+        }
+        CloudCmd::List { mine } => cloud_cmd::list(mine, url_override, cloud_cfg.as_ref()).await,
+        CloudCmd::Status => cloud_cmd::status(url_override, cloud_cfg.as_ref()),
+        CloudCmd::Unbind => cloud_cmd::unbind(),
+    };
+
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("\x1b[31merror:\x1b[0m {}", e);
+            1
         }
     }
 }

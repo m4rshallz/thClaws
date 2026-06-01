@@ -1429,6 +1429,176 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             (ctx.dispatch)(payload.to_string());
         }
 
+        // ── thClaws.cloud catalog (dev-plan/34) ────────────────────
+        // Same shape as remote_agent_get/set above. URL persists to
+        // settings.json::cloud.url; token persists to the active
+        // secrets backend (keychain or ~/.config/thclaws/.env), same
+        // bundle as provider API keys.
+        "cloud_config_get" => {
+            let url = crate::cloud::persisted_url();
+            let token_resolved = crate::cloud::token();
+            let has_token = token_resolved.is_some();
+            let token_length = token_resolved.as_deref().map(|t| t.len()).unwrap_or(0);
+            let env_var_set = std::env::var(crate::cloud::ENV_TOKEN)
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false);
+            let payload = serde_json::json!({
+                "type": "cloud_config",
+                "url": url,
+                "default_url": crate::cloud::DEFAULT_CLOUD_URL,
+                "has_token": has_token,
+                "token_length": token_length,
+                "env_var_set": env_var_set,
+                "token_writable": crate::cloud::token_writable(),
+            });
+            (ctx.dispatch)(payload.to_string());
+        }
+
+        "cloud_config_set" => {
+            let url_arg = msg.get("url").and_then(|v| v.as_str());
+            let token_arg = msg.get("token").and_then(|v| v.as_str());
+            let mut url_ok = true;
+            let mut url_err = String::new();
+            let mut token_ok = true;
+            let mut token_err = String::new();
+
+            if let Some(url) = url_arg {
+                let mut project = crate::config::ProjectConfig::load().unwrap_or_default();
+                let normalized = if url.trim().is_empty() {
+                    None
+                } else {
+                    Some(url)
+                };
+                project.set_cloud_url(normalized);
+                if let Err(e) = project.save() {
+                    url_ok = false;
+                    url_err = format!("settings.json write failed: {e}");
+                }
+            }
+
+            if let Some(token) = token_arg {
+                let trimmed = token.trim();
+                let result = if trimmed.is_empty() {
+                    crate::cloud::clear_token()
+                } else {
+                    crate::cloud::set_token(trimmed)
+                };
+                if let Err(e) = result {
+                    token_ok = false;
+                    token_err = format!("{e}");
+                }
+            }
+
+            let payload = serde_json::json!({
+                "type": "cloud_config_result",
+                "url_ok": url_ok,
+                "url_error": url_err,
+                "token_ok": token_ok,
+                "token_error": token_err,
+            });
+            (ctx.dispatch)(payload.to_string());
+        }
+
+        // ── Agent identity (dev-plan/34 Option A) ──────────────────
+        // settings.json::agent block — the folder's authoritative
+        // {id, name, description, uuid}. UUID is server-managed (set
+        // by `cloud publish`, cleared by `cloud unbind`); the GUI lets
+        // the user edit the other three + read the UUID.
+        "agent_config_get" => {
+            let agent = crate::config::ProjectConfig::load().and_then(|c| c.agent.clone());
+            let payload = match agent {
+                Some(a) => serde_json::json!({
+                    "type": "agent_config",
+                    "exists": true,
+                    "id": a.id,
+                    "name": a.name,
+                    "description": a.description,
+                    "uuid": a.uuid,
+                }),
+                None => serde_json::json!({
+                    "type": "agent_config",
+                    "exists": false,
+                    "id": null,
+                    "name": null,
+                    "description": null,
+                    "uuid": null,
+                }),
+            };
+            (ctx.dispatch)(payload.to_string());
+        }
+
+        "agent_config_set" => {
+            // UUID is deliberately NOT writable from the UI — it's
+            // server-assigned. Empty-string for id/name/description
+            // means "clear this field"; absent fields mean "no change".
+            let id = msg.get("id").and_then(|v| v.as_str());
+            let name = msg.get("name").and_then(|v| v.as_str());
+            let description = msg.get("description").and_then(|v| v.as_str());
+
+            let mut project = crate::config::ProjectConfig::load().unwrap_or_default();
+            // Convert "" → None so a cleared input drops the field;
+            // a non-empty value updates it; an absent field is ignored
+            // (preserves existing value — partial update). merge_agent's
+            // None-as-no-change semantics fit publish-side writeback;
+            // here we need explicit-clear, so we mutate `current`
+            // directly so that field-present-but-empty becomes None.
+            let normalize = |s: &str| -> Option<String> {
+                let t = s.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            };
+            let mut current = project.agent.clone().unwrap_or_default();
+            if let Some(v) = id {
+                current.id = normalize(v);
+            }
+            if let Some(v) = name {
+                current.name = normalize(v);
+            }
+            if let Some(v) = description {
+                current.description = normalize(v);
+            }
+            let all_empty = current.id.is_none()
+                && current.name.is_none()
+                && current.description.is_none()
+                && current.uuid.is_none();
+            project.agent = if all_empty { None } else { Some(current) };
+
+            let (ok, error) = match project.save() {
+                Ok(()) => (true, String::new()),
+                Err(e) => (false, format!("settings.json write failed: {e}")),
+            };
+            let payload = serde_json::json!({
+                "type": "agent_config_result",
+                "ok": ok,
+                "error": error,
+            });
+            (ctx.dispatch)(payload.to_string());
+        }
+
+        "agent_unbind" => {
+            let mut project = crate::config::ProjectConfig::load().unwrap_or_default();
+            let had_uuid = project
+                .agent
+                .as_ref()
+                .and_then(|a| a.uuid.as_ref())
+                .is_some();
+            project.clear_agent_uuid();
+            let (ok, error) = match project.save() {
+                Ok(()) => (true, String::new()),
+                Err(e) => (false, format!("settings.json write failed: {e}")),
+            };
+            let payload = serde_json::json!({
+                "type": "agent_unbind_result",
+                "ok": ok,
+                "error": error,
+                "had_uuid": had_uuid,
+            });
+            (ctx.dispatch)(payload.to_string());
+        }
+
         // ── Settings panel (M6.36 SERVE9e — migrated from gui.rs) ──
         "secrets_backend_get" => {
             let backend = crate::secrets::get_backend().map(|b| b.as_str().to_string());
