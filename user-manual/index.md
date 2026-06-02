@@ -41,6 +41,12 @@ teams.
 > AI agents, deploying to Agentic Press) are in active development and
 > will be added to this manual as each is reviewed and ready.
 
+## Appendices
+
+| # | Appendix |
+|---|---|
+| A | [Providers, models & prices (thClaws.cloud gateway)](appendix-a-providers-models-prices.md) |
+
 ## Conventions used in this manual
 
 - `❯` is the REPL prompt; what follows on that line is what **you** type.
