@@ -1390,7 +1390,7 @@ mod tests {
             Some("https://api.minimax.io/v1")
         );
         assert_eq!(ProviderKind::Minimax.name(), "minimax");
-        assert_eq!(ProviderKind::Minimax.default_model(), "minimax/MiniMax-M2");
+        assert_eq!(ProviderKind::Minimax.default_model(), "minimax/MiniMax-M3");
     }
 
     #[test]
