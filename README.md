@@ -27,18 +27,13 @@ A native-Rust AI agent workspace that codes, automates, remembers, and coordinat
 
 The new **Shell** tab is the migration path. It hosts a real PTY-backed terminal alongside the Chat and Terminal tabs, so you can run **Claude Code** directly inside thClaws — under your normal Claude subscription, no third-party API surface in the loop. Because `.thclaws/` and `.claude/` are intentionally compatible, the skills, MCP servers, and agent definitions you already keep on disk are shared between both — same workspace, two front-ends sitting side-by-side.
 
-<table align="center">
-<tr>
-<td><img src="docs/img/screen-chat.png" alt="thClaws Chat tab — parallel agents, rich markdown" width="300" /></td>
-<td><img src="docs/img/screen-terminal.png" alt="thClaws Terminal tab — agent REPL with slash commands" width="300" /></td>
-<td><img src="docs/img/screen-claude-code.png" alt="Claude Code running inside the new PTY-backed Shell tab" width="300" /></td>
-</tr>
-<tr align="center">
-<td><strong>Chat</strong><br/><sub>thClaws agent · markdown render · tool indicators</sub></td>
-<td><strong>Terminal</strong><br/><sub>thClaws REPL · slash commands · ANSI tool output</sub></td>
-<td><strong>Shell</strong><br/><sub>Claude Code — your subscription, your tools</sub></td>
-</tr>
-</table>
+<div align="center">
+
+<img src="docs/img/screens-hero.webp" alt="thClaws GUI — cycling through Chat, Terminal, and Shell (Claude Code) tabs" width="900" />
+
+**Chat** (thClaws agent · markdown · tool indicators)  ·  **Terminal** (REPL · slash commands · ANSI output)  ·  **Shell** (Claude Code under your subscription)
+
+</div>
 
 The Shell tab is **opt-in** because it gives an unsandboxed live shell with no agent-side permission gating. Enable it with `shellTabEnabled: true` in `.thclaws/settings.json`.
 
