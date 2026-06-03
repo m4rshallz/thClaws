@@ -442,6 +442,14 @@ export default function App() {
         typeof msg.enabled === "boolean"
       ) {
         setShellTabEnabled(msg.enabled as boolean);
+      } else if (msg.type === "settings_changed") {
+        // Backend re-loaded .thclaws/settings.json (file watcher or
+        // explicit `settings_reload` IPC). Re-fetch every settings-
+        // derived flag so tab visibility + similar UI bits move
+        // without a page refresh. Cheap — the responses come back
+        // through this same subscribe above.
+        send({ type: "team_enabled_get" });
+        send({ type: "shell_tab_enabled_get" });
       } else if (
         msg.type === "initial_state" &&
         typeof msg.team_enabled === "boolean"

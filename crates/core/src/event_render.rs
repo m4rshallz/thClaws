@@ -120,6 +120,7 @@ pub fn render_chat_dispatches(ev: &ViewEvent) -> Vec<String> {
         }
         ViewEvent::SessionListRefresh(json) => vec![json.clone()],
         ViewEvent::ProviderUpdate(json) => vec![json.clone()],
+        ViewEvent::SettingsChanged(json) => vec![json.clone()],
         ViewEvent::KmsUpdate(json) => vec![json.clone()],
         ViewEvent::McpUpdate(json) => vec![json.clone()],
         ViewEvent::LineStatus(json) => vec![json.clone()],
@@ -575,6 +576,7 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
         ViewEvent::ErrorText(text) => Some(format!("\r\n\x1b[31m{text}\x1b[0m\r\n")),
         ViewEvent::SessionListRefresh(_) => None,
         ViewEvent::ProviderUpdate(_) => None,
+        ViewEvent::SettingsChanged(_) => None,
         ViewEvent::KmsUpdate(_) => None,
         ViewEvent::McpUpdate(_) => None,
         ViewEvent::LineStatus(_) => None,

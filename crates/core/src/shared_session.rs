@@ -289,6 +289,15 @@ pub enum ViewEvent {
     /// active model (e.g. auto-switch during `/load`) so the sidebar
     /// reflects the new state without waiting for the 5 s config-poll.
     ProviderUpdate(String),
+    /// Settings-derived UI flags (shellTabEnabled, teamEnabled, …) may
+    /// have changed. Carries a pre-built `{"type":"settings_changed"}`
+    /// envelope. Emitted after a `ShellInput::ReloadConfig` completes —
+    /// either from the manual `settings_reload` IPC or from the file
+    /// watcher on `.thclaws/settings.json`. App.tsx subscribes and
+    /// re-fetches per-flag IPCs (shell_tab_enabled_get,
+    /// team_enabled_get) so tab visibility refreshes without a page
+    /// reload.
+    SettingsChanged(String),
     /// Sidebar KMS list refresh — pre-built JSON payload shaped like
     /// `{type: "kms_update", kmss: [{name, scope, active}, ...]}`.
     /// Emitted after `/kms new | use | off` so the sidebar reflects
@@ -897,6 +906,15 @@ pub fn spawn_with_roots(
     session_roots: Option<crate::multi_tenant::SessionRoots>,
 ) -> SharedSessionHandle {
     let (input_tx, input_rx) = mpsc::channel::<ShellInput>();
+
+    // File watcher on .thclaws/settings.json — any edit (Files tab
+    // save, external editor, programmatic write) triggers an
+    // automatic ReloadConfig. Closes the "I enabled
+    // shellTabEnabled but the tab didn't appear" gap without a
+    // manual restart. The `settings_reload` IPC arm is the explicit
+    // fallback for users who want to force a reload.
+    spawn_settings_watcher(input_tx.clone());
+
     let (events_tx, _) = broadcast::channel::<ViewEvent>(256);
     let cancel = crate::cancel::CancelToken::new();
     let ready_gate = Arc::new(ReadyGate::new());
@@ -950,6 +968,92 @@ pub fn spawn_with_roots(
         workflow_approver,
         session_roots,
     }
+}
+
+/// Spawn a debounced filesystem watcher on `.thclaws/settings.json`.
+/// Any modify event fires a `ShellInput::ReloadConfig` so the engine
+/// re-reads project settings without a process restart. Paired with
+/// the manual `settings_reload` IPC arm and the SettingsChanged
+/// broadcast — the user can edit settings.json in any editor and
+/// see the change take effect (tab visibility, model, …) within ~1 s.
+///
+/// The watcher leaks for the process lifetime — there's exactly one
+/// worker per engine, and it should watch as long as the engine runs.
+/// Re-firing ReloadConfig when a write was triggered by our own code
+/// (e.g. sidebar model picker → `ProjectConfig::set_model`) is
+/// harmless: the handler is idempotent.
+fn spawn_settings_watcher(input_tx: mpsc::Sender<ShellInput>) {
+    use notify_debouncer_mini::new_debouncer;
+    use notify_debouncer_mini::notify::RecursiveMode;
+
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[33m[settings-watch] cannot read cwd: {e}\x1b[0m");
+            return;
+        }
+    };
+    let thclaws_dir = cwd.join(".thclaws");
+    // settings.json may not exist on first run; the parent dir does
+    // because the engine's initContainer (or local startup) creates
+    // it. Belt-and-braces ensure-exists so notify has a directory to
+    // attach to.
+    if let Err(e) = std::fs::create_dir_all(&thclaws_dir) {
+        eprintln!(
+            "\x1b[33m[settings-watch] mkdir {} failed: {e} (skipping watch)\x1b[0m",
+            thclaws_dir.display()
+        );
+        return;
+    }
+    let settings_path = thclaws_dir.join("settings.json");
+
+    let mut debouncer = match new_debouncer(
+        std::time::Duration::from_millis(500),
+        move |result: notify_debouncer_mini::DebounceEventResult| match result {
+            Ok(events) => {
+                for ev in events {
+                    if ev.path == settings_path {
+                        eprintln!(
+                            "\x1b[36m[settings-watch] {} changed → ReloadConfig\x1b[0m",
+                            settings_path.display()
+                        );
+                        let _ = input_tx.send(ShellInput::ReloadConfig);
+                        // One dispatch per debounced batch; the
+                        // handler is idempotent so additional events
+                        // in the same batch would just no-op.
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("\x1b[31m[settings-watch] notify error: {e}\x1b[0m");
+            }
+        },
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("\x1b[31m[settings-watch] could not start watcher: {e}\x1b[0m");
+            return;
+        }
+    };
+    if let Err(e) = debouncer
+        .watcher()
+        .watch(&thclaws_dir, RecursiveMode::NonRecursive)
+    {
+        eprintln!(
+            "\x1b[31m[settings-watch] watch({}) failed: {e}\x1b[0m",
+            thclaws_dir.display()
+        );
+        return;
+    }
+    eprintln!(
+        "\x1b[36m[settings-watch] watching {}/settings.json (500ms debounce)\x1b[0m",
+        thclaws_dir.display()
+    );
+    // Leak: the debouncer must outlive this function for the watcher
+    // thread to keep firing. The engine process owns one of these for
+    // its full lifetime so leaking is the right shape.
+    Box::leak(Box::new(debouncer));
 }
 
 /// Build the live `telegram_status` JSON for the GUI from an active
@@ -2673,6 +2777,17 @@ async fn run_worker(
                             "(provider reloaded: {})",
                             format_provider_model(provider_name, &state.config.model)
                         )));
+                        // Tell the frontend that settings-derived flags
+                        // (shellTabEnabled, teamEnabled, …) may have
+                        // moved. App.tsx subscribes to this and re-
+                        // fetches the per-flag IPCs so tab visibility
+                        // and similar UI bits update without a page
+                        // reload. Driven by the file watcher in
+                        // shared_session::spawn_settings_watcher and by
+                        // the manual `settings_reload` IPC.
+                        let _ = events_tx.send(ViewEvent::SettingsChanged(
+                            r#"{"type":"settings_changed"}"#.to_string(),
+                        ));
                     }
                     Err(e) => {
                         let _ = events_tx.send(ViewEvent::ErrorText(format!(

@@ -1959,6 +1959,19 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             }
         }
 
+        // Manual settings reload — driven by a "Reload settings"
+        // button (Settings menu). Re-runs the same code path as the
+        // sidebar model picker's auto-reload: dispatches ReloadConfig
+        // → worker re-reads .thclaws/settings.json + AppConfig defaults
+        // → rebuilds the agent in place + broadcasts SettingsChanged so
+        // App.tsx refetches dependent flags (shellTabEnabled, …).
+        "settings_reload" => {
+            let _ = ctx
+                .shared
+                .input_tx
+                .send(crate::shared_session::ShellInput::ReloadConfig);
+        }
+
         // ── Team feature toggle (M6.36 SERVE9f) ────────────────────
         "team_enabled_get" => {
             let enabled = crate::config::ProjectConfig::load()
