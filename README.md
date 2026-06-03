@@ -21,35 +21,26 @@ A native-Rust AI agent workspace that codes, automates, remembers, and coordinat
 
 ---
 
-## ✨ New in v0.23 — dynamic workflows
+## ✨ New in v0.32 — run Claude Code inside thClaws
 
-**LLM writes the code. Boa runs the workers.**
+**Anthropic will discontinue Claude subscription usage via the Agent SDK and 3rd-party apps on June 15, 2026.** thClaws's `anthropic-agent` provider routes through that path today — meaning subscription users would otherwise need to migrate to per-token API billing for everyday agent work.
 
-`/workflow run <prompt>` lets the model author a small JavaScript orchestration script that fans your task out across as many parallel subagents as it needs. You review the script before it executes — then thClaws runs it deterministically inside a sandboxed Boa engine. Cancel, resume, set time/token budgets, validate worker output against a JSON schema, all from one line.
+The new **Shell** tab is the migration path. It hosts a real PTY-backed terminal alongside the Chat and Terminal tabs, so you can run **Claude Code** directly inside thClaws — under your normal Claude subscription, no third-party API surface in the loop. Because `.thclaws/` and `.claude/` are intentionally compatible, the skills, MCP servers, and agent definitions you already keep on disk are shared between both — same workspace, two front-ends sitting side-by-side.
 
-<div align="center">
+<table align="center">
+<tr>
+<td><img src="docs/img/screen-chat.png" alt="thClaws Chat tab — parallel agents, rich markdown" width="300" /></td>
+<td><img src="docs/img/screen-terminal.png" alt="thClaws Terminal tab — agent REPL with slash commands" width="300" /></td>
+<td><img src="docs/img/screen-claude-code.png" alt="Claude Code running inside the new PTY-backed Shell tab" width="300" /></td>
+</tr>
+<tr align="center">
+<td><strong>Chat</strong><br/><sub>thClaws agent · markdown render · tool indicators</sub></td>
+<td><strong>Terminal</strong><br/><sub>thClaws REPL · slash commands · ANSI tool output</sub></td>
+<td><strong>Shell</strong><br/><sub>Claude Code — your subscription, your tools</sub></td>
+</tr>
+</table>
 
-<a href="https://thclaws.ai/#dynamic-workflows"><img src="docs/img/dynamic-workflow-thumb.jpg" alt="thClaws v0.23 — dynamic workflows demo (opens autoplay on thclaws.ai)" width="900" /></a>
-
-*Click to watch on thclaws.ai · 20s demo · `/workflow run summarize each .rs file under thclaws/crates/core/src in one line` → LLM authors JS → you approve → Boa fans out across subagents.*
-
-</div>
-
-```js
-// llm wrote this
-const files = await thclaws.subagent({
-  prompt: "list all .ts files in src/",
-});
-const list = files.split("\n");
-
-const reviews = await Promise.all(
-  list.map(f => thclaws.subagent({
-    prompt: `review ${f}`,
-  }))
-);
-```
-
-Read the chapter → [user-manual/ch25-workflows.md](user-manual/ch25-workflows.md) · or jump straight in with `/workflow run "<your task>"`.
+The Shell tab is **opt-in** because it gives an unsandboxed live shell with no agent-side permission gating. Enable it with `shellTabEnabled: true` in `.thclaws/settings.json`.
 
 ---
 
