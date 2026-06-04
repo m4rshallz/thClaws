@@ -206,6 +206,17 @@ pub struct AppConfig {
     #[serde(default)]
     pub openrouter_free_only: bool,
 
+    /// Opt-in flag for the native Gemini image-generation tools
+    /// (`TextToImage`, `ImageToImage`). Off by default because the
+    /// tools call paid Google APIs on the user's own key and write
+    /// PNG files into the workspace — both reasons to require an
+    /// explicit "yes" before they appear in the model's tool list.
+    /// Requires `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in env too;
+    /// `requires_env()` hides the tools when neither is set even
+    /// with this flag flipped on.
+    #[serde(default)]
+    pub image_tools_enabled: bool,
+
     /// Per-provider gateway routing. Each entry is a provider name
     /// (lowercase, matches the gateway path segment): `openai`,
     /// `anthropic`, `google`, `openrouter`. When the active model's
@@ -352,6 +363,7 @@ impl Default for AppConfig {
             auto_learn_reconcile_hours: default_auto_learn_reconcile_hours(),
             claude_md_compat: false,
             openrouter_free_only: false,
+            image_tools_enabled: false,
             gateway_use_for: Vec::new(),
             extract_save_skill_models: None,
             translator_subagent_model: None,
@@ -526,6 +538,11 @@ pub struct ProjectConfig {
     /// iframe-based `UI` tab are always available regardless.
     #[serde(rename = "shellTabEnabled")]
     pub shell_tab_enabled: Option<bool>,
+    /// Opt-in flag for the native Gemini image-generation tools
+    /// (`TextToImage`, `ImageToImage`). See `AppConfig::
+    /// image_tools_enabled` for the design.
+    #[serde(rename = "imageToolsEnabled")]
+    pub image_tools_enabled: Option<bool>,
     /// Print the assistant's raw text to stderr after each turn (dim, fenced
     /// block). Same effect as `THCLAWS_SHOW_RAW=1`. The env var wins if set.
     /// Useful when debugging model output / formatting issues.
@@ -650,6 +667,7 @@ impl Default for ProjectConfig {
             gui_scale: None,
             team_enabled: Some(false),
             shell_tab_enabled: Some(false),
+            image_tools_enabled: Some(false),
             show_raw_response: None,
             kms: None,
             auto_learn: None,
@@ -949,6 +967,9 @@ impl ProjectConfig {
         }
         if let Some(b) = self.openrouter_free_only {
             config.openrouter_free_only = b;
+        }
+        if let Some(b) = self.image_tools_enabled {
+            config.image_tools_enabled = b;
         }
         if let Some(ref providers) = self.gateway_use_for {
             config.gateway_use_for = providers

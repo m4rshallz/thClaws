@@ -126,6 +126,14 @@ pub async fn build_runtime_with_provider(
         None,
     )));
 
+    // Opt-in native Gemini image tools. Same gating as the
+    // GUI/serve registration in shared_session.rs — settings flag
+    // PLUS env key. Keeps the HTTP API in parity.
+    if config.image_tools_enabled {
+        tool_registry.register(Arc::new(crate::tools::TextToImageTool));
+        tool_registry.register(Arc::new(crate::tools::ImageToImageTool));
+    }
+
     // Team tools deliberately NOT registered for the HTTP API
     // surface — multi-tenant agent_runtime serves untrusted callers,
     // and TeamCreate / SpawnTeammate spawn subprocesses outside the

@@ -1276,6 +1276,18 @@ async fn run_worker(
     // M6.46: SessionRename — for dream + power-user manual rename.
     tools.register(std::sync::Arc::new(crate::tools::SessionRenameTool));
 
+    // Opt-in native Gemini image-gen tools (TextToImage,
+    // ImageToImage). Gated on `imageToolsEnabled: true` in
+    // settings.json AND a GEMINI_API_KEY (or GOOGLE_API_KEY) in
+    // env — the tool's own `requires_env()` hides them if the key
+    // is missing, but we don't even register them without the
+    // settings opt-in so the model never sees them in the catalogue
+    // unless the user actively asked for the surface.
+    if config.image_tools_enabled {
+        tools.register(std::sync::Arc::new(crate::tools::TextToImageTool));
+        tools.register(std::sync::Arc::new(crate::tools::ImageToImageTool));
+    }
+
     // Tool-parity audit fix: respect `searchEngine` config override
     // (REPL had this; GUI/serve fell back to "auto" silently).
     // `HashMap::insert` in `ToolRegistry::register` overwrites the
