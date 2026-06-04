@@ -1416,6 +1416,26 @@ impl AppConfig {
     /// Returns `None` when neither source has a key (providers without
     /// auth, like ollama, are OK either way).
     pub fn api_key_from_env(&self) -> Option<String> {
+        // Trim whitespace and one pair of wrapping "…" / '…' quotes.
+        // Defensive against env / keychain values that picked up a
+        // copy-paste artefact (issue #145 — wrapping double quotes
+        // turn `Bearer X` into `Bearer "X"`, which OpenRouter parses
+        // as no bearer at all → `Missing Authentication header`).
+        // Inlined so this helper has no other call sites and the
+        // intent stays next to where it's used.
+        fn sanitize_api_key(raw: &str) -> String {
+            let trimmed = raw.trim();
+            let b = trimmed.as_bytes();
+            if b.len() >= 2
+                && ((b[0] == b'"' && b[b.len() - 1] == b'"')
+                    || (b[0] == b'\'' && b[b.len() - 1] == b'\''))
+            {
+                trimmed[1..trimmed.len() - 1].to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        // Body proper:
         let kind = self.detect_provider_kind().ok()?;
         let var = kind.api_key_env()?;
         // Treat an exported-but-empty env var ("ANTHROPIC_API_KEY=") as
@@ -1424,7 +1444,8 @@ impl AppConfig {
         // returning Some("") from here would produce an empty bearer
         // token and a confusing 401 on every request.
         if let Ok(value) = std::env::var(var) {
-            if !value.trim().is_empty() {
+            let normalized = sanitize_api_key(&value);
+            if !normalized.is_empty() {
                 if std::env::var("THCLAWS_KEYCHAIN_TRACE").is_ok() {
                     eprintln!(
                         "\x1b[35m[keychain pid={}] api_key_from_env({}) → from env {}\x1b[0m",
@@ -1433,7 +1454,7 @@ impl AppConfig {
                         var
                     );
                 }
-                return Some(value);
+                return Some(normalized);
             }
         }
         if std::env::var("THCLAWS_KEYCHAIN_TRACE").is_ok() {
@@ -1443,7 +1464,15 @@ impl AppConfig {
             );
         }
         // Fall back to the keychain under the provider's short name.
-        crate::secrets::get(kind.name())
+        // Sanitize the keychain value too — entries written before the
+        // `api_key_set` normalisation fix (issue #145) may still have
+        // wrapping quotes / leading-trailing whitespace from the
+        // original paste. `None` for empty-after-sanitize so callers
+        // surface the friendlier "no API key found" rather than 401.
+        crate::secrets::get(kind.name()).and_then(|raw| {
+            let s = sanitize_api_key(&raw);
+            if s.is_empty() { None } else { Some(s) }
+        })
     }
 }
 

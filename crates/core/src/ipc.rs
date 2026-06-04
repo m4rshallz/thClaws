@@ -86,6 +86,25 @@ pub struct IpcContext {
     pub workflow_approver: Arc<crate::workflow::WorkflowApprover>,
 }
 
+/// Strip a single pair of wrapping `"…"` or `'…'` quotes from `s` if
+/// present. Used to normalise pasted API keys at the `api_key_set`
+/// boundary — copy-paste from a `.env` file / shell `export` line
+/// often includes the surrounding quotes verbatim, and a key like
+/// `"sk-or-v1-…"` becomes `Authorization: Bearer "sk-or-v1-…"` on
+/// the wire, which OpenRouter rejects as `Missing Authentication
+/// header` (issue #145).
+fn strip_wrapping_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
 /// Dispatch a single inbound IPC message. Routes by `msg.type` to one
 /// of ~70 message-type arms (see the body for the full inventory).
 ///
@@ -2535,7 +2554,17 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
         // ── api_key_set (M6.36 SERVE9f — full rich path) ──────────
         "api_key_set" => {
             let provider = msg.get("provider").and_then(|v| v.as_str()).unwrap_or("");
-            let key = msg.get("key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            // Strip whitespace AND surrounding "…" / '…' quotes. Users
+            // frequently paste from a quoted source (`.env` line, shell
+            // export, screenshot caption) and don't notice the wrapping
+            // chars. Issue #145: a key stored as `"sk-or-v1-…"` produced
+            // `Authorization: Bearer "sk-or-v1-…"`, which OpenRouter
+            // rejects with the exact message `Missing Authentication
+            // header` (the bearer regex doesn't accept a quoted token).
+            // Normalize once at write time so the on-disk / keychain
+            // value is always the bare key.
+            let raw = msg.get("key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let key = strip_wrapping_quotes(raw);
             // Route strictly by the user's stored backend choice.
             // Keychain is tried only when the user opted into it; dotenv
             // users never trigger an OS keychain prompt.
