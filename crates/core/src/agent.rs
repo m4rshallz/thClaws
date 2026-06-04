@@ -1068,7 +1068,7 @@ impl Agent {
                             );
                         }
                     }
-                    let compacted = compact(&h, messages_budget);
+                    let mut compacted = compact(&h, messages_budget);
                     if will_compact {
                         if let Some(hk) = &hooks {
                             let post_tokens =
@@ -1081,6 +1081,19 @@ impl Agent {
                             );
                         }
                     }
+                    // Issue #144: defensive last-mile sanitization.
+                    // Compaction's no-op path (history fits budget) skips
+                    // the orphan-tool-result protection in compact(),
+                    // and `/model` swap preserves history across
+                    // providers — so the destination wire format can
+                    // see partial-state blocks (tool_use without
+                    // matching tool_result, or vice versa). Every
+                    // provider rejects those (DashScope code 2013,
+                    // Anthropic "tool_use ids without matching
+                    // tool_result", OpenAI "tool_call_ids did not
+                    // have response messages"). Strip just before
+                    // the request leaves the engine.
+                    crate::compaction::sanitize_tool_pairs(&mut compacted);
                     compacted
                 };
                 let tool_defs = tools.tool_defs();
