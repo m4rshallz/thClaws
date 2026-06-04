@@ -389,6 +389,34 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             (ctx.dispatch)(reply.to_string());
         }
 
+        // Running-jobs UI (dev-plan/36) — point-in-time query for the
+        // current busy state. Frontend hits this on initial connect /
+        // reconnect so the running chip + auto-reattach logic don't
+        // depend on catching a transient `gui_busy_changed` event
+        // that fired before the WS was open. The shape mirrors the
+        // event payload so a single React hook handles both.
+        "gui_busy_query" => {
+            let request_id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let meta = crate::agent_activity::busy_meta();
+            let started_at_ms = meta.as_ref().and_then(|m| {
+                m.started_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            });
+            (ctx.dispatch)(
+                serde_json::json!({
+                    "type": "gui_busy_result",
+                    "id": request_id,
+                    "busy": meta.is_some(),
+                    "sessionId": meta.as_ref().map(|m| m.session_id.clone()),
+                    "startedAtMs": started_at_ms,
+                    "lastProgress": meta.as_ref().and_then(|m| m.last_progress.clone()),
+                })
+                .to_string(),
+            );
+        }
+
         // GUI Shell (dev-plan/33 Tier 2) — picker list. Returns the
         // merged registry (builtin + user + project) so the picker can
         // render its grid. Reply is fired through ctx.dispatch as a

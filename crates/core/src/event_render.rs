@@ -102,6 +102,27 @@ pub fn render_chat_dispatches(ev: &ViewEvent) -> Vec<String> {
         })
         .to_string()],
         ViewEvent::TurnDone => vec![serde_json::json!({"type": "chat_done"}).to_string()],
+        ViewEvent::BusyChanged => {
+            // Snapshot busy state inline so subscribers don't need a
+            // follow-up `gui_busy_query` round-trip. Time is emitted
+            // as milliseconds-since-epoch — the frontend converts to
+            // a relative "Xm Ys" elapsed for the chip label.
+            let meta = crate::agent_activity::busy_meta();
+            let started_at_ms = meta.as_ref().and_then(|m| {
+                m.started_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            });
+            vec![serde_json::json!({
+                "type": "gui_busy_changed",
+                "busy": meta.is_some(),
+                "sessionId": meta.as_ref().map(|m| m.session_id.clone()),
+                "startedAtMs": started_at_ms,
+                "lastProgress": meta.as_ref().and_then(|m| m.last_progress.clone()),
+            })
+            .to_string()]
+        }
         ViewEvent::HistoryReplaced(messages) => {
             let arr: Vec<serde_json::Value> = messages
                 .iter()
@@ -539,6 +560,7 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
             ))
         }
         ViewEvent::TurnDone => None,
+        ViewEvent::BusyChanged => None,
         ViewEvent::HistoryReplaced(messages) => {
             let mut out = String::from("\x1b[3J\x1b[2J\x1b[H");
             for (i, m) in messages.iter().enumerate() {

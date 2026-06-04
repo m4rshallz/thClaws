@@ -7,6 +7,8 @@ import { TeamView } from "./components/TeamView";
 import { UITab } from "./components/UITab";
 import { ShellTab } from "./components/ShellTab";
 import { LoginButton } from "./components/LoginButton";
+import { RunningChip } from "./components/RunningChip";
+import { useBusyState } from "./hooks/useBusyState";
 import { Sidebar } from "./components/Sidebar";
 import { PlanSidebar } from "./components/PlanSidebar";
 import { GoalSidebar } from "./components/GoalSidebar";
@@ -346,6 +348,25 @@ export default function App() {
   // to paste.
   useEditingShortcuts();
 
+  // dev-plan/36 — auto-reattach to the running session on the FIRST
+  // observation. If the engine was already mid-batch when this tab
+  // opened (e.g., user closed browser + came back), the busy state's
+  // sessionId tells us which session is live; dispatch `/load <id>`
+  // through the normal shell-input path so the chat view replays
+  // history then streams the live events.
+  //
+  // Auto-load fires ONCE — subsequent transitions don't navigate the
+  // user away from whatever session they may have manually opened.
+  // The RunningChip stays visible and clickable for manual jumps.
+  const busyState = useBusyState();
+  const autoReattachedRef = useRef(false);
+  useEffect(() => {
+    if (autoReattachedRef.current) return;
+    if (!busyState.busy || !busyState.sessionId) return;
+    autoReattachedRef.current = true;
+    send({ type: "shell_input", text: `/load ${busyState.sessionId}` });
+  }, [busyState.busy, busyState.sessionId]);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!navigator.platform.startsWith("Mac")) return;
@@ -654,6 +675,7 @@ export default function App() {
           </button>
         ))}
         <div className="flex-1" />
+        <RunningChip />
         <button
           onClick={() => {
             setActiveTab("ui");

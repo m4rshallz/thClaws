@@ -654,7 +654,18 @@ fn spawn_cloud_heartbeat(connections: Arc<AtomicUsize>) {
             if !connected && !busy {
                 continue;
             }
-            match client.post(&endpoint).bearer_auth(&token).send().await {
+            // Body carries the current busy state so the cloud
+            // dashboard can render a "running" pill on this
+            // workspace's row in the user's workspace list. The
+            // API tolerates an empty body for backwards-compat with
+            // older engines (busy field is optional server-side).
+            match client
+                .post(&endpoint)
+                .bearer_auth(&token)
+                .json(&serde_json::json!({ "busy": busy }))
+                .send()
+                .await
+            {
                 Ok(r) if r.status().is_success() => {}
                 Ok(r) => {
                     eprintln!("[serve] heartbeat {endpoint} returned HTTP {}", r.status());

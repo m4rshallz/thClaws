@@ -281,6 +281,14 @@ pub enum ViewEvent {
         revision: u32,
     },
     TurnDone,
+    /// The process-wide agent_activity busy state transitioned. The
+    /// event-translator turns this into a `gui_busy_changed` IPC
+    /// envelope carrying the current `busy_meta()` so the workspace
+    /// UI's running chip + the cloud-dashboard pill can update
+    /// without polling. Fired at user-facing turn boundaries (start
+    /// + end). Side-channel turns (auto-learn ingest/reconcile) do
+    /// not fire this — they don't change the surface meta.
+    BusyChanged,
     HistoryReplaced(Vec<DisplayMessage>),
     SessionListRefresh(String),
     /// Sidebar provider/model update — carries a pre-built JSON
@@ -3219,7 +3227,7 @@ async fn run_auto_learn_pipeline(
     let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
     let _ = lead_mb.write_status("lead", "working", None);
     let stream = Box::pin(state.agent.run_turn(ingest_prompt));
-    drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+    drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, None).await;
     crate::auto_learn::mark_ingest_done();
     crate::auto_learn::log_event(&format!(
         "ingest ok: session={} kms={kms_name} page={page}",
@@ -3242,7 +3250,7 @@ async fn run_auto_learn_pipeline(
         "[auto-learn] reconciling `{kms_name}`…"
     )));
     let stream2 = Box::pin(state.agent.run_turn(reconcile_prompt));
-    drive_turn_stream(stream2, state, events_tx, cancel, &lead_mb, input_tx).await;
+    drive_turn_stream(stream2, state, events_tx, cancel, &lead_mb, input_tx, None).await;
     crate::auto_learn::mark_reconcile_done();
     crate::auto_learn::log_event(&format!(
         "reconcile ok: kms={kms_name} (next due in {hours}h)"
@@ -3439,7 +3447,7 @@ async fn handle_line(
                 let stream = Box::pin(state.agent.run_turn(prompt));
                 let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
                 let _ = lead_mb.write_status("lead", "working", None);
-                drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+                drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
                 // Post-turn: if the model called MarkGoalComplete /
                 // MarkGoalBlocked (or any path that mutated status to
                 // terminal), stop the loop so the next firing doesn't run.
@@ -3507,7 +3515,7 @@ async fn handle_line(
         let stream = Box::pin(state.agent.run_turn(rewritten));
         let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
         let _ = lead_mb.write_status("lead", "working", None);
-        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
         return;
     }
 
@@ -3540,7 +3548,7 @@ async fn handle_line(
         let stream = Box::pin(state.agent.run_turn(rewritten));
         let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
         let _ = lead_mb.write_status("lead", "working", None);
-        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
         return;
     }
 
@@ -3577,7 +3585,7 @@ async fn handle_line(
         let stream = Box::pin(state.agent.run_turn(rewritten));
         let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
         let _ = lead_mb.write_status("lead", "working", None);
-        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
         return;
     }
 
@@ -3608,7 +3616,7 @@ async fn handle_line(
         let stream = Box::pin(state.agent.run_turn(rewritten));
         let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
         let _ = lead_mb.write_status("lead", "working", None);
-        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+        drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
         return;
     }
 
@@ -3646,7 +3654,7 @@ async fn handle_line(
                 let stream = Box::pin(state.agent.run_turn(rewritten));
                 let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
                 let _ = lead_mb.write_status("lead", "working", None);
-                drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+                drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
                 return;
             }
 
@@ -3665,7 +3673,7 @@ async fn handle_line(
                 let stream = Box::pin(state.agent.run_turn(rewritten));
                 let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
                 let _ = lead_mb.write_status("lead", "working", None);
-                drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+                drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
                 return;
             }
         }
@@ -3687,7 +3695,7 @@ async fn handle_line(
     let _ = lead_mb.write_status("lead", "working", None);
 
     let stream = Box::pin(state.agent.run_turn(trimmed.to_string()));
-    drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+    drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
 }
 
 /// Multipart variant of `handle_line` — used when the chat composer
@@ -3751,12 +3759,23 @@ async fn handle_line_with_images(
     }
 
     let stream = Box::pin(state.agent.run_turn_multipart(user_content));
-    drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx).await;
+    drive_turn_stream(stream, state, events_tx, cancel, &lead_mb, input_tx, Some(state.session.id.clone())).await;
 }
 
 /// Drive an agent run_turn stream to completion, emitting ViewEvents
 /// to both the chat and terminal tabs. Extracted so handle_line and
 /// handle_line_with_images share the streaming loop unchanged.
+/// Regex matching the `[i/N] subject — done|cached|failed` lines the
+/// image-generator / brand-presentation / research agent shells emit.
+/// Compiled once on first use; matches are cheap (~µs each).
+static PROGRESS_LINE_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"\[(\d+)/(\d+)\]\s+[^—\n]+?\s*—\s*(?:done|cached|failed[^\n]*)",
+        )
+        .expect("PROGRESS_LINE_RE compiles")
+    });
+
 async fn drive_turn_stream(
     mut stream: std::pin::Pin<
         Box<dyn futures::Stream<Item = Result<AgentEvent, crate::error::Error>> + Send>,
@@ -3766,12 +3785,58 @@ async fn drive_turn_stream(
     cancel: &crate::cancel::CancelToken,
     lead_mb: &crate::team::Mailbox,
     input_tx: &mpsc::Sender<ShellInput>,
+    surface_session: Option<String>,
 ) {
     // Process-wide busy counter — the cloud heartbeat (server.rs) uses
     // this so a closed-browser batch keeps pinging `/keepalive` and the
     // cloud reaper doesn't pause the pod mid-turn. RAII drop covers
     // every return path below (cancel, end-of-stream, panic unwind).
-    let _busy = crate::agent_activity::BusyGuard::new();
+    //
+    // Surface vs side-channel: user-facing turns (handle_line +
+    // handle_line_with_images) pass `Some(session.id)` so the UI's
+    // running chip + cloud dashboard pill point at the user's
+    // session. Auto-learn ingest/reconcile pass `None` — they count
+    // toward the heartbeat's busy signal but don't overwrite the
+    // surface meta (the user keeps landing in their own session on
+    // reconnect, not the autonomous background work).
+    // Drop-broadcast pair. Field-declaration order matters: `_busy`
+    // drops FIRST (decrements counter + clears meta) so by the time
+    // `_broadcast_on_drop` fires, subscribers re-querying
+    // `busy_meta()` see `None`. Side-channel turns construct an
+    // empty `BroadcastOnDrop` so their guard drop is silent — the
+    // counter changes (heartbeat sees it) but the UI doesn't blink.
+    struct BroadcastOnDrop(Option<tokio::sync::broadcast::Sender<ViewEvent>>);
+    impl Drop for BroadcastOnDrop {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(ViewEvent::BusyChanged);
+            }
+        }
+    }
+    struct BusyBroadcast {
+        _busy: crate::agent_activity::BusyGuard,
+        _broadcast_on_drop: BroadcastOnDrop,
+    }
+    let _busy = match surface_session {
+        Some(id) => {
+            let guard = crate::agent_activity::BusyGuard::for_session(id);
+            let _ = events_tx.send(ViewEvent::BusyChanged);
+            BusyBroadcast {
+                _busy: guard,
+                _broadcast_on_drop: BroadcastOnDrop(Some(events_tx.clone())),
+            }
+        }
+        None => BusyBroadcast {
+            _busy: crate::agent_activity::BusyGuard::for_side_channel(),
+            _broadcast_on_drop: BroadcastOnDrop(None),
+        },
+    };
+
+    // Rolling buffer for progress-line extraction. Bounded so the
+    // regex doesn't scan unbounded text on long turns; we only care
+    // about the LATEST `[i/N]` line, so a small window is enough.
+    let mut progress_buf = String::with_capacity(1024);
+    const PROGRESS_BUF_CAP: usize = 4096;
 
     // Phase B2: reset the empty-turn flag at the start of every turn.
     // Flipped to true on the first ToolCallStart below; if the model
@@ -3804,6 +3869,19 @@ async fn drive_turn_stream(
         match ev {
             Ok(AgentEvent::Text(s)) => {
                 write_lead_log(&state.lead_log, &s);
+                // Cheap progress-line extraction for the UI chip /
+                // dashboard pill. One regex pass per chunk; buffer
+                // capped so long turns don't slow down. Only the
+                // LATEST match is kept — the chip shows "what's
+                // happening right now," not history.
+                progress_buf.push_str(&s);
+                if progress_buf.len() > PROGRESS_BUF_CAP {
+                    let drain = progress_buf.len() - PROGRESS_BUF_CAP / 2;
+                    progress_buf.drain(..drain);
+                }
+                if let Some(m) = PROGRESS_LINE_RE.find_iter(&progress_buf).last() {
+                    crate::agent_activity::update_progress(m.as_str());
+                }
                 let _ = events_tx.send(ViewEvent::AssistantTextDelta(s));
             }
             Ok(AgentEvent::Thinking(s)) => {

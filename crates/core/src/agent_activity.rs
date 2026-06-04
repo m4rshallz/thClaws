@@ -1,4 +1,5 @@
-//! Process-wide "is the agent currently working?" signal.
+//! Process-wide "is the agent currently working?" signal + the
+//! who/when/what metadata the UI uses to surface it.
 //!
 //! `drive_turn_stream` wraps every `Agent::run_turn` invocation. By
 //! holding a `BusyGuard` for the lifetime of that wrapper we keep a
@@ -6,46 +7,107 @@
 //! channel turns for reconcile / ingest / subagents — they all funnel
 //! through `drive_turn_stream`).
 //!
-//! The cloud heartbeat reads this so a closed-browser batch — no WS
-//! clients, but the engine is still iterating tool calls — keeps
-//! pinging `/keepalive` and the cloud reaper doesn't pause the pod
-//! mid-batch.
+//! Two consumers:
 //!
-//! Process-global by design: there is exactly one engine process per
-//! workspace; the heartbeat is per-process; the busy state is
-//! per-process. Threading an `Arc<AtomicUsize>` through every
-//! `WorkerState` construction path would be noisier than a static
-//! and buy nothing.
+//! 1. **Cloud heartbeat** (`server.rs::spawn_cloud_heartbeat`) — reads
+//!    `is_agent_busy()` to decide whether to ping `/keepalive` when no
+//!    WS client is attached. Keeps the cloud reaper from pausing a
+//!    pod mid-batch.
+//!
+//! 2. **Running-jobs UI** (dev-plan/36) — reads `busy_meta()` for the
+//!    session id / start time / last-progress line the workspace UI
+//!    chip and the cloud-dashboard pill display. The chip auto-loads
+//!    the running session on browser reconnect.
+//!
+//! The counter and the metadata are kept in sync via the same RAII
+//! guard. Process-global by design: there is exactly one engine
+//! process per workspace; the heartbeat is per-process; the UI's
+//! "what's running" is per-process. Threading an
+//! `Arc<Mutex<BusyMeta>>` through every `WorkerState` construction
+//! path would be noisier than a static and buy nothing.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 static AGENT_BUSY_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+static BUSY_META: Mutex<Option<BusyMeta>> = Mutex::new(None);
+
+/// Snapshot of who's running, since when, and the last user-visible
+/// progress line. The UI displays this in the "running" chip; the
+/// cloud dashboard aggregates the `busy` boolean.
+///
+/// `session_id` is the *user-facing* session that initiated the turn.
+/// Side-channel turns (ingest, reconcile, subagent fan-out) increment
+/// the counter but do NOT overwrite the surface meta — the UI keeps
+/// pointing at the user's session, which is what they actually want
+/// to land in on reconnect.
+#[derive(Debug, Clone)]
+pub struct BusyMeta {
+    pub session_id: String,
+    pub started_at: SystemTime,
+    pub last_progress: Option<String>,
+}
 
 /// RAII guard — increment on construction, decrement on drop. Use at
 /// the top of any code path that should count as "agent doing work."
 /// Drop runs on every return path, including panic-unwind, so this
 /// stays correct around the many early `return`s in
 /// `drive_turn_stream` (cancel, error, end-of-stream).
+///
+/// Constructed via `for_session(...)` for the user-facing turn (sets
+/// `BUSY_META`) or `for_side_channel()` for ingest/reconcile/subagent
+/// turns (counter only, no meta overwrite).
 pub struct BusyGuard {
-    _private: (),
+    /// True if this guard set `BUSY_META` on construction and must
+    /// clear it on drop. Side-channel guards skip both ends.
+    owns_meta: bool,
 }
 
 impl BusyGuard {
-    pub fn new() -> Self {
+    /// Construct for a user-facing turn. Stashes `BusyMeta` so the
+    /// UI chip can surface the session id + start time. Drops the
+    /// meta on guard drop.
+    ///
+    /// **Auto-degrade on nesting:** if `BUSY_META` is already set
+    /// (an outer user-facing turn is in flight), this constructor
+    /// acts like `for_side_channel` — the counter increments but
+    /// the meta is NOT overwritten. The UI keeps pointing at the
+    /// outer turn the user is actually watching. The
+    /// `nested_for_session_does_not_overwrite_outer_meta` test pins
+    /// this contract.
+    pub fn for_session(session_id: impl Into<String>) -> Self {
         AGENT_BUSY_COUNT.fetch_add(1, Ordering::SeqCst);
-        Self { _private: () }
+        let mut slot = BUSY_META.lock().expect("BUSY_META poisoned");
+        if slot.is_some() {
+            // Nested under another user-facing turn — leave meta alone.
+            return Self { owns_meta: false };
+        }
+        *slot = Some(BusyMeta {
+            session_id: session_id.into(),
+            started_at: SystemTime::now(),
+            last_progress: None,
+        });
+        Self { owns_meta: true }
     }
-}
 
-impl Default for BusyGuard {
-    fn default() -> Self {
-        Self::new()
+    /// Construct for a side-channel turn (ingest, reconcile, nested
+    /// subagent). Increments the counter so the heartbeat sees us as
+    /// busy, but leaves `BUSY_META` alone — the UI keeps pointing at
+    /// the user-facing turn that's already running.
+    pub fn for_side_channel() -> Self {
+        AGENT_BUSY_COUNT.fetch_add(1, Ordering::SeqCst);
+        Self { owns_meta: false }
     }
 }
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
         AGENT_BUSY_COUNT.fetch_sub(1, Ordering::SeqCst);
+        if self.owns_meta {
+            *BUSY_META.lock().expect("BUSY_META poisoned") = None;
+        }
     }
 }
 
@@ -60,45 +122,140 @@ pub fn busy_count() -> usize {
     AGENT_BUSY_COUNT.load(Ordering::SeqCst)
 }
 
+/// Snapshot of the user-facing turn's metadata. `None` when no
+/// user-facing turn is in flight (even if side-channel turns are —
+/// the surface signal is the user's, not the engine's internals).
+pub fn busy_meta() -> Option<BusyMeta> {
+    BUSY_META
+        .lock()
+        .expect("BUSY_META poisoned")
+        .clone()
+}
+
+/// Update the `last_progress` field of the current user-facing turn.
+/// No-op when no user-facing turn is in flight. Called from
+/// `drive_turn_stream` whenever it sees a `[i/N] subject — verdict`
+/// line in the text stream (mirrors the GUI shell's progress regex).
+pub fn update_progress(line: impl Into<String>) {
+    let mut slot = BUSY_META.lock().expect("BUSY_META poisoned");
+    if let Some(meta) = slot.as_mut() {
+        meta.last_progress = Some(line.into());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // Tests share the process-global counter + meta. Serialize them
+    // with a mutex so parallel test runs (the cargo default) don't
+    // see each other's guards as background noise. Each test resets
+    // state on entry.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        AGENT_BUSY_COUNT.store(0, Ordering::SeqCst);
+        *BUSY_META.lock().unwrap() = None;
+        guard
+    }
+
     #[test]
     fn guard_increments_and_decrements() {
-        let baseline = busy_count();
+        let _lock = reset();
         {
-            let _g = BusyGuard::new();
-            assert_eq!(busy_count(), baseline + 1);
+            let _g = BusyGuard::for_side_channel();
+            assert_eq!(busy_count(), 1);
             assert!(is_agent_busy());
         }
-        assert_eq!(busy_count(), baseline);
+        assert_eq!(busy_count(), 0);
     }
 
     #[test]
     fn nested_guards_stack() {
-        let baseline = busy_count();
-        let _outer = BusyGuard::new();
+        let _lock = reset();
+        let _outer = BusyGuard::for_side_channel();
         {
-            let _inner = BusyGuard::new();
-            assert_eq!(busy_count(), baseline + 2);
+            let _inner = BusyGuard::for_side_channel();
+            assert_eq!(busy_count(), 2);
         }
-        assert_eq!(busy_count(), baseline + 1);
+        assert_eq!(busy_count(), 1);
     }
 
     #[test]
     fn guard_survives_early_return() {
+        let _lock = reset();
         fn maybe_work(do_work: bool) -> Option<()> {
-            let _g = BusyGuard::new();
+            let _g = BusyGuard::for_side_channel();
             if !do_work {
                 return None;
             }
             Some(())
         }
-        let baseline = busy_count();
         let _ = maybe_work(false);
-        assert_eq!(busy_count(), baseline, "early return must drop guard");
+        assert_eq!(busy_count(), 0, "early return must drop guard");
         let _ = maybe_work(true);
-        assert_eq!(busy_count(), baseline);
+        assert_eq!(busy_count(), 0);
+    }
+
+    #[test]
+    fn for_session_sets_meta() {
+        let _lock = reset();
+        assert!(busy_meta().is_none());
+        {
+            let _g = BusyGuard::for_session("sess-abc");
+            let m = busy_meta().expect("meta set");
+            assert_eq!(m.session_id, "sess-abc");
+            assert!(m.last_progress.is_none());
+        }
+        assert!(busy_meta().is_none(), "meta cleared on drop");
+    }
+
+    #[test]
+    fn side_channel_does_not_overwrite_meta() {
+        let _lock = reset();
+        let _outer = BusyGuard::for_session("user-session");
+        {
+            let _inner = BusyGuard::for_side_channel();
+            let m = busy_meta().expect("meta from outer guard");
+            assert_eq!(m.session_id, "user-session");
+        }
+        // Outer still alive — meta still points at user-session.
+        assert_eq!(busy_meta().unwrap().session_id, "user-session");
+    }
+
+    #[test]
+    fn update_progress_writes_into_active_meta() {
+        let _lock = reset();
+        update_progress("ignored — no active turn");
+        assert!(busy_meta().is_none());
+
+        let _g = BusyGuard::for_session("sess-progress");
+        update_progress("[3/10] otter — done");
+        let m = busy_meta().unwrap();
+        assert_eq!(m.last_progress.as_deref(), Some("[3/10] otter — done"));
+
+        update_progress("[4/10] owl — done");
+        let m = busy_meta().unwrap();
+        assert_eq!(m.last_progress.as_deref(), Some("[4/10] owl — done"));
+    }
+
+    #[test]
+    fn nested_for_session_does_not_overwrite_outer_meta() {
+        let _lock = reset();
+        let _outer = BusyGuard::for_session("outer-session");
+        {
+            // Even though the inner caller passes a session id, the
+            // outer turn's meta is the one the UI should keep
+            // pointing at — the inner is a nested subagent or
+            // workflow worker, not what the user is watching.
+            let _inner = BusyGuard::for_session("inner-session");
+            assert_eq!(
+                busy_meta().unwrap().session_id,
+                "outer-session",
+                "outer meta wins; inner doesn't clobber"
+            );
+        }
+        assert_eq!(busy_meta().unwrap().session_id, "outer-session");
     }
 }
