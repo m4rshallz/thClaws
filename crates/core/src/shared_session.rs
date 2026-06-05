@@ -3637,13 +3637,30 @@ async fn handle_line(
             let body = trimmed.strip_prefix('/').unwrap_or("").trim_start();
             let args = body.strip_prefix(&word).unwrap_or("").trim();
 
-            // (1) Skill lookup.
-            let skill_present = state
+            // (1) Skill lookup. `state.skill_store` is snapshotted at
+            // worker spawn (run_worker line 1144) and refreshed on
+            // cwd-change + `/skill install`. But cloud workspaces can
+            // install agents into a RUNNING engine via the API's
+            // install_agent path (kubectl exec untar), which writes
+            // .thclaws/skills/ without touching cwd — the snapshot
+            // goes stale and `/foo` dispatch incorrectly returns
+            // "unknown command". On cache miss, do one fresh
+            // discover-and-retry (cheap: ~5ms FS walk) so install +
+            // immediate invocation works without a pod restart. The
+            // refreshed snapshot is saved back into state so the next
+            // popup / autocomplete sees the same view.
+            let mut skill_present = state
                 .skill_store
                 .lock()
                 .ok()
                 .map(|s| s.skills.contains_key(&word))
                 .unwrap_or(false);
+            if !skill_present {
+                if let Ok(mut store) = state.skill_store.lock() {
+                    *store = crate::skills::SkillStore::discover();
+                    skill_present = store.skills.contains_key(&word);
+                }
+            }
             if skill_present {
                 // Shared rewrite-text helper (`repl::make_skill_rewrite_prompt`)
                 // so CLI and GUI / --serve send byte-identical
