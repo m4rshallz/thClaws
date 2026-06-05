@@ -142,6 +142,18 @@ pub struct Manifest {
     /// (current behavior). dev-plan/39 Tier 1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_shell: Option<String>,
+    /// Relative path inside the agent folder to a 16:9 cover image
+    /// (PNG/JPG/WebP). The catalog renders this as the detail-page
+    /// hero banner + browse-grid card thumbnail. Cap: 5 MB after
+    /// gzipping. Absent → the catalog falls back to a generated
+    /// monogram tile (or the gemini-image backfill fills it in).
+    ///
+    /// Server reads `raw_manifest["featured_image"]` post-publish and
+    /// uploads the extracted file to S3 under
+    /// `agents/<slug>/featured/<sha>.<ext>` — see
+    /// `thclaws-cloud/api/src/thclaws_cloud/routers/agents.py:495`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub featured_image: Option<String>,
     /// Catalog-facing shell metadata — screenshots, marketing copy,
     /// declared permissions. dev-plan/39 Tier 1 (catalog surfacing) +
     /// Tier 3 (permission enforcement).
