@@ -348,24 +348,53 @@ export default function App() {
   // to paste.
   useEditingShortcuts();
 
-  // dev-plan/36 — auto-reattach to the running session on the FIRST
-  // observation. If the engine was already mid-batch when this tab
-  // opened (e.g., user closed browser + came back), the busy state's
-  // sessionId tells us which session is live; dispatch `/load <id>`
-  // through the normal shell-input path so the chat view replays
-  // history then streams the live events.
+  // dev-plan/36 — auto-attach to the right session on tab open. Two
+  // cases, handled by a SINGLE auto-load that fires ONCE per mount:
   //
-  // Auto-load fires ONCE — subsequent transitions don't navigate the
-  // user away from whatever session they may have manually opened.
-  // The RunningChip stays visible and clickable for manual jumps.
+  //   1. Agent is currently busy → load the busy session so the chat
+  //      view streams the live `[i/N]` progress (the original
+  //      dev-plan/36 Tier 1 goal).
+  //   2. Agent is idle but the user previously worked on a session
+  //      (closed tab after a batch finished, came back to review) →
+  //      load the most-recent non-empty session so they land in
+  //      their work instead of a blank new turn.
+  //
+  // Loads go through the `session_load` IPC (same path the sidebar's
+  // click-to-load uses) so the engine swaps `state.session`, fires a
+  // `chat_history_replaced` event, and the chat view repaints.
+  // `shell_input "/load <id>"` would also work but races worker
+  // readiness; `session_load` is the proper typed handler.
   const busyState = useBusyState();
-  const autoReattachedRef = useRef(false);
+  const [knownSessions, setKnownSessions] = useState<
+    Array<{ id: string; messages: number; title?: string | null }>
+  >([]);
   useEffect(() => {
-    if (autoReattachedRef.current) return;
-    if (!busyState.busy || !busyState.sessionId) return;
-    autoReattachedRef.current = true;
-    send({ type: "shell_input", text: `/load ${busyState.sessionId}` });
-  }, [busyState.busy, busyState.sessionId]);
+    const unsub = subscribe((msg: any) => {
+      if (msg?.type === "initial_state" || msg?.type === "sessions_list") {
+        if (Array.isArray(msg.sessions)) setKnownSessions(msg.sessions);
+      }
+    });
+    return unsub;
+  }, []);
+  const autoLoadedRef = useRef(false);
+  useEffect(() => {
+    if (autoLoadedRef.current) return;
+    // Case 1 — agent busy.
+    if (busyState.busy && busyState.sessionId) {
+      autoLoadedRef.current = true;
+      send({ type: "session_load", id: busyState.sessionId });
+      return;
+    }
+    // Case 2 — pick the most recent non-empty session from the list.
+    // The engine sends sessions sorted most-recent-first (per
+    // SessionStore::list ordering). Skip empty ones so a freshly-
+    // spawned default session doesn't shadow a real prior session.
+    if (!knownSessions.length) return;
+    const target = knownSessions.find((s) => (s.messages ?? 0) > 0);
+    if (!target) return;
+    autoLoadedRef.current = true;
+    send({ type: "session_load", id: target.id });
+  }, [busyState.busy, busyState.sessionId, knownSessions]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
