@@ -143,6 +143,31 @@ pub struct ModelEntry {
     pub tier_billed: Option<bool>,
 }
 
+impl ModelEntry {
+    /// True when this row may appear in a user-facing model picker.
+    ///
+    /// Policy (the catalogue is the SSOT for what users can pick):
+    /// every model the picker offers must either have published
+    /// pricing, be flagged free, be subscription-tier-billed, or live
+    /// on a local-only provider. Anything else is hidden — surfacing
+    /// it risks bill shock if the user picks it and the gateway
+    /// rejects with "model not in catalog" mid-stream.
+    ///
+    /// Local providers (`ollama`, `ollama-anthropic`, `lmstudio`) are
+    /// always listable because they don't route through any billed
+    /// gateway — pricing in the catalogue is irrelevant for them.
+    pub fn is_listable(&self, provider: &str) -> bool {
+        const LOCAL_PROVIDERS: &[&str] = &["ollama", "ollama-anthropic", "lmstudio"];
+        if LOCAL_PROVIDERS.contains(&provider) {
+            return true;
+        }
+        if self.free == Some(true) || self.tier_billed == Some(true) {
+            return true;
+        }
+        self.input_per_mtok.is_some() || self.output_per_mtok.is_some()
+    }
+}
+
 /// Per-token-type usage counts for one agent run. Fed into
 /// [`Catalogue::compute_cost_usd`]. All fields default to 0 so callers
 /// can populate only what their provider surfaces (Anthropic, OpenAI's

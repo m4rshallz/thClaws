@@ -868,8 +868,27 @@ fn run_gui_inner(serve: Option<crate::server::ServeConfig>) {
                 let decoded = urlencoding::decode(rest)
                     .map(|c| c.into_owned())
                     .unwrap_or_else(|_| rest.to_string());
-                let abs = format!("/{decoded}");
-                match crate::sandbox::Sandbox::check(&abs) {
+                // Two URL shapes both reach this route — match the
+                // dual-path lookup in server.rs::serve_project_asset:
+                //   - FilesView builds absolute paths (`/Users/.../foo.png`);
+                //     the URL pathname strips the leading slash, so we
+                //     re-add it and try Sandbox::check (cwd-or-absolute).
+                //   - GUI shells (image-batch's Gallery, speech-studio,
+                //     video-studio) build workspace-relative paths
+                //     (`images/<slug>/<file>.png`); the absolute attempt
+                //     resolves to `/images/...` and 404s, so we fall back
+                //     to passing `decoded` directly and let Sandbox::check
+                //     join it with cwd.
+                //
+                // Cloud (`server.rs`) had this fallback since the early
+                // shells shipped; desktop was stuck on the absolute-only
+                // path, which is why image-generator's Gallery worked in
+                // hosted workspaces but rendered broken thumbnails in the
+                // desktop GUI.
+                let abs_first = format!("/{decoded}");
+                let resolved = crate::sandbox::Sandbox::check(&abs_first)
+                    .or_else(|_| crate::sandbox::Sandbox::check(&decoded));
+                match resolved {
                     Ok(resolved) => match std::fs::read(&resolved) {
                         Ok(bytes) => {
                             let ext = resolved.extension()

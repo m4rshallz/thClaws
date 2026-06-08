@@ -5598,7 +5598,7 @@ dependencies = [
 
 [[package]]
 name = "thclaws-core"
-version = "0.34.0"
+version = "0.41.0"
 dependencies = [
  "arboard",
  "async-stream",

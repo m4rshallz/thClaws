@@ -119,6 +119,13 @@ pub async fn list_models(_auth: AuthOk) -> Json<ModelListResponse> {
                 if entry.chat == Some(false) {
                     continue;
                 }
+                // SSOT gate — see model_catalogue::ModelEntry::is_listable.
+                // Models without published pricing on a billable provider
+                // are hidden so a downstream caller can't pick one and
+                // hit "model not in catalog" mid-request.
+                if !entry.is_listable(provider_name) {
+                    continue;
+                }
                 rows.push(ModelRow {
                     id: model_id.clone(),
                     object: "model",

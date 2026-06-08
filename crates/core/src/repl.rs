@@ -3813,10 +3813,30 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
                 )
             })?;
             let base = endpoint.trim_end_matches('/');
-            let messages_url = format!("{base}/anthropic/v1/messages");
-            Ok(Arc::new(
-                AnthropicProvider::new(api_key).with_base_url(messages_url),
-            ))
+            // Foundry exposes two distinct surfaces:
+            //   /anthropic/v1/messages         → Claude deployments
+            //   /openai/v1/chat/completions    → GPT and OpenAI-protocol deployments
+            // Pick by inspecting the model id after stripping the
+            // `azure/` prefix — keeps a single user-facing provider
+            // prefix while routing each call to the right protocol.
+            let azure_model = config
+                .model
+                .strip_prefix("azure/")
+                .unwrap_or(&config.model)
+                .to_lowercase();
+            if azure_model.contains("claude") {
+                let messages_url = format!("{base}/anthropic/v1/messages");
+                Ok(Arc::new(
+                    AnthropicProvider::new(api_key).with_base_url(messages_url),
+                ))
+            } else {
+                let chat_url = format!("{base}/openai/v1/chat/completions");
+                Ok(Arc::new(
+                    OpenAIProvider::new(api_key)
+                        .with_base_url(chat_url)
+                        .with_strip_model_prefix("azure/"),
+                ))
+            }
         }
         ProviderKind::OpenAICompat => {
             // Generic OpenAI-compatible endpoint (SML Gateway, LiteLLM,

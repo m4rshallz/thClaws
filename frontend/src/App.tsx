@@ -550,7 +550,7 @@ export default function App() {
   // never touches the OS keychain behind the user's back. `null` ==
   // not picked yet → show the chooser before the main UI.
   const [secretsBackend, setSecretsBackend] =
-    useState<"keychain" | "dotenv" | null>(null);
+    useState<"keychain" | "dotenv" | "gateway" | null>(null);
   const [secretsBackendChecked, setSecretsBackendChecked] = useState(false);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -560,7 +560,9 @@ export default function App() {
       if (msg.type === "secrets_backend") {
         const value = (msg.backend as string | null) ?? null;
         setSecretsBackend(
-          value === "keychain" || value === "dotenv" ? value : null,
+          value === "keychain" || value === "dotenv" || value === "gateway"
+            ? value
+            : null,
         );
         setSecretsBackendChecked(true);
       }

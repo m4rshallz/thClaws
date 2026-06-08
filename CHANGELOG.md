@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] — 2026-06-08
+
+Three issue-driven fixes from the public tracker + two cloud-only
+quality-of-life follow-ups that ride along on the same release tag.
+
+### Added
+
+- **Sidebar is now draggable
+  ([#150](https://github.com/thClaws/thClaws/issues/150)).** The
+  webapp sidebar shipped at a fixed 192px (`w-48`) — too narrow to
+  read dated model ids like `claude-sonnet-4-6` vs
+  `claude-sonnet-4-5` or longer session titles. A 3px gutter on the
+  right edge is now drag-to-resize (clamped to 160–480px, persisted
+  in `localStorage` as `thclaws_sidebar_width`). Double-click the
+  gutter to reset to the original 192px default. Existing users see
+  no shift until they drag. Thanks to @Mayth01 for the report.
+- **Model picker hides unpriced rows.** The catalogue
+  (`model_catalogue.json`) is now the single source of truth for
+  what users can pick — `ModelEntry::is_listable(provider)` filters
+  every UI listing (GUI picker, `/model` REPL command,
+  `/v1/models` HTTP endpoint) to models that either have a
+  published price, are flagged `free` / `tier_billed`, or live on a
+  local provider (`ollama` / `ollama-anthropic` / `lmstudio`).
+  Prevents bill shock when a backend gateway rejects an unpriced
+  model mid-stream.
+
+### Fixed
+
+- **Azure AI Foundry routes by model family
+  ([#149](https://github.com/thClaws/thClaws/issues/149)).**
+  `build_provider` for `ProviderKind::AzureAIFoundry` always
+  pointed at `/anthropic/v1/messages`, so `azure/gpt-*` and other
+  OpenAI-protocol Foundry deployments failed with schema errors.
+  Inspect the model id after stripping the `azure/` prefix: `claude`
+  in the name → unchanged Anthropic protocol; anything else →
+  OpenAIProvider on `/openai/v1/chat/completions` with `azure/`
+  stripped before reaching the upstream. Single user-facing prefix
+  kept, back-compatible for every existing Claude-on-Foundry user.
+  Thanks to @thayadev for the report + the drop-in patch.
+- **`--serve` aborts on panic so the listening port is released
+  ([#151](https://github.com/thClaws/thClaws/issues/151)).** Before
+  this fix, a panic in any tokio task (e.g. the UTF-8 char-boundary
+  case from #148 on long Thai responses) only unwound that task.
+  The runtime stayed alive, port 8443 stayed bound, and systemd's
+  `Restart=on-failure` couldn't recover the port without manual
+  `kill -9`. The `--serve` dispatch now installs a panic hook that
+  chains the default traceback to stderr then `process::abort()`s —
+  the OS releases the socket immediately and systemd restarts on a
+  clean port. CLI / GUI / print modes are unaffected. The
+  underlying char-boundary panic itself shipped in v0.39.0 (#148);
+  v0.41.0 makes any future panic in `--serve` fail clean. Thanks
+  to @Mayth01 for the durability observation.
+- **Gateway-routed workspaces no longer pop the "where to save API
+  keys?" picker.** On hosted thClaws.cloud workspaces with
+  `THCLAWS_GATEWAY_API_KEY` set, the engine never touches the OS
+  keychain or `.env` — every provider call routes through the
+  gateway with its own key. `ipc.rs::secrets_backend_get` now
+  returns the sentinel `"gateway"` when that env is set, and the
+  frontend treats it as already-chosen so the first-launch dialog
+  doesn't block the agent UI.
+
 ## [0.39.0] — 2026-06-06
 
 UTF-8 char-boundary fix in the agent turn driver + defense-in-depth

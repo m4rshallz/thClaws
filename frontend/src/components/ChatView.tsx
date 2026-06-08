@@ -136,6 +136,96 @@ function stripThinkBlocks(content: string): string {
   return content.replace(THINK_BLOCK, "").replace(ORPHAN_CLOSE, "");
 }
 
+/// Detect bare multi-line JSON object/array blocks at line-start and
+/// wrap them in ```json fences before handing to ReactMarkdown.
+///
+/// Without this pass, markdown collapses single newlines inside an
+/// unfenced JSON block to spaces — so a tool response the model echoes
+/// back as
+///   {
+///     "next_action": "first_greet",
+///     ...
+///   }
+/// renders as a single-line wall instead of the indented block the
+/// terminal tab shows (xterm.js just replaces \n with \r\n and the
+/// monospace renderer preserves layout).
+///
+/// Walks the text once with a brace counter so nested braces inside
+/// the JSON don't terminate early. Skips regions already inside a ```
+/// fence. Only wraps a candidate if `JSON.parse` accepts it — keeps
+/// false positives off (a paragraph that happens to start with `{`
+/// is left alone).
+function wrapBareJsonBlocks(content: string): string {
+  // Map of already-fenced regions to skip.
+  const fenced: [number, number][] = [];
+  const fenceRe = /```[\s\S]*?```/g;
+  let fm: RegExpExecArray | null;
+  while ((fm = fenceRe.exec(content)) !== null) {
+    fenced.push([fm.index, fm.index + fm[0].length]);
+  }
+  const inFence = (i: number) =>
+    fenced.some(([s, e]) => i >= s && i < e);
+
+  const out: string[] = [];
+  let i = 0;
+  while (i < content.length) {
+    const ch = content[i];
+    const atLineStart = i === 0 || content[i - 1] === "\n";
+    if (
+      atLineStart &&
+      (ch === "{" || ch === "[") &&
+      !inFence(i)
+    ) {
+      const close = ch === "{" ? "}" : "]";
+      let depth = 0;
+      let j = i;
+      let inString = false;
+      let escape = false;
+      while (j < content.length) {
+        const c = content[j];
+        if (escape) {
+          escape = false;
+          j++;
+          continue;
+        }
+        if (inString) {
+          if (c === "\\") escape = true;
+          else if (c === '"') inString = false;
+          j++;
+          continue;
+        }
+        if (c === '"') inString = true;
+        else if (c === ch) depth++;
+        else if (c === close) {
+          depth--;
+          if (depth === 0) {
+            j++;
+            break;
+          }
+        }
+        j++;
+      }
+      if (depth === 0 && j > i + 1) {
+        const candidate = content.substring(i, j);
+        // Only wrap if it's actually valid JSON. Streaming partial
+        // blocks (depth never reached 0) and prose paragraphs that
+        // happen to start with `{` will fall through here.
+        try {
+          JSON.parse(candidate);
+          out.push("```json\n", candidate, "\n```");
+          i = j;
+          continue;
+        } catch {
+          /* not valid JSON — leave as-is */
+        }
+      }
+    }
+    out.push(ch);
+    i++;
+  }
+  return out.join("");
+}
+
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1211,7 +1301,7 @@ export function ChatView({ active, modalOpen }: Props) {
                         ),
                       }}
                     >
-                      {stripThinkBlocks(msg.content)}
+                      {wrapBareJsonBlocks(stripThinkBlocks(msg.content))}
                     </ReactMarkdown>
                   </div>
                 ) : isError ? (

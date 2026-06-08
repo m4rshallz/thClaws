@@ -867,6 +867,20 @@ async fn main() {
                 thclaws_core::gui::run_gui_with_serve(serve_config);
                 return;
             }
+            // --serve panic hook: any panic in a tokio task unwinds
+            // that task but leaves the runtime (and the bound port)
+            // alive — systemd `Restart=on-failure` then sits on a
+            // never-failing parent and the user has to `kill -9` to
+            // recover the port. Chain the default hook so the
+            // traceback still hits stderr, then abort() so the OS
+            // releases the listening socket immediately and systemd
+            // can restart on a clean port (#151).
+            let default_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                default_hook(info);
+                eprintln!("\x1b[31m[--serve] panic — aborting so the port is released\x1b[0m");
+                std::process::abort();
+            }));
             if let Err(e) = thclaws_core::server::run(serve_config).await {
                 eprintln!("\n\x1b[31mserve error: {e}\x1b[0m");
                 std::process::exit(1);

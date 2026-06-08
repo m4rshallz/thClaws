@@ -1668,7 +1668,20 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
 
         // ── Settings panel (M6.36 SERVE9e — migrated from gui.rs) ──
         "secrets_backend_get" => {
-            let backend = crate::secrets::get_backend().map(|b| b.as_str().to_string());
+            // Gateway-mode short-circuit (hosted workspace etc.): when
+            // THCLAWS_GATEWAY_API_KEY is set, the engine never touches
+            // the OS keychain or .env — every provider call routes
+            // through the gateway with its own key. Returning a non-null
+            // backend here skips the first-launch picker that would
+            // otherwise prompt the user for nothing the gateway uses.
+            let in_gateway_mode = std::env::var("THCLAWS_GATEWAY_API_KEY")
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false);
+            let backend = if in_gateway_mode {
+                Some("gateway".to_string())
+            } else {
+                crate::secrets::get_backend().map(|b| b.as_str().to_string())
+            };
             let payload = serde_json::json!({
                 "type": "secrets_backend",
                 "backend": backend,
@@ -2659,6 +2672,11 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                     let cat = crate::model_catalogue::EffectiveCatalogue::load();
                     let mut models = cat.list_models_for_provider(provider);
                     models.retain(|(_, e)| e.chat != Some(false));
+                    // SSOT gate — only models the catalogue can price
+                    // (or that are free / tier-billed / local) show up
+                    // in the picker. Prevents bill-shock from picking
+                    // a model the cloud gateway can't bill.
+                    models.retain(|(_, e)| e.is_listable(provider));
                     if provider == "openrouter" && new_cfg.openrouter_free_only {
                         models.retain(|(_, e)| e.free == Some(true));
                     }
