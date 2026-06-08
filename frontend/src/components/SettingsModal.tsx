@@ -66,7 +66,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   // Storage backend: null until we hear back from the backend. If the
   // backend reports `null` (user never picked), we show the chooser
   // dialog first and only render the key fields after the user picks.
-  const [backend, setBackend] = useState<"keychain" | "dotenv" | "gateway" | null>(null);
+  const [backend, setBackend] = useState<"keychain" | "dotenv" | "hosted" | null>(null);
   const [backendKnown, setBackendKnown] = useState(false);
 
   // Ask the backend for the stored preference first. Nothing else
@@ -75,12 +75,12 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     const unsub = subscribe((msg) => {
       if (msg.type === "secrets_backend") {
         const value = (msg.backend as string | null) ?? null;
-        // "gateway" is the engine's signal that this is a hosted /
-        // gateway-routed workspace — no local key storage applies.
+        // "hosted" is the engine's signal that this is a cloud
+        // workspace (gateway OR BYOK) — no local key storage applies.
         // Treat it as "no chooser needed" rather than null (which
         // would re-prompt the picker pointlessly).
         const recognized =
-          value === "keychain" || value === "dotenv" || value === "gateway"
+          value === "keychain" || value === "dotenv" || value === "hosted"
             ? value
             : null;
         setBackend(recognized);

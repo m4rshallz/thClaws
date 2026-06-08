@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-06-08
+
+Small cleanup release on top of v0.41.0 — one community PR plus two
+hosted-workspace UX fixes that surfaced once v0.41.0's tighter cloud
+gating went live.
+
+### Fixed
+
+- **Terminal cursor position resets on line-clear events
+  ([#153](https://github.com/thClaws/thClaws/pull/153)).** Two paths
+  cleared `lineBuffer` without resetting `cursorPos` — Escape on the
+  slash-command popup, and the engine's `terminal_clear` event. The
+  next keystroke landed at the right character but the visible caret
+  drifted past it. Matches the existing Ctrl+C handler pattern. PR
+  by @JonusNattapong.
+
+### Changed
+
+- **SSO Sign-in button hidden on hosted cloud workspaces (gateway
+  AND BYOK).** v0.41.0 already short-circuited the secrets-backend
+  picker when `THCLAWS_GATEWAY_API_KEY` was set; this release
+  generalises the cloud-workspace detection to also cover BYOK pods
+  (no gateway env, provider keys injected directly). Trigger is now
+  `THCLAWS_WORKSPACE_ID` (set by the K8sProvisioner on every cloud
+  pod regardless of routing). `ipc.rs::secrets_backend_get` returns
+  the sentinel `"hosted"` in both cases, and the desktop frontend
+  skips the navbar `<LoginButton/>` so visitors aren't asked to do
+  a second OAuth flow inside a workspace they already authenticated
+  into at the routing layer. Local desktop installs keep the button.
+
 ## [0.41.0] — 2026-06-08
 
 Three issue-driven fixes from the public tracker + two cloud-only

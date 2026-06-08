@@ -550,7 +550,7 @@ export default function App() {
   // never touches the OS keychain behind the user's back. `null` ==
   // not picked yet → show the chooser before the main UI.
   const [secretsBackend, setSecretsBackend] =
-    useState<"keychain" | "dotenv" | "gateway" | null>(null);
+    useState<"keychain" | "dotenv" | "hosted" | null>(null);
   const [secretsBackendChecked, setSecretsBackendChecked] = useState(false);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -560,7 +560,7 @@ export default function App() {
       if (msg.type === "secrets_backend") {
         const value = (msg.backend as string | null) ?? null;
         setSecretsBackend(
-          value === "keychain" || value === "dotenv" || value === "gateway"
+          value === "keychain" || value === "dotenv" || value === "hosted"
             ? value
             : null,
         );
@@ -727,7 +727,14 @@ export default function App() {
         >
           <Maximize2 size={14} />
         </button>
-        <LoginButton />
+        {/* Hide the SSO Sign-in button on any cloud-hosted workspace
+            (gateway OR BYOK). The engine returns "hosted" from
+            secrets_backend_get whenever THCLAWS_WORKSPACE_ID (or
+            THCLAWS_GATEWAY_API_KEY) is set — the visitor is already
+            authenticated at the cloud-routing layer, so a second SSO
+            flow inside the workspace is just noise. Local desktop
+            installs keep the button. */}
+        {secretsBackend !== "hosted" && <LoginButton />}
       </div>
       )}
 

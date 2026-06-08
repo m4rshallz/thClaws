@@ -1668,17 +1668,27 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
 
         // ── Settings panel (M6.36 SERVE9e — migrated from gui.rs) ──
         "secrets_backend_get" => {
-            // Gateway-mode short-circuit (hosted workspace etc.): when
-            // THCLAWS_GATEWAY_API_KEY is set, the engine never touches
-            // the OS keychain or .env — every provider call routes
-            // through the gateway with its own key. Returning a non-null
-            // backend here skips the first-launch picker that would
-            // otherwise prompt the user for nothing the gateway uses.
-            let in_gateway_mode = std::env::var("THCLAWS_GATEWAY_API_KEY")
+            // Hosted-workspace short-circuit. Two cloud variants both
+            // pre-inject everything the engine needs at pod-start, so
+            // the first-launch backend picker has nothing to decide:
+            //   - Gateway-routed (THCLAWS_GATEWAY_API_KEY set) — all
+            //     provider calls go through the gateway.
+            //   - BYOK on cloud (just THCLAWS_WORKSPACE_ID set) —
+            //     per-provider keys are decrypted and injected as env
+            //     vars by the K8sProvisioner, never touching keychain
+            //     or .env in the pod.
+            // Both cases return the synthetic "hosted" sentinel which
+            // also drives frontend chrome that's irrelevant in a
+            // cloud workspace (e.g. the SSO Sign-in button — the
+            // visitor is already authenticated at the routing layer).
+            let in_hosted_workspace = std::env::var("THCLAWS_WORKSPACE_ID")
                 .map(|v| !v.trim().is_empty())
-                .unwrap_or(false);
-            let backend = if in_gateway_mode {
-                Some("gateway".to_string())
+                .unwrap_or(false)
+                || std::env::var("THCLAWS_GATEWAY_API_KEY")
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false);
+            let backend = if in_hosted_workspace {
+                Some("hosted".to_string())
             } else {
                 crate::secrets::get_backend().map(|b| b.as_str().to_string())
             };
