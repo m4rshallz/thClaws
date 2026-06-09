@@ -4,8 +4,9 @@ thClaws.cloud is the catalog + hosted runtime for thClaws agents. It
 turns the **folder-is-an-agent** model (Chapter 8) into something you
 can browse, publish, install on someone else's machine, or rent a
 hosted workspace for. From your desktop thClaws, the cloud feels like
-git for AI agents — `cloud login` once, `cloud publish` from any
-folder, `cloud get <slug>` to install someone else's work.
+git for AI agents — paste a CLI token once in Settings, then every
+catalog op (`/cloud get`, `/cloud publish`, `/cloud list`, …) runs as
+a slash command inside an open thClaws session.
 
 > **What this chapter covers (client side).** Browsing the catalog,
 > publishing your own agents, getting agents into a local folder, and
@@ -26,8 +27,9 @@ root of that folder make it complete:
 
 When you `cd` into the folder and run thClaws, you're "running that
 agent". When you publish, the catalog packages those files into a
-tarball; when someone else does `cloud get <slug>`, they get the same
-folder. The cloud is just a way to move folders between machines.
+tarball; when someone else runs `/cloud get <slug>` from inside their
+own thClaws session, they get the same folder. The cloud is just a
+way to move folders between machines.
 
 ## Setting the catalog URL + a CLI token
 
@@ -39,27 +41,26 @@ Two things bind your desktop to a catalog server:
 2. **CLI token** — a `thc_…` string from the catalog dashboard, stored
    in the OS keychain (never in `settings.json`).
 
-### Desktop GUI
-
 Settings → **thClaws.cloud** has fields for both. Paste the URL, paste
 the token from your dashboard's *Mint CLI token* button, hit Save —
-the rest of this chapter's commands work immediately.
+every slash command in the rest of this chapter works immediately.
 
-### CLI
+The token never goes through a shell argument or environment variable —
+the GUI stores it directly in the OS keychain (macOS Keychain / Windows
+Credential Manager / Linux Secret Service), and every catalog request
+sends it as a Bearer header from inside the engine process. No `ps`
+or shell-history leak.
 
-```
-$ thclaws cloud login                # prompts for the token interactively
-$ thclaws cloud login --token thc_xxxxx
-$ thclaws cloud status               # show resolved URL + whether a token is set
-$ thclaws cloud logout               # forget the cached token
-```
-
-`cloud login` accepts a `--cloud-url URL` flag too if you want to
-override the URL without editing `settings.json`.
+> **Why no CLI subcommand?** Earlier releases had a
+> `thclaws cloud login --token …` flow. Removed because tokens
+> threaded through `argv` ended up in shell histories and any
+> `ps`-style tool dump. Settings UI + keychain is the only way now.
+> Running any old `thclaws cloud …` command prints an error that
+> points at the new flow.
 
 ## Browsing the catalog
 
-From the REPL or Chat tab:
+From inside any thClaws session (REPL or Chat tab):
 
 ```
 ❯ /cloud status
@@ -75,39 +76,40 @@ thClaws.cloud — https://thclaws.cloud (token: ✓ stored)
 - weekly-research       v1.0.0  Saturday-morning newsletter writer (you)
 ```
 
-From the shell (same data, useful in scripts):
-
-```
-$ thclaws cloud list
-$ thclaws cloud list --mine
-```
-
 Each row is a single agent in the catalog. The slug is what you pass
-to `cloud get`.
+to `/cloud get`.
 
 ## Installing an agent into a folder
+
+`/cloud get` always installs into the **current session's working
+directory**. The typical flow:
+
+```bash
+# 1. From a shell — make an empty folder for the agent and cd into it.
+mkdir my-hello && cd my-hello
+
+# 2. Start a thClaws session there.
+thclaws            # GUI default; --cli for the REPL
+```
+
+Then inside the session:
 
 ```
 ❯ /cloud get hello-world
 Downloading hello-world (v0.1.0) …
-Extracted to /Users/jimmy/agents/hello-world/
+Extracted to /Users/jimmy/my-hello/
   ✓ AGENTS.md
   ✓ manifest.json
   ✓ skills/greet.md
-Done. cd hello-world && thclaws to run.
+Done. /reload to pick up the new AGENTS.md.
 ```
 
-`/cloud get` (or `thclaws cloud get hello-world`) extracts the agent's
-tarball into the current directory. The CLI form takes an optional
-target dir:
-
-```
-$ thclaws cloud get hello-world ~/agents/hello-world
-```
+The engine downloads the tarball, extracts every file into the cwd, and
+the next `/reload` reads the new `AGENTS.md`. No shell tab-out needed.
 
 ### The folder-safety check
 
-`cloud get` refuses to overwrite a non-empty folder unless the folder
+`/cloud get` refuses to overwrite a non-empty folder unless the folder
 already holds the **same** agent (matched by UUID, see below) or you
 pass `--force`. The check works like this:
 
@@ -123,16 +125,15 @@ in-progress agent or someone else's work in the same directory.
 
 ## Publishing an agent
 
-When you've built an agent in a folder and want it in the catalog:
+When you've built an agent in a folder and want it in the catalog,
+start a thClaws session in that folder and use the slash command:
 
 ```
-$ cd ~/agents/my-research-bot
-$ thclaws cloud publish              # uploads the cwd
-$ thclaws cloud publish --dry-run    # preview the tarball contents, no upload
-$ thclaws cloud publish ./other-dir  # publish a different folder
+❯ /cloud publish              # uploads the cwd
+❯ /cloud publish --dry-run    # preview the tarball contents, no upload
 ```
 
-`publish` does three things:
+`/cloud publish` does three things:
 
 1. **Tar + gzip** the folder. Secrets, sessions, KMS pages, and the
    `./.thclaws/` state directory are stripped automatically — you
@@ -161,11 +162,11 @@ this folder's catalog identity:
 ```
 
 - **id / name / description** — copied from `manifest.json` at publish
-  time. Used by the catalog UI and by `cloud get`'s safety check.
+  time. Used by the catalog UI and by `/cloud get`'s safety check.
 - **uuid** — assigned by the catalog the **first** time you publish
   from this folder, written back into `settings.json`. Subsequent
   publishes hit the same catalog row (version bump). The UUID is what
-  `cloud get` matches against to decide "is this folder the same
+  `/cloud get` matches against to decide "is this folder the same
   agent?"
 
 You normally don't edit this by hand. The GUI Settings → **Agent
@@ -175,18 +176,18 @@ intentionally hides `uuid`.
 
 ### Forking a downloaded agent
 
-If you `cloud get`-ed someone else's agent and want to fork it under
-your own name:
+If you `/cloud get`-ed someone else's agent and want to fork it under
+your own name, from inside the agent's folder session:
 
 ```
-$ thclaws cloud unbind        # clears settings.json::agent.uuid
-$ # edit AGENTS.md, manifest.json — change `id` to something free
-$ thclaws cloud publish        # gets a fresh UUID
+❯ /cloud unbind            # clears settings.json::agent.uuid
+❯ # in the same session: edit AGENTS.md, manifest.json — change `id` to something free
+❯ /cloud publish           # gets a fresh UUID
 ```
 
-Without `unbind`, the next publish would try to update the original
-author's catalog row (and fail with a permission error — the catalog
-gates publishes by author).
+Without `/cloud unbind`, the next publish would try to update the
+original author's catalog row (and fail with a permission error — the
+catalog gates publishes by author).
 
 ## Hosted workspaces (rent, don't install)
 
@@ -250,16 +251,18 @@ a starter account.
 
 ## Quick reference
 
+All catalog ops happen inside an open thClaws session — every old
+`thclaws cloud …` CLI form prints an error pointing at the
+slash-command equivalent.
+
 | Command | Where | What it does |
 |---|---|---|
-| `thclaws cloud login [--token …]` | CLI | Store a CLI token in the keychain |
-| `thclaws cloud logout` | CLI | Forget the cached token |
-| `thclaws cloud status` | CLI / `/cloud status` | Show resolved URL + token state |
-| `thclaws cloud list [--mine]` | CLI / `/cloud list` | Browse the catalog |
-| `thclaws cloud get <slug> [<dir>] [--force]` | CLI / `/cloud get` | Install into a folder |
-| `thclaws cloud publish [<dir>] [--dry-run]` | CLI | Upload from a folder |
-| `thclaws cloud unbind` | CLI | Clear `agent.uuid` so the next publish creates a new catalog row |
-| Settings → **thClaws.cloud** | GUI | URL + CLI token |
+| Settings → **thClaws.cloud** | GUI | Cloud URL + CLI token (paste / clear). The only path for login/logout. |
+| `/cloud status` | In-session slash | Show resolved URL + token state |
+| `/cloud list [--mine]` | In-session slash | Browse the catalog |
+| `/cloud get <slug> [--force]` | In-session slash | Install into the session's cwd |
+| `/cloud publish [--dry-run]` | In-session slash | Upload the session's cwd |
+| `/cloud unbind` | In-session slash | Clear `agent.uuid` so the next publish creates a new catalog row |
 | Settings → **Agent identity** | GUI | Edit this folder's `agent.name` / `description` |
 | `/credit` (web) | Catalog UI | Top up + view balance + browse pricing |
 | `/gateway/keys` (web) | Catalog UI | Mint `gw_v1_…` access keys |

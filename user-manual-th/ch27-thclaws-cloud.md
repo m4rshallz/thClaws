@@ -4,9 +4,9 @@ thClaws.cloud คือ catalog และ hosted runtime สำหรับ agen
 thClaws ทำให้แนวคิด **folder-คือ-agent** (บทที่ 8) กลายเป็นของที่
 browse ได้ publish ขึ้น catalog ได้ ติดตั้งลงเครื่องอื่นได้ หรือเช่า
 hosted workspace มารันก็ได้ จากมุมของ desktop thClaws การใช้ cloud
-จะรู้สึกเหมือน git สำหรับ AI agent — `cloud login` ครั้งเดียว แล้ว
-`cloud publish` จากโฟลเดอร์ไหนก็ได้ และ `cloud get <slug>` เพื่อ
-ติดตั้งงานของคนอื่นมาใช้
+จะรู้สึกเหมือน git สำหรับ AI agent — paste CLI token ครั้งเดียวใน
+Settings แล้วทุก catalog op (`/cloud get`, `/cloud publish`,
+`/cloud list`, …) ทำงานเป็น slash command ภายใน thClaws session
 
 > **ขอบเขตของบทนี้ (ฝั่ง client เท่านั้น).** การ browse catalog การ
 > publish agent ของตัวเอง การติดตั้ง agent ลง folder และบล็อก
@@ -27,8 +27,8 @@ hosted workspace มารันก็ได้ จากมุมของ desk
 
 เวลาคุณ `cd` เข้าไปใน folder นั้นแล้วรัน thClaws คือคุณ "รัน agent
 ตัวนั้น" เวลา publish catalog ก็จะแพ็คไฟล์เหล่านี้ทั้งหมดเป็น tarball
-เวลาคนอื่น `cloud get <slug>` เขาก็จะได้ folder เดียวกัน — cloud เป็น
-แค่ทางขนย้าย folder ระหว่างเครื่อง
+เวลาคนอื่นรัน `/cloud get <slug>` จาก session ของเขาเองก็จะได้ folder
+เดียวกัน — cloud เป็นแค่ทางขนย้าย folder ระหว่างเครื่อง
 
 ## ตั้งค่า URL catalog + CLI token
 
@@ -40,27 +40,24 @@ hosted workspace มารันก็ได้ จากมุมของ desk
 2. **CLI token** — สตริง `thc_…` จากหน้า dashboard ของ catalog ถูก
    เก็บใน OS keychain (ไม่เคยอยู่ใน `settings.json`)
 
-### Desktop GUI
-
 Settings → **thClaws.cloud** มีช่องให้ใส่ทั้งสองตัว วาง URL วาง token
-ที่ได้จากปุ่ม *Mint CLI token* ในหน้า dashboard แล้วกด Save — คำสั่ง
-ทุกอันในบทนี้ก็พร้อมใช้ทันที
+ที่ได้จากปุ่ม *Mint CLI token* ในหน้า dashboard แล้วกด Save — slash
+command ทุกอันในบทนี้ก็พร้อมใช้ทันที
 
-### CLI
+Token ไม่เคยผ่าน shell argument หรือ environment variable เลย — GUI
+เก็บลง OS keychain (macOS Keychain / Windows Credential Manager /
+Linux Secret Service) ตรง ๆ และทุก request ส่งเป็น Bearer header
+จากภายใน engine process ไม่รั่วลง `ps` หรือ shell history
 
-```
-$ thclaws cloud login                # ถาม token แบบ interactive
-$ thclaws cloud login --token thc_xxxxx
-$ thclaws cloud status               # แสดง URL ที่ resolve แล้ว + ว่ามี token หรือยัง
-$ thclaws cloud logout               # ลืม token ที่เก็บไว้
-```
-
-`cloud login` รับ flag `--cloud-url URL` ด้วย หากต้องการ override URL
-โดยไม่ต้องแก้ `settings.json`
+> **ทำไมไม่มี CLI subcommand?** รุ่นก่อนหน้ามี
+> `thclaws cloud login --token …` แต่ถูกเอาออกเพราะ token ที่ผ่าน
+> `argv` จบลงใน shell history และเครื่องมือ `ps`-style ทุกตัว
+> ตอนนี้เหลือ Settings UI + keychain เป็นทางเดียว ถ้ารัน
+> `thclaws cloud …` แบบเก่าจะ print error ชี้ไป flow ใหม่
 
 ## เปิดดู catalog
 
-จาก REPL หรือ Chat tab:
+จาก thClaws session (REPL หรือ Chat tab):
 
 ```
 ❯ /cloud status
@@ -76,35 +73,36 @@ thClaws.cloud — https://thclaws.cloud (token: ✓ stored)
 - weekly-research       v1.0.0  Saturday-morning newsletter writer (you)
 ```
 
-จาก shell (ข้อมูลเดียวกัน เหมาะกับการเขียน script):
-
-```
-$ thclaws cloud list
-$ thclaws cloud list --mine
-```
-
 แต่ละแถวคือ agent หนึ่งตัวใน catalog ส่วน slug คือสิ่งที่ต้องส่งให้
-`cloud get`
+`/cloud get`
 
 ## ติดตั้ง agent ลง folder
+
+`/cloud get` จะติดตั้งลง **current directory ของ session** เสมอ flow
+ปกติ:
+
+```bash
+# 1. จาก shell — สร้าง folder ว่างสำหรับ agent แล้ว cd เข้าไป
+mkdir my-hello && cd my-hello
+
+# 2. เปิด thClaws session ใน folder นั้น
+thclaws            # GUI default หรือ --cli ก็ได้
+```
+
+จากนั้นใน session:
 
 ```
 ❯ /cloud get hello-world
 Downloading hello-world (v0.1.0) …
-Extracted to /Users/jimmy/agents/hello-world/
+Extracted to /Users/jimmy/my-hello/
   ✓ AGENTS.md
   ✓ manifest.json
   ✓ skills/greet.md
-Done. cd hello-world && thclaws to run.
+Done. /reload to pick up the new AGENTS.md.
 ```
 
-`/cloud get` (หรือ `thclaws cloud get hello-world`) จะ extract
-tarball ของ agent ลง current directory รูปแบบ CLI มี target dir
-เพิ่มได้:
-
-```
-$ thclaws cloud get hello-world ~/agents/hello-world
-```
+engine จะดาวน์โหลด tarball แตกไฟล์ทั้งหมดลง cwd แล้ว `/reload` ครั้ง
+ถัดไปจะอ่าน `AGENTS.md` ใหม่ ไม่ต้องออกไป shell อีกรอบ
 
 ### กลไก folder-safety
 
@@ -124,16 +122,15 @@ $ thclaws cloud get hello-world ~/agents/hello-world
 
 ## Publish agent
 
-เวลาคุณสร้าง agent ใน folder หนึ่งและอยากให้มันขึ้น catalog:
+เวลาคุณสร้าง agent ใน folder หนึ่งและอยากให้มันขึ้น catalog ให้เปิด
+thClaws session ใน folder นั้น แล้วใช้ slash command:
 
 ```
-$ cd ~/agents/my-research-bot
-$ thclaws cloud publish              # อัปโหลด cwd
-$ thclaws cloud publish --dry-run    # preview เนื้อหา tarball ไม่อัปโหลด
-$ thclaws cloud publish ./other-dir  # publish folder อื่น
+❯ /cloud publish              # อัปโหลด cwd
+❯ /cloud publish --dry-run    # preview เนื้อหา tarball ไม่อัปโหลด
 ```
 
-`publish` ทำ 3 อย่าง:
+`/cloud publish` ทำ 3 อย่าง:
 
 1. **Tar + gzip** folder ทั้งก้อน — secret, session, KMS page และ
    directory `./.thclaws/` ถูกตัดออกอัตโนมัติ คุณ re-publish ทุกวันได้
@@ -161,10 +158,10 @@ $ thclaws cloud publish ./other-dir  # publish folder อื่น
 ```
 
 - **id / name / description** — คัดลอกมาจาก `manifest.json` ตอน
-  publish ใช้โดย catalog UI และโดย safety check ของ `cloud get`
+  publish ใช้โดย catalog UI และโดย safety check ของ `/cloud get`
 - **uuid** — assign โดย catalog ครั้ง **แรก** ที่ publish จาก folder
   นี้ แล้วเขียนกลับลง `settings.json` ครั้งต่อไปที่ publish จะไปลง
-  catalog row เดิม (เพิ่ม version) UUID คือสิ่งที่ `cloud get` ใช้
+  catalog row เดิม (เพิ่ม version) UUID คือสิ่งที่ `/cloud get` ใช้
   match ว่า "folder นี้คือ agent ตัวเดียวกันมั้ย"
 
 ปกติไม่ต้องแก้บล็อกนี้เอง GUI Settings → **Agent identity** มี
@@ -173,17 +170,18 @@ panel ให้แก้ `name` / `description` (สะดวกก่อน pub
 
 ### Fork agent ที่ดาวน์โหลดมา
 
-ถ้า `cloud get` agent ของคนอื่นมาแล้วอยาก fork ในชื่อตัวเอง:
+ถ้า `/cloud get` agent ของคนอื่นมาแล้วอยาก fork ในชื่อตัวเอง จาก
+session ของ folder agent นั้น:
 
 ```
-$ thclaws cloud unbind        # ล้าง settings.json::agent.uuid
-$ # แก้ AGENTS.md, manifest.json — เปลี่ยน `id` เป็นชื่อที่ว่าง
-$ thclaws cloud publish        # ได้ UUID ใหม่
+❯ /cloud unbind            # ล้าง settings.json::agent.uuid
+❯ # ใน session เดิม: แก้ AGENTS.md, manifest.json — เปลี่ยน `id` เป็นชื่อที่ว่าง
+❯ /cloud publish           # ได้ UUID ใหม่
 ```
 
-ถ้าไม่ unbind ก่อน publish ครั้งต่อไปจะพยายาม update catalog row ของ
-เจ้าของเดิม (และจะ fail ด้วย permission error — catalog gate การ
-publish ตาม author)
+ถ้าไม่ `/cloud unbind` ก่อน publish ครั้งต่อไปจะพยายาม update catalog
+row ของเจ้าของเดิม (และจะ fail ด้วย permission error — catalog gate
+การ publish ตาม author)
 
 ## Hosted workspace (เช่าแทนที่จะติดตั้ง)
 
@@ -246,16 +244,19 @@ $100 ก็ไม่ได้ปลด enterprise model ให้ starter accoun
 
 ## สรุปอ้างอิงคำสั่ง
 
+catalog op ทุกอันรันใน thClaws session ที่เปิดอยู่ — ถ้ารัน
+`thclaws cloud …` แบบ CLI เก่าทุกตัวจะ print error ชี้ไป
+slash-command equivalent
+
 | คำสั่ง | ที่ใช้ | ทำอะไร |
 |---|---|---|
-| `thclaws cloud login [--token …]` | CLI | เก็บ CLI token ลง keychain |
-| `thclaws cloud logout` | CLI | ลืม token ที่ cache ไว้ |
-| `thclaws cloud status` | CLI / `/cloud status` | แสดง URL ที่ resolve + state ของ token |
-| `thclaws cloud list [--mine]` | CLI / `/cloud list` | browse catalog |
-| `thclaws cloud get <slug> [<dir>] [--force]` | CLI / `/cloud get` | ติดตั้งลง folder |
-| `thclaws cloud publish [<dir>] [--dry-run]` | CLI | อัปโหลดจาก folder |
-| `thclaws cloud unbind` | CLI | ล้าง `agent.uuid` ให้ publish ครั้งต่อไปสร้าง row ใหม่ใน catalog |
-| Settings → **thClaws.cloud** | GUI | URL + CLI token |
+| Settings → **thClaws.cloud** | GUI | Cloud URL + CLI token (paste / clear) — ทางเดียวที่ใช้ login/logout |
+| `/cloud status` | In-session slash | แสดง URL ที่ resolve + state ของ token |
+| `/cloud list [--mine]` | In-session slash | browse catalog |
+| `/cloud get <slug> [--force]` | In-session slash | ติดตั้งลง cwd ของ session |
+| `/cloud publish [--dry-run]` | In-session slash | อัปโหลด cwd ของ session |
+| `/cloud unbind` | In-session slash | ล้าง `agent.uuid` ให้ publish ครั้งต่อไปสร้าง row ใหม่ใน catalog |
+| Settings → **Agent identity** | GUI | แก้ `agent.name` / `description` ของ folder นี้ |
 | Settings → **Agent identity** | GUI | แก้ `agent.name` / `description` ของ folder นี้ |
 | `/credit` (web) | Catalog UI | เติม credit + ดู balance + ดูราคา model |
 | `/gateway/keys` (web) | Catalog UI | mint access key `gw_v1_…` |
