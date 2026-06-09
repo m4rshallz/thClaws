@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "source": "baseline 2026-05-19 — pricing synced from LiteLLM (github.com/BerriAI/litellm)",
-  "fetched_at": "2026-06-06T00:00:00Z",
+  "fetched_at": "2026-06-09T00:00:00Z",
   "providers": {
     "agentic-press": {
       "list_url": "https://llm.artech.cloud/v1/models",
@@ -338,8 +338,10 @@
         },
         "dashscope/deepseek-v3.2": {
           "context": 131072,
-          "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models + manual:dashscope/deepseek-v3.2",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.287,
+          "output_per_mtok": 0.431
         },
         "dashscope/deepseek-v4-flash": {
           "context": 131072,
@@ -353,13 +355,17 @@
         },
         "dashscope/glm-5.1": {
           "context": 131072,
-          "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models + manual:dashscope/glm-5.1",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.86,
+          "output_per_mtok": 3.154
         },
         "dashscope/kimi-k2.6": {
           "context": 131072,
-          "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models + manual:dashscope/kimi-k2.6",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.574,
+          "output_per_mtok": 3.011
         },
         "dashscope/qvq-max": {
           "context": 131072,
@@ -373,13 +379,17 @@
         },
         "dashscope/qwen-flash": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen-flash",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.25,
+          "output_per_mtok": 2.0
         },
         "dashscope/qwen-flash-character": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen-flash-character",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.25,
+          "output_per_mtok": 2.0
         },
         "dashscope/qwen-max": {
           "context": 131072,
@@ -443,23 +453,31 @@
         },
         "dashscope/qwen-plus-2025-09-11": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen-plus-2025-09-11",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 1.2,
+          "output_per_mtok": 3.6
         },
         "dashscope/qwen-plus-2025-12-01": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen-plus-2025-12-01",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 1.2,
+          "output_per_mtok": 3.6
         },
         "dashscope/qwen-plus-character": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen-plus-character",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 1.2,
+          "output_per_mtok": 3.6
         },
         "dashscope/qwen-plus-latest": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen-plus-latest",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 1.2,
+          "output_per_mtok": 3.6
         },
         "dashscope/qwen-turbo": {
           "context": 131072,
@@ -555,33 +573,45 @@
         },
         "dashscope/qwen3-coder-480b-a35b-instruct": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-coder-480b-a35b-instruct",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 6.0,
+          "output_per_mtok": 60.0
         },
         "dashscope/qwen3-coder-flash": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-coder-flash",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 1.6,
+          "output_per_mtok": 9.6
         },
         "dashscope/qwen3-coder-next": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-coder-next",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 6.0,
+          "output_per_mtok": 60.0
         },
         "dashscope/qwen3-coder-plus": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-coder-plus",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 6.0,
+          "output_per_mtok": 60.0
         },
         "dashscope/qwen3-coder-plus-2025-07-22": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-coder-plus-2025-07-22",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 6.0,
+          "output_per_mtok": 60.0
         },
         "dashscope/qwen3-coder-plus-2025-09-23": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-coder-plus-2025-09-23",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 6.0,
+          "output_per_mtok": 60.0
         },
         "dashscope/qwen3-livetranslate-flash": {
           "context": 131072,
@@ -605,23 +635,31 @@
         },
         "dashscope/qwen3-max": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-max",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 3.0,
+          "output_per_mtok": 15.0
         },
         "dashscope/qwen3-max-2025-09-23": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-max-2025-09-23",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 3.0,
+          "output_per_mtok": 15.0
         },
         "dashscope/qwen3-max-2026-01-23": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-max-2026-01-23",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 3.0,
+          "output_per_mtok": 15.0
         },
         "dashscope/qwen3-max-preview": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-max-preview",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 3.0,
+          "output_per_mtok": 15.0
         },
         "dashscope/qwen3-next-80b-a3b-instruct": {
           "context": 131072,
@@ -693,18 +731,24 @@
         },
         "dashscope/qwen3-vl-flash": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-vl-flash",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.25,
+          "output_per_mtok": 2.0
         },
         "dashscope/qwen3-vl-flash-2025-10-15": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-vl-flash-2025-10-15",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.25,
+          "output_per_mtok": 2.0
         },
         "dashscope/qwen3-vl-flash-2026-01-22": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3-vl-flash-2026-01-22",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.25,
+          "output_per_mtok": 2.0
         },
         "dashscope/qwen3-vl-plus": {
           "context": 131072,
@@ -743,13 +787,17 @@
         },
         "dashscope/qwen3.5-flash": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3.5-flash",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.1,
+          "output_per_mtok": 0.4
         },
         "dashscope/qwen3.5-flash-2026-02-23": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3.5-flash-2026-02-23",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.1,
+          "output_per_mtok": 0.4
         },
         "dashscope/qwen3.5-livetranslate-flash-realtime": {
           "context": 131072,
@@ -803,18 +851,24 @@
         },
         "dashscope/qwen3.5-plus": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3.5-plus",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.5,
+          "output_per_mtok": 3.0
         },
         "dashscope/qwen3.5-plus-2026-02-15": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3.5-plus-2026-02-15",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.5,
+          "output_per_mtok": 3.0
         },
         "dashscope/qwen3.5-plus-2026-04-20": {
           "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:dashscope/qwen3.5-plus-2026-04-20",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.5,
+          "output_per_mtok": 3.0
         },
         "dashscope/qwen3.6-27b": {
           "context": 131072,
@@ -890,8 +944,10 @@
         },
         "dashscope/qwq-plus-2025-03-05": {
           "context": 131072,
-          "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models + manual:dashscope/qwq-plus-2025-03-05",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.8,
+          "output_per_mtok": 2.4
         },
         "dashscope/tongyi-tingwu-slp": {
           "context": 131072,
@@ -1001,7 +1057,7 @@
         "gemini-3.1-flash-lite": {
           "context": 1048576,
           "max_output": 65536,
-          "source": "https://generativelanguage.googleapis.com/v1beta/models",
+          "source": "https://generativelanguage.googleapis.com/v1beta/models + litellm:gemini-3.1-flash-lite",
           "verified_at": "2026-06-02",
           "input_per_mtok": 0.25,
           "output_per_mtok": 1.5
@@ -1145,8 +1201,10 @@
         },
         "minimax/MiniMax-M3": {
           "context": 200000,
-          "source": "https://api.minimax.io/v1/models",
-          "verified_at": "2026-06-02"
+          "source": "https://api.minimax.io/v1/models + litellm:minimax/MiniMax-M3",
+          "verified_at": "2026-06-09",
+          "input_per_mtok": 0.6,
+          "output_per_mtok": 2.4
         }
       }
     },

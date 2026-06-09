@@ -343,10 +343,6 @@ pub async fn dispatch(
             // pass through — that's the legacy default for catalogue
             // sources that don't publish modality info.
             rows.retain(|(_, e)| e.chat != Some(false));
-            // SSOT gate: same rule as the model picker — unpriced rows
-            // get hidden on non-local providers so users can't pick a
-            // model the gateway can't bill.
-            rows.retain(|(_, e)| e.is_listable(provider_name));
 
             // "Free only" toggle: when the user opted in via Settings,
             // the OpenRouter row list collapses to entries marked
@@ -463,8 +459,6 @@ pub async fn dispatch(
                     let cat = crate::model_catalogue::EffectiveCatalogue::load();
                     let mut models = cat.list_models_for_provider(prov);
                     models.retain(|(_, e)| e.chat != Some(false));
-                    // SSOT gate — see ipc.rs for the rationale.
-                    models.retain(|(_, e)| e.is_listable(prov));
                     if prov == "openrouter" && state.config.openrouter_free_only {
                         models.retain(|(_, e)| e.free == Some(true));
                     }

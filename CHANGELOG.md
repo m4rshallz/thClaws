@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-06-09
+
+Catalog-policy reversal + Asian-provider pricing fill-in. The picker
+now shows every model the engine can route to (matches pre-v0.41
+behaviour) and dashscope-hosted families finally get a price tag
+instead of an empty cost column.
+
+### Changed
+
+- **Model picker shows every routable model again.** v0.41.0
+  introduced an `is_listable()` filter that hid catalogue rows
+  without published pricing from the sidebar / `/model` / `/models`
+  / `/v1/models`. v0.42.0 propagated it to the last hold-out
+  (`build_all_models_payload`). End result: dashscope alone lost
+  98 chat models from the picker — entire families (qwen-coder-plus,
+  qwen-flash, deepseek-v4-*, kimi-k2.6, qwen-mt-*) that work fine
+  for BYOK users were invisible. Reversed: the only filter on the
+  picker is `chat != Some(false)` again. Missing pricing means the
+  catalogue refresh has a gap to fill, not that the model is
+  unusable. Cloud-gateway-routed traffic still gets a strict 400
+  reject when the cloud `model_pricing` table is missing a row —
+  bill-shock guard intact, just not surfaced as a picker filter.
+
+### Fixed
+
+- **Asian-provider pricing fill-in.** Added
+  `MANUAL_PRICING_OVERRIDES` to `scripts/refresh-model-catalogue.py`
+  for dashscope-hosted models LiteLLM doesn't track — sourced from
+  https://www.alibabacloud.com/help/en/model-studio/model-pricing
+  (International tier, highest token-band for a safe upper bound).
+  Longest-prefix matching so dated variants
+  (`qwen3-max-2025-09-23`) pick up their base family's price
+  without enumerating every dated id. dashscope priced coverage
+  jumped from 11/109 → 39/109 in one refresh: qwen-max, qwen-plus,
+  qwen-turbo, qwen-flash, qwen3-max, qwen3-coder-plus/flash,
+  qwen3-vl-flash, deepseek-v3.2, kimi-k2.6, glm-5.1, qwq-plus.
+
+- **Sidebar showed models that `/models` hid.** Symptom of the
+  v0.42.0 `is_listable()` gap that this release reverts entirely.
+  Sidebar = REPL `/models` = HTTP `/v1/models` again.
+
+### Added (developer-facing)
+
+- **`make audit-pricing` + pre-cut gate.** Every priced row in the
+  catalogue must carry a `litellm:` / `manual:` / `derived:` tag
+  in its `source` field. `scripts/audit-pricing-provenance.py`
+  walks the catalogue and fails the release if any priced row is
+  opaque. Wired into `make release` right after the catalogue
+  refresh and before the version bump, so a tag can't go out with
+  un-attributed pricing. Bill-shock guard: every cent the gateway
+  later debits has to trace back to a documented vendor source.
+  Audit-clean at this release: 302 priced rows, all tagged
+  (274 litellm / 28 manual / 12 derived).
+
 ## [0.42.0] — 2026-06-08
 
 Small cleanup release on top of v0.41.0 — one community PR plus two

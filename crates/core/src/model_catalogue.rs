@@ -144,23 +144,15 @@ pub struct ModelEntry {
 }
 
 impl ModelEntry {
-    /// True when this row may appear in a user-facing model picker.
-    ///
-    /// Policy (the catalogue is the SSOT for what users can pick):
-    /// every model the picker offers must either have published
-    /// pricing, be flagged free, be subscription-tier-billed, or live
-    /// on a local-only provider. Anything else is hidden — surfacing
-    /// it risks bill shock if the user picks it and the gateway
-    /// rejects with "model not in catalog" mid-stream.
-    ///
-    /// Local providers (`ollama`, `ollama-anthropic`, `lmstudio`) are
-    /// always listable because they don't route through any billed
-    /// gateway — pricing in the catalogue is irrelevant for them.
-    pub fn is_listable(&self, provider: &str) -> bool {
-        const LOCAL_PROVIDERS: &[&str] = &["ollama", "ollama-anthropic", "lmstudio"];
-        if LOCAL_PROVIDERS.contains(&provider) {
-            return true;
-        }
+    /// True when this row has a published price (input OR output rate),
+    /// is free, or is subscription-tier-billed. Cheap-to-call helper
+    /// for surfaces that want to badge unpriced rows or sort priced
+    /// rows first — does NOT gate listing. Listing every model the
+    /// engine knows is the policy: missing pricing should be filled
+    /// (via `scripts/refresh-model-catalogue.py` or manual edits to
+    /// `resources/model_catalogue.json`), not used to hide the row.
+    #[allow(dead_code)]
+    pub fn has_published_pricing(&self) -> bool {
         if self.free == Some(true) || self.tier_billed == Some(true) {
             return true;
         }

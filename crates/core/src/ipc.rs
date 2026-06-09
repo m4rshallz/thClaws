@@ -2682,11 +2682,6 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                     let cat = crate::model_catalogue::EffectiveCatalogue::load();
                     let mut models = cat.list_models_for_provider(provider);
                     models.retain(|(_, e)| e.chat != Some(false));
-                    // SSOT gate — only models the catalogue can price
-                    // (or that are free / tier-billed / local) show up
-                    // in the picker. Prevents bill-shock from picking
-                    // a model the cloud gateway can't bill.
-                    models.retain(|(_, e)| e.is_listable(provider));
                     if provider == "openrouter" && new_cfg.openrouter_free_only {
                         models.retain(|(_, e)| e.free == Some(true));
                     }
