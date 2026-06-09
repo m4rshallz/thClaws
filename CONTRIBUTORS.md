@@ -50,6 +50,11 @@ In rough order of first contribution.
   Handle GUI ask-prompts and macOS Cmd+W close shortcuts so
   dialogs and windows behave consistently.
 
+### [@triok-t](https://github.com/triok-t)
+- **PR [#16](https://github.com/thClaws/thClaws/pull/16)
+  (co-author)** — Co-authored the GUI ask-prompts + macOS Cmd+W
+  close-shortcut fix with @Kinzen-dev.
+
 ### [@siharat-th](https://github.com/siharat-th) (Siharat Thammaya)
 - **PR [#20](https://github.com/thClaws/thClaws/pull/20)** — Added
   the slash-command popup to chat + terminal tabs — auto-complete
@@ -156,6 +161,16 @@ In rough order of first contribution.
 - **PR [#103](https://github.com/thClaws/thClaws/pull/103)** —
   OpenCodeGo: deduct cached tokens from `input_tokens` so cost
   accounting matches the underlying billing.
+
+### [@dome](https://github.com/dome) (Dome C.)
+- **PR [#110](https://github.com/thClaws/thClaws/pull/110)
+  (closed → adopted into [#113](https://github.com/thClaws/thClaws/pull/113))** —
+  Make `--model` flag actually work across CLI, GUI, and serve
+  modes. The original PR was closed when @mozeal opened the
+  follow-up #113 incorporating the fix; the merge commit
+  ([a697cc2](https://github.com/thClaws/thClaws/commit/a697cc2))
+  lists @dome as co-author so credit lands where the work was
+  done.
 
 ### [@ultramcu](https://github.com/ultramcu) (MaIII Themd)
 - **PR [#115](https://github.com/thClaws/thClaws/pull/115)** —
