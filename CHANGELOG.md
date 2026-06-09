@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-06-09
+
+Security hardening on the gui-shell bridge — defence-in-depth that
+closes a script-breakout vector — plus a sweep of community-facing
+housekeeping: 24 retroactive entries on CONTRIBUTORS.md and the v0.32
+landing-page callout finally retired.
+
 ### Security
 
 - **gui-shell: escape `</` in injected values to prevent HTML script
@@ -24,6 +31,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   severity) defence on the `--serve` and hosted-cloud surfaces; the
   marketplace gui-shells story makes this matter more over time.
   PR by @JonusNattapong.
+
+### Changed
+
+- **README + landing page: retired the "new in v0.32" callout.**
+  The Shell-tab + Claude-Code-inside-thClaws callout had been the
+  top of the README and `thclaws.ai` landing page for 12 versions
+  — "new in v0.32" stopped reading as fresh ten releases ago. The
+  Shell story is permanent product surface and is covered in the
+  Features section and ch26 of the manual. Replaced with the
+  existing showcase as the first content section.
+
+### Community
+
+- **24 retroactive contributor credits.** CONTRIBUTORS.md was 5
+  entries deep but the merged-PR graph showed roughly five times
+  that. Audited every login on every merged PR and backfilled 22
+  PR senders in chronological order (oldest: @bombman's PR #2;
+  biggest counts: @parintorns 9 PRs, @siharat-th 8 PRs). Also
+  credited @triok-t (co-author on PR #16) and @dome (PR #110
+  closed → adopted into #113 by @mozeal). 29 community
+  contributors listed now. Thank-you comments posted on each
+  new contributor's most recent merged PR.
 
 ## [0.44.0] — 2026-06-09
 
