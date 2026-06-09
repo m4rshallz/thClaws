@@ -30,6 +30,15 @@ In rough order of first contribution.
   essentially as-is in v0.30.0. Exactly the kind of bug report that
   closes itself.
 
+### [@pok29dev](https://github.com/pok29dev)
+- **Issue [#156](https://github.com/thClaws/thClaws/issues/156)** —
+  Reported the DashScope picker double-prefix bug
+  (`dashscope/dashscope/<model>`) and pinned the expected canonical
+  shape (`dashscope/<model>`). That pointer drove the fix in v0.44.0:
+  DashScope routing now follows the same `dashscope/` prefix pattern
+  as `zai/` / `qc/` / `ap/` — strip on the wire, keep canonical in
+  the catalogue + picker.
+
 ## How to be listed
 
 1. **Open a PR** — even small ones (typo fix, documentation,
