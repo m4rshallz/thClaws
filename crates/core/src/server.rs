@@ -33,11 +33,11 @@ use crate::providers::provider_has_credentials;
 use crate::session::SessionStore;
 use crate::shared_session::{SharedSessionHandle, ShellInput, ViewEvent};
 use crate::uploads::{
-    ensure_uploads_dir, render_upload_message, unique_path, UploadedFile, UPLOADS_DIRNAME,
-    UPLOAD_MAX_BYTES, UPLOAD_MAX_FILES,
+    ensure_target_dir, ensure_uploads_dir, render_upload_message, unique_path, UploadedFile,
+    UPLOADS_DIRNAME, UPLOAD_MAX_BYTES, UPLOAD_MAX_FILES,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Multipart, State};
+use axum::extract::{Multipart, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -780,19 +780,34 @@ async fn serve_file_asset(axum::extract::Path(rel): axum::extract::Path<String>)
 /// so the frontend can show a confirmation chip per file. Caps:
 /// [`UPLOAD_MAX_BYTES`] per file, [`UPLOAD_MAX_FILES`] per request.
 /// Oversize / overflow is rejected with 413.
+/// `?dir=<rel>` lets a caller (e.g. a GUI shell staging files) drop the
+/// upload into a specific workspace subfolder instead of `uploads/`.
+/// When set, the chat-message synthesis is skipped — the files are
+/// staged silently for the shell to act on, not announced to the agent.
+#[derive(serde::Deserialize, Default)]
+struct UploadQuery {
+    dir: Option<String>,
+}
+
 async fn serve_upload(
     State(state): State<ServeState>,
+    Query(q): Query<UploadQuery>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let workspace = state.workspace.as_ref();
-    let uploads_dir = match ensure_uploads_dir(workspace) {
+    let target_dir = q.dir.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let uploads_dir = match target_dir {
+        Some(rel) => ensure_target_dir(workspace, rel),
+        None => ensure_uploads_dir(workspace),
+    };
+    let uploads_dir = match uploads_dir {
         Ok(p) => p,
         Err(e) => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "ok": false,
-                    "error": format!("cannot create uploads dir: {e}"),
+                    "error": format!("cannot use upload dir: {e}"),
                 })),
             )
                 .into_response();
@@ -887,8 +902,14 @@ async fn serve_upload(
             .into_response();
     }
 
-    let synth = render_upload_message("serve", &saved);
-    let _ = state.shared.input_tx.send(ShellInput::Line(synth));
+    // Only announce uploads to the agent for the default `uploads/`
+    // drop. A `?dir=` upload is the shell staging files for itself
+    // (e.g. book-author's raw/ sources) — synthesizing a turn here
+    // would make the agent react to files it isn't meant to see yet.
+    if target_dir.is_none() {
+        let synth = render_upload_message("serve", &saved);
+        let _ = state.shared.input_tx.send(ShellInput::Line(synth));
+    }
 
     let files: Vec<serde_json::Value> = saved
         .iter()

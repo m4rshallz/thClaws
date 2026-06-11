@@ -102,6 +102,36 @@ pub fn ensure_uploads_dir(workspace: &Path) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Ensure `<workspace>/<rel>/` exists and return the absolute path,
+/// rejecting any `rel` that would escape the workspace. Used by the
+/// upload endpoint's `?dir=` param so a shell can stage files into a
+/// specific subfolder (e.g. `raw/`) instead of the default `uploads/`.
+/// `rel` must be a relative path with only normal components — no `..`,
+/// no leading `/`, no drive/root — anything else returns an error
+/// rather than writing outside the workspace.
+pub fn ensure_target_dir(workspace: &Path, rel: &str) -> std::io::Result<PathBuf> {
+    let rel = rel.trim().trim_matches('/');
+    if rel.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty target dir",
+        ));
+    }
+    let candidate = Path::new(rel);
+    let unsafe_component = candidate
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)));
+    if unsafe_component {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unsafe upload dir: {rel}"),
+        ));
+    }
+    let dir = workspace.join(candidate);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 /// Render the user-turn text for a batch of uploaded files.
 ///
 /// Shape:
@@ -211,6 +241,24 @@ fn format_bytes(n: u64) -> String {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn ensure_target_dir_accepts_safe_subdir_rejects_escape() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        // Safe relative subdir → created under the workspace.
+        let raw = ensure_target_dir(ws, "raw").unwrap();
+        assert_eq!(raw, ws.join("raw"));
+        assert!(raw.is_dir());
+        // Nested safe path also fine.
+        assert!(ensure_target_dir(ws, "a/b/c").unwrap().starts_with(ws));
+        // Leading slash trimmed, still safe.
+        assert_eq!(ensure_target_dir(ws, "/raw/").unwrap(), ws.join("raw"));
+        // Escapes + absolute + empty are rejected.
+        for bad in ["../escape", "raw/../../etc", "..", "  "] {
+            assert!(ensure_target_dir(ws, bad).is_err(), "should reject {bad:?}");
+        }
+    }
 
     #[test]
     fn unique_path_returns_original_when_free() {

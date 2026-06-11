@@ -1,6 +1,6 @@
 [package]
 name = "thclaws-core"
-version = "0.47.0"
+version = "0.48.0"
 edition = "2021"
 description = "thClaws — native Rust AI agent workspace with CLI and desktop GUI."
 license = "MIT OR Apache-2.0"
@@ -32,7 +32,7 @@ futures = "0.3"
 # Always-on (not feature-gated) per M6.36 design decision: dependency
 # delta is negligible vs the wry+tao GUI deps; CLI + GUI binaries
 # both ship serve mode.
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "multipart", "json"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "multipart", "json", "query"] }
 async-trait = "0.1"
 async-stream = "0.3"
 bytes = "1"

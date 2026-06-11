@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-06-11
+
+### Added
+- **`/upload?dir=` — dir-targeted, silent file staging.** The serve
+  upload endpoint now accepts an optional `?dir=<rel>` query param that
+  writes the upload into a specific workspace subfolder (sandboxed
+  against escape) instead of `uploads/`, and skips the chat-turn
+  synthesis. Lets a GUI shell stage files for itself — e.g.
+  book-author's new Sources tab dropping the author's notes straight
+  into `raw/` — without the agent reacting to the drop. Default (no
+  `dir`) behavior is unchanged.
+
 ## [0.47.0] - 2026-06-11
 
 ### Added
