@@ -2687,9 +2687,8 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                     }
                     // Gateway routing is strictly metered: unpriced
                     // models 400 upstream, so don't offer them.
-                    if crate::providers::thclaws_gateway::hides_unpriced_models(
-                        &new_cfg, provider,
-                    ) {
+                    if crate::providers::thclaws_gateway::hides_unpriced_models(&new_cfg, provider)
+                    {
                         models.retain(|(_, e)| {
                             e.input_per_mtok.is_some() && e.output_per_mtok.is_some()
                         });
@@ -3500,8 +3499,8 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             // `initial_state` snapshot already passed — answer with a
             // fresh list so the history isn't blank until the next
             // worker-side push.
-            let store = crate::session::SessionStore::default_path()
-                .map(crate::session::SessionStore::new);
+            let store =
+                crate::session::SessionStore::default_path().map(crate::session::SessionStore::new);
             (ctx.dispatch)(crate::shared_session::build_session_list(&store, ""));
         }
 

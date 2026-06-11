@@ -380,9 +380,23 @@ fn is_thai_lead_vowel(c: char) -> bool {
 fn no_break_before(c: char) -> bool {
     matches!(
         c,
-        '\u{0E33}' | '\u{0E46}' | '\u{0E2F}'
-            | ')' | ']' | '}' | '!' | '?' | ',' | '.' | ':' | ';' | '%'
-            | '”' | '’' | '»' | '…'
+        '\u{0E33}'
+            | '\u{0E46}'
+            | '\u{0E2F}'
+            | ')'
+            | ']'
+            | '}'
+            | '!'
+            | '?'
+            | ','
+            | '.'
+            | ':'
+            | ';'
+            | '%'
+            | '”'
+            | '’'
+            | '»'
+            | '…'
     )
 }
 
@@ -507,7 +521,11 @@ fn break_lines_at(
     let mut last_any_break: Option<usize> = None;
 
     for cl in clusters {
-        let max = if lines.is_empty() { first_max } else { rest_max };
+        let max = if lines.is_empty() {
+            first_max
+        } else {
+            rest_max
+        };
         if cl.is_space && line.is_empty() {
             continue; // never lead with a space
         }
@@ -520,9 +538,7 @@ fn break_lines_at(
             }
         }
         if width + cl.width_mm > max && !line.is_empty() {
-            let split_at = last_word_break
-                .or(last_any_break)
-                .unwrap_or(line.len());
+            let split_at = last_word_break.or(last_any_break).unwrap_or(line.len());
             let mut rest: Vec<Cluster> = line.split_off(split_at);
             while line.last().map(|c| c.is_space).unwrap_or(false) {
                 line.pop();
@@ -680,17 +696,16 @@ impl PdfRenderer {
                     let mut pen = x;
                     let mut batch: Vec<u16> = Vec::new();
                     let mut batch_x = pen;
-                    let flush =
-                        |batch: &mut Vec<u16>, at_x: f32| {
-                            if batch.is_empty() {
-                                return;
-                            }
-                            layer.begin_text_section();
-                            layer.set_font(font_ref, eff_pt);
-                            layer.set_text_cursor(Mm(at_x), Mm(baseline_y));
-                            layer.write_codepoints(batch.drain(..));
-                            layer.end_text_section();
-                        };
+                    let flush = |batch: &mut Vec<u16>, at_x: f32| {
+                        if batch.is_empty() {
+                            return;
+                        }
+                        layer.begin_text_section();
+                        layer.set_font(font_ref, eff_pt);
+                        layer.set_text_cursor(Mm(at_x), Mm(baseline_y));
+                        layer.write_codepoints(batch.drain(..));
+                        layer.end_text_section();
+                    };
                     for g in &glyphs {
                         if g.x_offset.abs() < 0.001 && g.y_offset.abs() < 0.001 {
                             if batch.is_empty() {
@@ -701,10 +716,8 @@ impl PdfRenderer {
                             flush(&mut batch, batch_x);
                             layer.begin_text_section();
                             layer.set_font(font_ref, eff_pt);
-                            layer.set_text_cursor(
-                                Mm(pen + g.x_offset),
-                                Mm(baseline_y + g.y_offset),
-                            );
+                            layer
+                                .set_text_cursor(Mm(pen + g.x_offset), Mm(baseline_y + g.y_offset));
                             layer.write_codepoints(std::iter::once(g.gid));
                             layer.end_text_section();
                         }
@@ -716,7 +729,13 @@ impl PdfRenderer {
                 }
                 None => {
                     // Shaper unavailable (corrupt face?) — cmap fallback.
-                    layer.use_text(&text, eff_pt, Mm(x), Mm(baseline_y), &self.fonts[font as usize]);
+                    layer.use_text(
+                        &text,
+                        eff_pt,
+                        Mm(x),
+                        Mm(baseline_y),
+                        &self.fonts[font as usize],
+                    );
                     x += hmtx_w;
                 }
             }
@@ -1295,7 +1314,9 @@ fn fix_outline_title_encoding(bytes: Vec<u8>) -> Vec<u8> {
                 return None;
             }
             match dict.get(b"Title") {
-                Ok(lopdf::Object::String(t, _)) if std::str::from_utf8(t).is_ok_and(|s| !s.is_ascii()) => {
+                Ok(lopdf::Object::String(t, _))
+                    if std::str::from_utf8(t).is_ok_and(|s| !s.is_ascii()) =>
+                {
                     Some((*id, t.clone()))
                 }
                 _ => None,

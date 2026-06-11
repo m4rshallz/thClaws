@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-06-11
+
+### Added
+- **PdfCreate v2** — book-quality markdown→PDF: HarfBuzz (rustybuzz)
+  text shaping so Thai stacked tone marks render correctly, ICU4X
+  Thai word-boundary line breaking, real glyph metrics, embedded
+  Noto Sans Bold/Italic + Noto Sans Thai Bold, bordered GFM tables,
+  lists with hanging indents, blockquote bars, shaded code blocks,
+  centered fit-width images with alt-text captions, `n / N` page
+  footers, Thai-readable (UTF-16) PDF outline bookmarks.
+- PdfCreate `content_path` input — render a markdown file directly
+  (books never round-trip through the model context); relative image
+  paths resolve against the file's directory. `page_break_h1` starts
+  each chapter on a fresh page; `outline_depth` controls the sidebar
+  (default: chapters only).
+- WorkflowRun `script_path` input — execute pre-authored agent
+  workflow scripts (book-author `/draft-all-parallel`) without the
+  authoring step.
+- Native Gemini image tools route through the thClaws Gateway on
+  hosted runners, sniff the actual image format (PNG/JPEG/WEBP), and
+  register on every surface (GUI, serve, REPL, print mode, workflow
+  workers); they also follow `imageToolsEnabled` across config
+  reloads.
+- Gateway overlay covers every cloud-routable provider (DashScope,
+  Qwen-Cloud, Z.ai, DeepSeek, MiniMax, ThaiLLM) with strict
+  catalogue-priced metering; unpriced models are hidden from model
+  pickers when gateway-routed.
+
+### Fixed
+- Files tab: PDFs render inline (served as `application/pdf` off
+  `/file-asset`), markdown-preview images load on hosted workspaces,
+  and the session sidebar survives fullscreen remounts.
+- Engine no longer requires a native provider API key when the
+  gateway overlay carries the credential.
+
+
 ## [0.45.0] — 2026-06-09
 
 Security hardening on the gui-shell bridge — defence-in-depth that

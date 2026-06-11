@@ -1041,8 +1041,7 @@ pub async fn build_all_models_payload() -> String {
                 continue;
             }
             // Strictly metered via gateway → unpriced rows 400, hide them.
-            if hide_unpriced
-                && (entry.input_per_mtok.is_none() || entry.output_per_mtok.is_none())
+            if hide_unpriced && (entry.input_per_mtok.is_none() || entry.output_per_mtok.is_none())
             {
                 continue;
             }

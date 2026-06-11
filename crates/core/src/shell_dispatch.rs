@@ -473,10 +473,8 @@ pub async fn dispatch(
                         models.retain(|(_, e)| e.free == Some(true));
                     }
                     // Strictly metered via gateway → hide unpriced rows.
-                    if crate::providers::thclaws_gateway::hides_unpriced_models(
-                        &state.config,
-                        prov,
-                    ) {
+                    if crate::providers::thclaws_gateway::hides_unpriced_models(&state.config, prov)
+                    {
                         models.retain(|(_, e)| {
                             e.input_per_mtok.is_some() && e.output_per_mtok.is_some()
                         });

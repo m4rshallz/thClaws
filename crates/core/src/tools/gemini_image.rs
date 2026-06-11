@@ -89,9 +89,7 @@ fn resolve_endpoint() -> Result<(String, String)> {
             .ok()
             .map(|s| s.trim().trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| {
-                crate::providers::thclaws_gateway::GATEWAY_BASE_URL.to_string()
-            });
+            .unwrap_or_else(|| crate::providers::thclaws_gateway::GATEWAY_BASE_URL.to_string());
         return Ok((format!("{base}/google"), gw_key));
     }
     resolve_key().map(|k| (GEMINI_BASE.to_string(), k))
