@@ -57,6 +57,13 @@ export function BrowserView({ active }: { active: boolean }) {
   const [chat, setChat] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // Interactive takeover (Phase 2 slice 2): when on, the screenshot is
+  // clickable/typeable — every action routes through the allowlisted
+  // `browser_input_call` arm and refreshes the screenshot.
+  const [takeover, setTakeover] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const [typeInput, setTypeInput] = useState("");
+  const [inputErr, setInputErr] = useState("");
 
   const nextId = useRef(1);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -73,6 +80,72 @@ export function BrowserView({ active }: { active: boolean }) {
     setShotBusy(true);
     send({ type: "browser_screenshot_get" });
   }
+
+  function sendInput(tool: string, args: Record<string, unknown>) {
+    setInputErr("");
+    send({ type: "browser_input_call", tool, args });
+  }
+
+  // Map a click on the rendered screenshot to page coordinates. The
+  // <img> uses object-contain, so the drawn picture may be letterboxed
+  // inside the element box — account for that before scaling to the
+  // image's natural (viewport) size.
+  function imgClickCoords(e: React.MouseEvent<HTMLImageElement>) {
+    const img = e.currentTarget;
+    const rect = img.getBoundingClientRect();
+    const natW = img.naturalWidth || 1;
+    const natH = img.naturalHeight || 1;
+    const scale = Math.min(rect.width / natW, rect.height / natH);
+    const drawnW = natW * scale;
+    const drawnH = natH * scale;
+    const offX = (rect.width - drawnW) / 2;
+    const offY = (rect.height - drawnH) / 2;
+    const x = (e.clientX - rect.left - offX) / scale;
+    const y = (e.clientY - rect.top - offY) / scale;
+    if (x < 0 || y < 0 || x > natW || y > natH) return null;
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+
+  function onShotClick(e: React.MouseEvent<HTMLImageElement>) {
+    if (!takeover) return;
+    const pt = imgClickCoords(e);
+    if (!pt) return;
+    sendInput("browser_mouse_click_xy", {
+      element: "user takeover click",
+      x: pt.x,
+      y: pt.y,
+    });
+  }
+
+  // Wheel → remote scroll, throttled by accumulating deltas. Attached
+  // via ref with passive:false so the local pane doesn't also scroll.
+  const wheelAcc = useRef({ x: 0, y: 0, timer: null as number | null });
+  const takeoverRef = useRef(takeover);
+  takeoverRef.current = takeover;
+  const shotImgRef = useRef<HTMLImageElement | null>(null);
+  useEffect(() => {
+    const img = shotImgRef.current;
+    if (!img) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!takeoverRef.current) return;
+      e.preventDefault();
+      wheelAcc.current.x += e.deltaX;
+      wheelAcc.current.y += e.deltaY;
+      if (wheelAcc.current.timer === null) {
+        wheelAcc.current.timer = window.setTimeout(() => {
+          const { x, y } = wheelAcc.current;
+          wheelAcc.current = { x: 0, y: 0, timer: null };
+          sendInput("browser_mouse_wheel", {
+            deltaX: Math.round(x),
+            deltaY: Math.round(y),
+          });
+        }, 150);
+      }
+    };
+    img.addEventListener("wheel", onWheel, { passive: false });
+    return () => img.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shot !== null]);
 
   function scheduleShot() {
     if (!activeRef.current) {
@@ -109,6 +182,15 @@ export function BrowserView({ active }: { active: boolean }) {
           staleShot.current = false;
         } else {
           setShotErr(typeof msg.error === "string" ? msg.error : "capture failed");
+        }
+        return;
+      }
+      if (msg.type === "browser_input_result") {
+        if (msg.ok) {
+          // The page just changed under user input — refresh promptly.
+          scheduleShot();
+        } else if (typeof msg.error === "string") {
+          setInputErr(msg.error);
         }
         return;
       }
@@ -232,6 +314,20 @@ export function BrowserView({ active }: { active: boolean }) {
             <div className="flex-1" />
             {status?.enabled && (
               <button
+                onClick={() => setTakeover((t) => !t)}
+                className="text-[11px] px-2 py-0.5 rounded border font-medium"
+                style={{
+                  borderColor: takeover ? "var(--accent)" : "var(--border)",
+                  color: takeover ? "white" : "var(--text-secondary)",
+                  background: takeover ? "var(--accent)" : "transparent",
+                }}
+                title="Interact with the page directly — click, type, and scroll on the screenshot"
+              >
+                🖱 {takeover ? "Taking over" : "Take over"}
+              </button>
+            )}
+            {status?.enabled && (
+              <button
                 onClick={requestShot}
                 disabled={shotBusy}
                 className="text-[11px] px-2 py-0.5 rounded border"
@@ -281,16 +377,28 @@ export function BrowserView({ active }: { active: boolean }) {
             {shot ? (
               <div>
                 <img
+                  ref={shotImgRef}
                   src={shot.src}
                   alt="Latest browser screenshot"
-                  className="w-full max-h-[45vh] object-contain"
-                  style={{ background: "#fff" }}
+                  className="w-full max-h-[45vh] object-contain select-none"
+                  style={{
+                    background: "#fff",
+                    cursor: takeover ? "crosshair" : "default",
+                    outline: takeover ? "2px solid var(--accent)" : "none",
+                    outlineOffset: -2,
+                  }}
+                  onClick={onShotClick}
+                  draggable={false}
                 />
                 <div
                   className="text-[10px] px-2 py-1 flex justify-between"
                   style={{ color: "var(--text-secondary)", borderTop: "1px solid var(--border)" }}
                 >
-                  <span>auto-captured after browser actions</span>
+                  <span>
+                    {takeover
+                      ? "takeover: click / scroll on the page, type below"
+                      : "auto-captured after browser actions"}
+                  </span>
                   <span>{shot.at}</span>
                 </div>
               </div>
@@ -300,7 +408,80 @@ export function BrowserView({ active }: { active: boolean }) {
                   ? `Screenshot: ${shotErr}`
                   : browserUsed
                     ? "Capturing…"
-                    : "The page preview appears here after the agent's first browser action."}
+                    : takeover
+                      ? "Enter a URL below to start browsing."
+                      : "The page preview appears here after the agent's first browser action."}
+              </div>
+            )}
+            {takeover && (
+              <div
+                className="p-2 flex flex-col gap-1.5"
+                style={{ borderTop: "1px solid var(--border)" }}
+              >
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => sendInput("browser_navigate_back", {})}
+                    className="text-[11px] px-2 rounded border"
+                    style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
+                    title="Back"
+                  >
+                    ←
+                  </button>
+                  <input
+                    value={urlInput}
+                    onChange={(e) => setUrlInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && urlInput.trim()) {
+                        const u = urlInput.trim();
+                        sendInput("browser_navigate", {
+                          url: /^[a-z]+:\/\//i.test(u) ? u : `https://${u}`,
+                        });
+                      }
+                    }}
+                    placeholder="Go to URL… (Enter)"
+                    className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded border outline-none font-mono"
+                    style={{
+                      borderColor: "var(--border)",
+                      background: "var(--bg-secondary)",
+                      color: "var(--text-primary)",
+                    }}
+                  />
+                </div>
+                <div className="flex gap-1.5 items-center">
+                  <input
+                    value={typeInput}
+                    onChange={(e) => setTypeInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && typeInput) {
+                        sendInput("type_text", { text: typeInput });
+                        setTypeInput("");
+                      }
+                    }}
+                    placeholder="Type into the focused field… (Enter sends)"
+                    className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded border outline-none"
+                    style={{
+                      borderColor: "var(--border)",
+                      background: "var(--bg-secondary)",
+                      color: "var(--text-primary)",
+                    }}
+                  />
+                  {["Enter", "Tab", "Escape", "Backspace"].map((k) => (
+                    <button
+                      key={k}
+                      onClick={() => sendInput("browser_press_key", { key: k })}
+                      className="text-[10px] px-1.5 py-1 rounded border font-mono"
+                      style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
+                      title={`Press ${k}`}
+                    >
+                      {k === "Escape" ? "Esc" : k === "Backspace" ? "⌫" : k}
+                    </button>
+                  ))}
+                </div>
+                {inputErr && (
+                  <div className="text-[10px]" style={{ color: "#dc2626" }}>
+                    {inputErr}
+                  </div>
+                )}
               </div>
             )}
           </div>

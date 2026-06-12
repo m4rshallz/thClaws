@@ -2086,23 +2086,10 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                 cfg.as_ref().and_then(|c| c.browser_headless),
             );
             let headless = server.args.iter().any(|a| a == "--headless");
-            // Resolve the launch command on PATH (or as an absolute
-            // path) — `npx` on desktop, the image-preinstalled
-            // `mcp-server-playwright` when THCLAWS_BROWSER_MCP_CMD is
-            // set (cloud runners).
-            let cmd_path = std::path::Path::new(&server.command);
-            let command_found = if cmd_path.is_absolute() {
-                cmd_path.is_file()
-            } else {
-                std::env::var_os("PATH")
-                    .map(|p| {
-                        std::env::split_paths(&p).any(|d| {
-                            d.join(&server.command).is_file()
-                                || d.join(format!("{}.cmd", server.command)).is_file()
-                        })
-                    })
-                    .unwrap_or(false)
-            };
+            // `npx` on desktop, the image-preinstalled `playwright-mcp`
+            // when THCLAWS_BROWSER_MCP_CMD is set (cloud runners). Same
+            // resolution the injection guard uses.
+            let command_found = crate::config::command_on_path(&server.command);
             let payload = serde_json::json!({
                 "type": "browser_status",
                 "enabled": enabled,
@@ -2169,6 +2156,96 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                     Err(e) => serde_json::json!({
                         "type": "browser_screenshot",
                         "ok": false,
+                        "error": e,
+                    }),
+                };
+                dispatch(reply.to_string());
+            });
+        }
+
+        // Browser-tab interactive takeover (docs/browser Phase 2
+        // slice 2). UI-initiated mouse/keyboard/navigation on the
+        // managed browser — direct MCP calls, same trust posture as
+        // the screenshot arm. STRICT allowlist: only coordinate input
+        // + navigation; nothing that touches the page DOM with
+        // arbitrary code (no evaluate / run_code) and nothing
+        // filesystem-shaped (no file_upload). The synthetic
+        // `type_text` expands to per-character press_key calls so the
+        // frontend can send a whole field's text in one round trip.
+        "browser_input_call" => {
+            const ALLOWED: &[&str] = &[
+                "browser_mouse_click_xy",
+                "browser_mouse_move_xy",
+                "browser_mouse_drag_xy",
+                "browser_mouse_down",
+                "browser_mouse_up",
+                "browser_mouse_wheel",
+                "browser_press_key",
+                "browser_navigate",
+                "browser_navigate_back",
+            ];
+            let tool = msg
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = msg.get("args").cloned().unwrap_or(serde_json::json!({}));
+            let slot = ctx.shared.browser_mcp.clone();
+            let dispatch = ctx.dispatch.clone();
+            std::thread::spawn(move || {
+                let tool_for_reply = tool.clone();
+                let outcome: std::result::Result<(), String> =
+                    (|| {
+                        let is_type_text = tool == "type_text";
+                        if !is_type_text && !ALLOWED.contains(&tool.as_str()) {
+                            return Err(format!("tool '{tool}' is not an allowed takeover input"));
+                        }
+                        let client = slot
+                            .read()
+                            .unwrap()
+                            .clone()
+                            .ok_or("browser MCP not connected yet")?;
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|e| format!("tokio runtime build: {e}"))?;
+                        if is_type_text {
+                            let text = args
+                                .get("text")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if text.is_empty() || text.chars().count() > 500 {
+                                return Err("type_text needs 1-500 characters".into());
+                            }
+                            for ch in text.chars() {
+                                let key = if ch == '\n' {
+                                    "Enter".to_string()
+                                } else {
+                                    ch.to_string()
+                                };
+                                rt.block_on(client.call_tool(
+                                    "browser_press_key",
+                                    serde_json::json!({ "key": key }),
+                                ))
+                                .map_err(|e| e.to_string())?;
+                            }
+                            return Ok(());
+                        }
+                        rt.block_on(client.call_tool(&tool, args))
+                            .map_err(|e| e.to_string())?;
+                        Ok(())
+                    })();
+                let reply = match outcome {
+                    Ok(()) => serde_json::json!({
+                        "type": "browser_input_result",
+                        "ok": true,
+                        "tool": tool_for_reply,
+                    }),
+                    Err(e) => serde_json::json!({
+                        "type": "browser_input_result",
+                        "ok": false,
+                        "tool": tool_for_reply,
                         "error": e,
                     }),
                 };

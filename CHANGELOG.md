@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-06-12
+
+### Added
+- **Browser tab: interactive takeover (Phase 2 slice 2).** A "🖱 Take
+  over" toggle makes the screenshot panel a remote control for the
+  managed browser — click anywhere on the page (object-contain-aware
+  coordinate mapping), scroll with the wheel, type into the focused
+  field, press Enter/Tab/Esc/⌫, and navigate via a URL bar — so cloud
+  users can log into sites themselves before handing the session to
+  the agent. Backed by a new `browser_input_call` IPC arm with a
+  STRICT tool allowlist (coordinate input + navigation only; no
+  evaluate/run_code/file_upload) running directly on the managed MCP
+  client, and the managed server now starts with `--caps=vision` for
+  the coordinate tools. Verified end-to-end: click → per-char typing
+  fires real input events → screenshot reflects the page.
+
+### Changed
+- **Browser automation is ON by default** (`browserEnabled` defaults to
+  `true`). Every workspace gets the managed Playwright browser + the
+  Browser tab without configuration. Graceful where it can't work: the
+  injection is skipped when the launch command isn't on PATH (node-less
+  desktops see the tab's setup hint instead of per-session spawn
+  errors), and `"browserEnabled": false` opts out entirely.
+
+### Fixed
+- Cloud runner image: the managed browser server is pinned to the
+  playwright-bundled chromium (`--browser chromium`) — playwright-mcp
+  defaults to branded Google Chrome, which isn't in the image — and
+  the server binary name is `playwright-mcp` (the package renamed its
+  bin from `mcp-server-playwright`).
+
 ## [0.49.0] - 2026-06-12
 
 ### Added

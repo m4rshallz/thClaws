@@ -219,12 +219,13 @@ pub struct AppConfig {
 
     /// Engine-managed browser automation (docs/browser, Phase 0+1).
     /// When `true`, `AppConfig::load()` injects the official Playwright
-    /// MCP server (`npx @playwright/mcp@latest`) as a synthetic
-    /// engine-managed stdio config named `browser` — the agent gets
-    /// `browser.*` tools (navigate / click / snapshot / …) with no
-    /// `/mcp add` or first-spawn approval. Off by default: it spawns
-    /// Node + downloads Chromium on first use. Requires `npx` on PATH.
-    #[serde(default, alias = "browserEnabled")]
+    /// MCP server as a synthetic engine-managed stdio config named
+    /// `browser` — the agent gets `browser.*` tools (navigate / click /
+    /// snapshot / …) with no `/mcp add` or first-spawn approval.
+    /// ON by default since 0.49.2; the injection is skipped silently
+    /// when the launch command isn't on PATH (node-less desktops), and
+    /// `"browserEnabled": false` opts out entirely.
+    #[serde(default = "default_browser_enabled", alias = "browserEnabled")]
     pub browser_enabled: bool,
 
     /// Force headed/headless for the managed browser. `None` (default)
@@ -339,6 +340,31 @@ fn default_auto_learn_kms() -> String {
     "self_learn".to_string()
 }
 
+/// Browser automation default — ON since 0.49.2 (docs/browser). The
+/// injection in `AppConfig::load()` still degrades gracefully: it's
+/// skipped when the launch command isn't on PATH, so node-less
+/// desktops see the Browser tab's setup hint instead of spawn errors.
+fn default_browser_enabled() -> bool {
+    true
+}
+
+/// Resolve a launch command on PATH (or as an absolute path). Shared
+/// by the browser-MCP injection guard and the `browser_status_get`
+/// IPC arm so both agree on whether the managed browser can start.
+/// `.cmd` is the Windows npm-shim extension.
+pub fn command_on_path(command: &str) -> bool {
+    let p = std::path::Path::new(command);
+    if p.is_absolute() {
+        return p.is_file();
+    }
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths)
+                .any(|d| d.join(command).is_file() || d.join(format!("{command}.cmd")).is_file())
+        })
+        .unwrap_or(false)
+}
+
 fn default_auto_learn_reconcile_hours() -> u32 {
     6
 }
@@ -381,7 +407,7 @@ impl Default for AppConfig {
             claude_md_compat: false,
             openrouter_free_only: false,
             image_tools_enabled: false,
-            browser_enabled: false,
+            browser_enabled: true,
             browser_headless: None,
             gateway_use_for: Vec::new(),
             extract_save_skill_models: None,
@@ -1388,19 +1414,27 @@ impl AppConfig {
         }
 
         // Engine-managed browser automation (docs/browser, Phase 0+1):
-        // `browserEnabled` injects the official Playwright MCP server as
-        // a synthetic stdio config. Engine-chosen — not from a cloned
-        // repo's mcp.json — so it skips the first-spawn allowlist prompt
-        // (`engine_managed` is #[serde(skip)]; JSON can never set it).
-        // A user/project server already named `browser` wins, and the
-        // enterprise external-MCP policy still applies.
+        // `browserEnabled` (default ON since 0.49.2) injects the
+        // official Playwright MCP server as a synthetic stdio config.
+        // Engine-chosen — not from a cloned repo's mcp.json — so it
+        // skips the first-spawn allowlist prompt (`engine_managed` is
+        // #[serde(skip)]; JSON can never set it). A user/project server
+        // already named `browser` wins, and the enterprise external-MCP
+        // policy still applies. With the default flipped on, two
+        // graceful-degradation guards matter:
+        // - launch command must resolve on PATH (node-less desktops get
+        //   the Browser tab's setup hint, not a spawn error per session)
+        // - never under `cfg(test)` (the unit-test suite must not spawn
+        //   npx / hit the npm registry)
         if config.browser_enabled
+            && !cfg!(test)
             && !crate::policy::external_mcp_disallowed()
             && !config.mcp_servers.iter().any(|s| s.name == "browser")
         {
-            config
-                .mcp_servers
-                .push(Self::browser_mcp_config(config.browser_headless));
+            let server = Self::browser_mcp_config(config.browser_headless);
+            if command_on_path(&server.command) {
+                config.mcp_servers.push(server);
+            }
         }
 
         // CLI `--model` / `--set-model` override (set by app.rs once at
@@ -1453,6 +1487,14 @@ impl AppConfig {
         };
         if headless && !args.iter().any(|a| a == "--headless") {
             args.push("--headless".into());
+        }
+        // Vision capability adds the coordinate tools (mouse_*_xy,
+        // mouse_wheel) that back the Browser tab's interactive
+        // takeover — click/type/scroll on the screenshot (docs/browser
+        // Phase 2 slice 2). Skipped when the override already pins a
+        // --caps choice.
+        if !args.iter().any(|a| a.starts_with("--caps")) {
+            args.push("--caps=vision".into());
         }
         crate::mcp::McpServerConfig {
             name: "browser".into(),
