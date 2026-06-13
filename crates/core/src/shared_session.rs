@@ -4802,7 +4802,7 @@ mod tests {
         std::env::remove_var("HAL_API_KEY");
         std::env::remove_var("TAVILY_API_KEY");
         std::env::remove_var("BRAVE_SEARCH_API_KEY");
-        let section = crate::prompts::services_prompt_section();
+        let section = crate::prompts::services_prompt_section(false);
         assert!(
             section.contains("WebSearch"),
             "section must always mention WebSearch (DuckDuckGo fallback is always available): {section}"
@@ -4834,7 +4834,7 @@ mod tests {
         let _g = env_lock();
         let prev = std::env::var("TAVILY_API_KEY").ok();
         std::env::set_var("TAVILY_API_KEY", "test-key");
-        let section = crate::prompts::services_prompt_section();
+        let section = crate::prompts::services_prompt_section(false);
         assert!(
             section.contains("Tavily (best quality)"),
             "should highlight Tavily as active backend when key set: {section}"
@@ -4850,7 +4850,7 @@ mod tests {
         let _g = env_lock();
         let prev = std::env::var("HAL_API_KEY").ok();
         std::env::set_var("HAL_API_KEY", "test-key");
-        let section = crate::prompts::services_prompt_section();
+        let section = crate::prompts::services_prompt_section(false);
         assert!(
             section.contains("# External services"),
             "missing header: {section}"
@@ -4890,7 +4890,7 @@ mod tests {
         let _g = env_lock();
         let prev = std::env::var("HAL_API_KEY").ok();
         std::env::set_var("HAL_API_KEY", "   ");
-        let section = crate::prompts::services_prompt_section();
+        let section = crate::prompts::services_prompt_section(false);
         // Section is no longer empty (WebSearch always mentioned),
         // but the HAL-specific bullet should NOT appear with a
         // whitespace-only key.
