@@ -52,7 +52,8 @@ const THAI_BOLD_BYTES: &[u8] = include_bytes!("../../resources/fonts/NotoSansTha
 const LATIN_REG_SERIF_BYTES: &[u8] = include_bytes!("../../resources/fonts/NotoSerif-Regular.ttf");
 const LATIN_BOLD_SERIF_BYTES: &[u8] = include_bytes!("../../resources/fonts/NotoSerif-Bold.ttf");
 const LATIN_ITAL_SERIF_BYTES: &[u8] = include_bytes!("../../resources/fonts/NotoSerif-Italic.ttf");
-const THAI_REG_SERIF_BYTES: &[u8] = include_bytes!("../../resources/fonts/NotoSerifThai-Regular.ttf");
+const THAI_REG_SERIF_BYTES: &[u8] =
+    include_bytes!("../../resources/fonts/NotoSerifThai-Regular.ttf");
 const THAI_BOLD_SERIF_BYTES: &[u8] = include_bytes!("../../resources/fonts/NotoSerifThai-Bold.ttf");
 
 const PT_TO_MM: f32 = 0.3528;

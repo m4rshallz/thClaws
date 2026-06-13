@@ -1,7 +1,0 @@
-allowBuilds:
-  # Transitive deps of epubjs (core-js, es5-ext via event-emitter).
-  # Their postinstall scripts only print funding notices — no native
-  # build is needed for them to work, so we skip them. This keeps
-  # `pnpm build` from stalling on the unresolved-build-script gate.
-  core-js: false
-  es5-ext: false

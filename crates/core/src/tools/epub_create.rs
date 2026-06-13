@@ -46,7 +46,8 @@ const FONT_THAI_BOLD: &[u8] = include_bytes!("../../resources/fonts/NotoSansThai
 const FONT_LATIN_REG_SERIF: &[u8] = include_bytes!("../../resources/fonts/NotoSerif-Regular.ttf");
 const FONT_LATIN_BOLD_SERIF: &[u8] = include_bytes!("../../resources/fonts/NotoSerif-Bold.ttf");
 const FONT_LATIN_ITAL_SERIF: &[u8] = include_bytes!("../../resources/fonts/NotoSerif-Italic.ttf");
-const FONT_THAI_REG_SERIF: &[u8] = include_bytes!("../../resources/fonts/NotoSerifThai-Regular.ttf");
+const FONT_THAI_REG_SERIF: &[u8] =
+    include_bytes!("../../resources/fonts/NotoSerifThai-Regular.ttf");
 const FONT_THAI_BOLD_SERIF: &[u8] = include_bytes!("../../resources/fonts/NotoSerifThai-Bold.ttf");
 
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
