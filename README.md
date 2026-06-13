@@ -263,7 +263,7 @@ API keys are **never stored in config files** — only the OS keychain (default)
 
 ## Supporters
 
-In 2026 a mini fundraiser — pre-orders of the book *Building thClaws* — helped fund this project. A huge thank-you to the **155 founding supporters** who backed it early: see the [**Supporters wall →**](SUPPORTERS.md). 🦞🙏
+In 2026 a mini fundraiser — selling of the e-book *Building thClaws* — helped fund this project. A huge thank-you to the **155 founding supporters** who backed it early: see the [**Supporters wall →**](SUPPORTERS.md). 🦞🙏
 
 ---
 

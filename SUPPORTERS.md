@@ -1,6 +1,6 @@
 # Supporters — *Building thClaws* 🦞
 
-In May–June 2026 we ran a small fundraiser: a pre-order of the book **“Building thClaws”** to help fund the project. The campaign closed on **12 June 2026**.
+In May–June 2026 we ran a small fundraiser: selling of e-book **“Building thClaws”** to help fund the project. The campaign closed on **12 June 2026**.
 
 This page is our thank-you wall. Every name below is someone who backed thClaws early — who put money behind an open-source agent harness built in Thailand, for the world, before it was finished. We're deeply grateful. 🙏
 
