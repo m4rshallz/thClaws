@@ -118,7 +118,25 @@ pub fn find_chromium() -> Option<PathBuf> {
         }
     }
 
-    // Branded fallbacks.
+    // Branded fallbacks (Google Chrome / Edge / system chromium) are
+    // OPT-IN for the engine-managed CDP path. Driving a *branded*
+    // browser over CDP for the live view is unreliable in the field —
+    // playwright-mcp can fail a session with "protocol error: Browser
+    // context management is not supported" — whereas letting
+    // playwright-mcp launch the browser ITSELF (no `--cdp-endpoint`) is
+    // rock-solid. So when only a branded browser is available we return
+    // None: `arm()` bails, no `--cdp-endpoint` is injected, and
+    // playwright-mcp self-launches (reliable). The live view / takeover
+    // needs Playwright's own Chromium (`npx playwright install
+    // chromium`). Opt back into branded-over-CDP with
+    // `THCLAWS_BROWSER_ALLOW_BRANDED=1`.
+    if std::env::var("THCLAWS_BROWSER_ALLOW_BRANDED")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return None;
+    }
     let candidates: &[&str] = if cfg!(target_os = "macos") {
         &[
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -183,37 +201,30 @@ fn newest_classic_chromium(root: &std::path::Path) -> Option<PathBuf> {
 /// note) when no Chromium executable exists → caller falls back to
 /// MCP self-launch.
 pub fn arm(headless: bool) -> Option<String> {
-    let mut guard = state().lock().unwrap();
-    if let Some(s) = guard.as_ref() {
+    if let Some(s) = state().lock().unwrap().as_ref() {
         return Some(s.endpoint.clone());
     }
 
     // A previous engine process may have left its Chromium running —
-    // the profile dir records the DevTools endpoint. If it still
-    // answers, RE-ATTACH instead of fighting the profile lock; the
-    // user's sessions survive the engine restart for free.
+    // the profile dir records the DevTools endpoint. We must NOT
+    // re-attach to it: a fresh playwright-mcp connecting over CDP into a
+    // browser the previous run's playwright-mcp already drove fails
+    // every time with "Browser context management is not supported"
+    // (the exit-then-relaunch bug). Cookies/sessions live in the
+    // persistent --user-data-dir and survive a relaunch on their own,
+    // so reap the orphan and start clean. (Reap touches the network and
+    // sleeps, so do it with the state lock released.)
     let profile = profile_dir();
     let endpoint_file = profile.join("devtools-endpoint");
     if let Ok(saved) = std::fs::read_to_string(&endpoint_file) {
         let saved = saved.trim().to_string();
-        if endpoint_alive(&saved) {
-            eprintln!("\x1b[2m[browser-cdp] re-attached to running chromium at {saved}\x1b[0m");
-            let port = saved
-                .rsplit(':')
-                .next()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(0);
-            *guard = Some(CdpState {
-                endpoint: saved.clone(),
-                port,
-                headless,
-                launched: true,
-                child: None,
-            });
-            return Some(saved);
+        if !saved.is_empty() && endpoint_alive(&saved) {
+            eprintln!("\x1b[2m[browser-cdp] reaping orphaned chromium at {saved}\x1b[0m");
+            reap_orphan(&saved, &profile);
         }
         let _ = std::fs::remove_file(&endpoint_file);
     }
+    let _ = std::fs::remove_file(profile.join("chromium.pid"));
 
     // Chromium must exist for CDP mode to be worth arming.
     if find_chromium().is_none() {
@@ -231,6 +242,12 @@ pub fn arm(headless: bool) -> Option<String> {
         Err(_) => None,
     }?;
     let endpoint = format!("http://127.0.0.1:{port}");
+    let mut guard = state().lock().unwrap();
+    // Another caller may have armed while the lock was released for the
+    // reap above — honor the winner.
+    if let Some(s) = guard.as_ref() {
+        return Some(s.endpoint.clone());
+    }
     *guard = Some(CdpState {
         endpoint: endpoint.clone(),
         port,
@@ -240,6 +257,85 @@ pub fn arm(headless: bool) -> Option<String> {
     });
     Some(endpoint)
 }
+
+/// Reap a Chromium left running by a previous engine process. Graceful
+/// CDP `Browser.close` first (flushes cookies and releases the profile's
+/// single-instance lock cleanly), then SIGKILL by the saved PID as a
+/// fallback, then clear stale `Singleton*` locks so a fresh launch on
+/// the same profile won't just forward-and-exit. Best-effort throughout.
+fn reap_orphan(endpoint: &str, profile: &std::path::Path) {
+    let _ = rt().block_on(close_remote_browser(endpoint));
+    wait_until_dead(endpoint, std::time::Duration::from_secs(4));
+    if endpoint_alive(endpoint) {
+        if let Ok(pid) = std::fs::read_to_string(profile.join("chromium.pid")) {
+            if let Ok(pid) = pid.trim().parse::<i32>() {
+                hard_kill(pid);
+            }
+        }
+        wait_until_dead(endpoint, std::time::Duration::from_secs(3));
+    }
+    // Only safe to clear the locks once the owner is actually gone —
+    // removing them under a live instance risks profile corruption.
+    if endpoint_alive(endpoint) {
+        eprintln!(
+            "\x1b[2m[browser-cdp] orphan at {endpoint} would not die — fresh launch may fail until it's killed manually\x1b[0m"
+        );
+    } else {
+        for lock in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+            let _ = std::fs::remove_file(profile.join(lock));
+        }
+    }
+}
+
+fn wait_until_dead(endpoint: &str, budget: std::time::Duration) {
+    let deadline = std::time::Instant::now() + budget;
+    while endpoint_alive(endpoint) {
+        if std::time::Instant::now() > deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+/// Ask a running Chromium to shut down gracefully over its browser-level
+/// DevTools websocket (`webSocketDebuggerUrl` from `/json/version`).
+async fn close_remote_browser(endpoint: &str) -> Result<(), String> {
+    use futures::{SinkExt, StreamExt};
+    let body = reqwest::get(format!("{endpoint}/json/version"))
+        .await
+        .map_err(|e| format!("cdp /json/version: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("cdp /json/version body: {e}"))?;
+    let v: Value = serde_json::from_str(&body).map_err(|e| format!("cdp version parse: {e}"))?;
+    let ws = v
+        .get("webSocketDebuggerUrl")
+        .and_then(Value::as_str)
+        .ok_or("no browser ws url")?;
+    let (mut sock, _) = tokio_tungstenite::connect_async(ws)
+        .await
+        .map_err(|e| format!("cdp connect: {e}"))?;
+    sock.send(tokio_tungstenite::tungstenite::Message::Text(
+        r#"{"id":1,"method":"Browser.close"}"#.to_string().into(),
+    ))
+    .await
+    .map_err(|e| format!("cdp Browser.close: {e}"))?;
+    // Let chromium act on the close before the socket drops.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), sock.next()).await;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn hard_kill(pid: i32) {
+    // SAFETY: kill(2) with a normal signal is always safe to call; a
+    // dead/invalid pid simply returns ESRCH.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn hard_kill(_pid: i32) {}
 
 /// Launch Chromium if it isn't up yet (lazy half of [`arm`]).
 /// Blocking — call via `spawn_blocking` from async contexts. Cheap
@@ -289,6 +385,10 @@ pub fn ensure_up() -> Result<(), String> {
     let child = cmd
         .spawn()
         .map_err(|e| format!("launch {}: {e}", exe.display()))?;
+
+    // Record the pid so a future engine process can SIGKILL this
+    // chromium if it's orphaned and won't close gracefully over CDP.
+    let _ = std::fs::write(profile.join("chromium.pid"), child.id().to_string());
 
     // The port is ours, so poll the HTTP endpoint instead of parsing
     // stderr — robust across chromium variants and locales.
@@ -900,5 +1000,32 @@ mod tests {
         assert!(crate::cloud::pack::is_strippable(std::path::Path::new(
             ".thclaws/browser-profile/Default/Cookies"
         )));
+    }
+
+    #[test]
+    fn reap_clears_singleton_locks_for_dead_endpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = tmp.path();
+        for lock in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+            std::fs::write(profile.join(lock), b"x").unwrap();
+        }
+        // Grab-and-release an ephemeral port so nothing is listening —
+        // the "orphan" is already dead, so reap should skip the kill and
+        // clear the single-instance locks that would otherwise make a
+        // fresh launch forward-and-exit.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let dead = format!("http://127.0.0.1:{port}");
+        assert!(!endpoint_alive(&dead));
+        reap_orphan(&dead, profile);
+        for lock in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+            assert!(
+                !profile.join(lock).exists(),
+                "{lock} should be cleared after reaping a dead orphan"
+            );
+        }
     }
 }

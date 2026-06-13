@@ -560,6 +560,11 @@ fn request_gui_shutdown(
     let _ = std::process::Command::new("pkill")
         .args(["-f", "team-agent"])
         .status();
+    // Snapshot browser cookies and kill the engine-managed Chromium so
+    // it doesn't orphan — a surviving orphan breaks the next launch's
+    // playwright-mcp CDP attach ("Browser context management is not
+    // supported").
+    crate::browser_cdp::shutdown();
     *control_flow = ControlFlow::Exit;
 }
 

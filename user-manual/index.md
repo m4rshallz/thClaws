@@ -35,8 +35,9 @@ teams.
 | 25 | [Workflows (`/workflow run`)](ch25-workflows.md) |
 | 26 | [GUI Shells](ch26-gui-shells.md) |
 | 27 | [thClaws.cloud (catalog + hosted + gateway)](ch27-thclaws-cloud.md) |
+| 28 | [Browser automation](ch28-browser-automation.md) |
 
-> **Part II — Case studies (chapters 28–30)** — applied walkthroughs
+> **Part II — Case studies (chapters 29–31)** — applied walkthroughs
 > for building real projects with thClaws (static sites, Node.js apps,
 > AI agents, deploying to Agentic Press) are in active development and
 > will be added to this manual as each is reviewed and ready.

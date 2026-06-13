@@ -1496,6 +1496,22 @@ impl AppConfig {
         if !args.iter().any(|a| a.starts_with("--caps")) {
             args.push("--caps=vision".into());
         }
+        // Default to a wide desktop viewport — playwright-mcp's own
+        // default is a narrow 1280×720, which renders pages mobile-ish.
+        // Override with THCLAWS_BROWSER_VIEWPORT="W,H" (or pin
+        // --viewport-size / --device via THCLAWS_BROWSER_MCP_CMD).
+        if !args
+            .iter()
+            .any(|a| a.starts_with("--viewport-size") || a == "--device")
+        {
+            let viewport = std::env::var("THCLAWS_BROWSER_VIEWPORT")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "1920,1080".to_string());
+            args.push("--viewport-size".into());
+            args.push(viewport);
+        }
         crate::mcp::McpServerConfig {
             name: "browser".into(),
             transport: "stdio".into(),

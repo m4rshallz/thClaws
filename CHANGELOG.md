@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-06-13
+
+### Fixed
+- **Browser automation now works reliably after the first run.** On
+  machines without Playwright's own Chromium installed, the engine fell
+  back to driving *branded* Google Chrome over CDP, which intermittently
+  failed playwright-mcp's init with `protocol error
+  (Browser.setDownloadBehavior): Browser context management is not
+  supported` — so every browse after the first failed until a restart.
+  The engine no longer hands a branded browser to the CDP live-view path
+  by default; playwright-mcp self-launches its own browser (reliable).
+  Opt back into branded-over-CDP with `THCLAWS_BROWSER_ALLOW_BRANDED=1`;
+  the live view / takeover otherwise uses Playwright's own Chromium
+  (`npx playwright install chromium`).
+- The engine-owned Chromium is now killed on quit (with a cookie flush)
+  instead of orphaning, and a stray orphan from a previous run is reaped
+  on the next launch rather than re-attached to.
+
+### Added
+- **Wider default browser viewport** — sessions render at desktop-width
+  1920×1080 instead of playwright-mcp's narrow 1280×720 default.
+  Override with `THCLAWS_BROWSER_VIEWPORT="W,H"`.
+- Browser automation chapter in the user manual (EN + Thai) and a
+  `browser.md` engine-internals topic in the technical manual.
+
 ## [0.52.0] - 2026-06-13
 
 ### Added
