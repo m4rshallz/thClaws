@@ -35,6 +35,32 @@ Three tabs, one binary — captured from a live thClaws session looking at its o
 
 ---
 
+## New in v0.61.0
+
+### 🎨 Media Studio — generate images & video, built in
+
+A point-and-click shell for the new media tools — **Text → Image**, **Image Edit**, **Text → Video**, and **Image → Video** — across Google Gemini, OpenAI `gpt-image-2`, Alibaba Qwen, Veo, and DashScope HappyHorse. Pick a provider/model, set the resolution, hit Generate; finished media lands in a live gallery you can click to reuse as the source for the next run. The same tools (`TextToImage` / `ImageToImage` / `TextToVideo` / `ImageToVideo` / `MediaJobStatus`) are callable by the agent from chat too — async video included.
+
+<div align="center">
+
+<a href="docs/img/media-studio.webp"><img src="docs/img/media-studio.webp" alt="thClaws Media Studio — text-to-image with a live gallery of generated media" width="860" /></a>
+
+</div>
+
+### 🧠 OpenRouter Fusion — many models, one answer
+
+`openrouter/fusion` fans your question out to a **panel** of up to 8 models in parallel (each can search the web), then a **judge** weighs the answers and synthesizes the consensus — multi-model deliberation packaged as a single model id. The new **`openrouter/fusion+`** makes it fully configurable right from the model picker: choose the panel, the judge, the per-model tool-call budget, temperature, reasoning effort, and tool-choice. A practical stand-in when the model you'd reach for isn't available on the platform.
+
+<div align="center">
+
+<a href="docs/img/fusion-config.webp"><img src="docs/img/fusion-config.webp" alt="thClaws — configuring the OpenRouter Fusion panel, judge, and limits" width="860" /></a>
+
+</div>
+
+Docs: [media tools](https://thclaws.ai/manual/ch11-built-in-tools.html) · [Media Studio](https://thclaws.ai/manual/ch26-gui-shells.html) · [Fusion setup](https://thclaws.ai/manual/ch06-providers-models-api-keys.html)
+
+---
+
 ## Hacking in public
 
 thClaws started in April 2026. As of this writing the project has shipped **20+ releases**, drawn **27 contributors**, and lands roughly a release a week. It's developed by a small team at **ThaiGPT Co., Ltd.** — and a meaningful chunk of the codebase comes from outside contributors who heard about it and stayed.
