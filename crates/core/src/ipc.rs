@@ -2540,6 +2540,46 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                 .send(crate::shared_session::ShellInput::ReloadConfig);
         }
 
+        // ── openrouter/fusion+ configuration ────────────────────────
+        // Read/write the FusionConfig block that drives the configurable
+        // OpenRouter Fusion pseudo-model. The GUI's fusion config modal
+        // (opened when the user selects `openrouter/fusion+`) round-trips
+        // these. camelCase on the wire (matches settings.json keys).
+        "fusion_config_get" => {
+            let cfg = crate::config::AppConfig::load().unwrap_or_default();
+            let payload = serde_json::json!({
+                "type": "fusion_config",
+                "config": cfg.openrouter_fusion,
+            });
+            (ctx.dispatch)(payload.to_string());
+        }
+        "fusion_config_set" => {
+            let raw = msg.get("config").cloned().unwrap_or(serde_json::json!({}));
+            let (ok, error) = match serde_json::from_value::<crate::config::FusionConfig>(raw) {
+                Ok(fc) => {
+                    let mut cfg = crate::config::ProjectConfig::load().unwrap_or_default();
+                    cfg.openrouter_fusion = Some(fc);
+                    match cfg.save() {
+                        Ok(()) => (true, String::new()),
+                        Err(e) => (false, e.to_string()),
+                    }
+                }
+                Err(e) => (false, format!("invalid fusion config: {e}")),
+            };
+            let payload = serde_json::json!({
+                "type": "fusion_config_result",
+                "ok": ok,
+                "error": error,
+            });
+            (ctx.dispatch)(payload.to_string());
+            if ok {
+                let _ = ctx
+                    .shared
+                    .input_tx
+                    .send(crate::shared_session::ShellInput::ReloadConfig);
+            }
+        }
+
         // ── thClaws Gateway settings ────────────────────────────────
         // Per-provider routing list lives in settings.json alongside
         // openrouterFreeOnly. The gateway access key is stored in the

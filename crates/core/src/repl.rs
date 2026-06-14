@@ -3754,11 +3754,22 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
                     "https://openrouter.ai/api/v1/chat/completions".to_string(),
                 ),
             };
-            Ok(Arc::new(
-                OpenAIProvider::new(key)
-                    .with_base_url(base)
-                    .with_strip_model_prefix("openrouter/"),
-            ))
+            let mut provider = OpenAIProvider::new(key)
+                .with_base_url(base)
+                .with_strip_model_prefix("openrouter/");
+            // `openrouter/fusion+` is a thClaws pseudo-model: call the
+            // configured outer model with the `openrouter:fusion` tool
+            // attached so the user's panel / judge / limits take effect.
+            if config.model == crate::config::FUSION_PLUS_MODEL {
+                let f = &config.openrouter_fusion;
+                provider = provider
+                    .with_model_override(f.outer_model.clone())
+                    .with_injected_tool(f.tool_json());
+                if let Some(tc) = f.tool_choice_value() {
+                    provider = provider.with_tool_choice(tc);
+                }
+            }
+            Ok(Arc::new(provider))
         }
         ProviderKind::TokenRouter => {
             // TokenRouter (tokenrouter.com) — OpenAI-compatible unified

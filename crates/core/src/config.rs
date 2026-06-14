@@ -292,6 +292,12 @@ pub struct AppConfig {
     /// Task 14 wiring).
     #[serde(default, alias = "guiShell")]
     pub gui_shell: Option<GuiShellSetting>,
+
+    /// Configuration for the `openrouter/fusion+` pseudo-model. Always
+    /// present (defaulted); the `outerModel` / `analysisModels` etc. are
+    /// only consulted when the active model is [`FUSION_PLUS_MODEL`].
+    #[serde(default, alias = "openrouterFusion")]
+    pub openrouter_fusion: FusionConfig,
 }
 
 /// Accepts both the string shorthand and the structured long form so
@@ -326,6 +332,118 @@ impl GuiShellSetting {
         match self {
             GuiShellSetting::Shorthand(s) => Some(s.as_str()),
             GuiShellSetting::Long { serve_default, .. } => serve_default.as_deref(),
+        }
+    }
+}
+
+/// Pseudo-model id for the configurable OpenRouter Fusion variant. Unlike
+/// the bare `openrouter/fusion` (which uses OpenRouter's default panel),
+/// selecting this routes through the user's [`FusionConfig`]: the engine
+/// calls `outer_model` with the `openrouter:fusion` tool attached, carrying
+/// the configured panel / judge / limits.
+pub const FUSION_PLUS_MODEL: &str = "openrouter/fusion+";
+
+/// OpenRouter Fusion (`openrouter/fusion+`) configuration. The inner fields
+/// map 1:1 to the snake_case keys the `openrouter:fusion` tool expects; only
+/// fields the user actually set are emitted (empty / `None` ⇒ OpenRouter
+/// defaults). See the OpenRouter Fusion router docs for semantics.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct FusionConfig {
+    /// thClaws-form model id (`openrouter/<vendor>/<model>`) used as the
+    /// outer / orchestrator call. The `openrouter/` prefix is stripped
+    /// before the wire request like any other OpenRouter model.
+    #[serde(rename = "outerModel")]
+    pub outer_model: String,
+    /// Panel models — OpenRouter ids (e.g. `anthropic/claude-opus-4.8` or
+    /// the floating `~anthropic/claude-opus-latest`). Empty ⇒ omitted ⇒
+    /// OpenRouter's default quality preset (Opus + GPT + Gemini). 1–8.
+    #[serde(rename = "analysisModels")]
+    pub analysis_models: Vec<String>,
+    /// Judge model that synthesizes the structured analysis. `None` ⇒
+    /// defaults to the outer model.
+    #[serde(rename = "judgeModel", skip_serializing_if = "Option::is_none")]
+    pub judge_model: Option<String>,
+    /// Max tool-calling steps per panel / judge call (1–16). `None` ⇒ 8.
+    #[serde(rename = "maxToolCalls", skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    /// Max output tokens (incl. reasoning) per inner call. `None` ⇒
+    /// provider default.
+    #[serde(
+        rename = "maxCompletionTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_completion_tokens: Option<u32>,
+    /// Sampling temperature (0–2) forwarded to panel + judge. `None` ⇒
+    /// provider default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// Reasoning config forwarded to panel + judge — `{effort?, max_tokens?}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<serde_json::Value>,
+    /// `"auto"` (the outer model decides when to call fusion — coexists with
+    /// the agent's own tools) or `"required"` (force the panel every turn).
+    #[serde(rename = "toolChoice")]
+    pub tool_choice: String,
+}
+
+impl Default for FusionConfig {
+    fn default() -> Self {
+        Self {
+            outer_model: "openrouter/openai/gpt-4.1".to_string(),
+            analysis_models: Vec::new(),
+            judge_model: None,
+            max_tool_calls: None,
+            max_completion_tokens: None,
+            temperature: None,
+            reasoning: None,
+            tool_choice: "auto".to_string(),
+        }
+    }
+}
+
+impl FusionConfig {
+    /// Build the `openrouter:fusion` tool object for the request `tools`
+    /// array. Omits the `parameters` block entirely when nothing was set
+    /// (equivalent to the default panel, but with our outer model).
+    pub fn tool_json(&self) -> serde_json::Value {
+        let mut params = serde_json::Map::new();
+        let models: Vec<&String> = self
+            .analysis_models
+            .iter()
+            .filter(|m| !m.trim().is_empty())
+            .collect();
+        if !models.is_empty() {
+            params.insert("analysis_models".into(), serde_json::json!(models));
+        }
+        if let Some(m) = self.judge_model.as_ref().filter(|m| !m.trim().is_empty()) {
+            params.insert("model".into(), serde_json::json!(m));
+        }
+        if let Some(n) = self.max_tool_calls {
+            params.insert("max_tool_calls".into(), serde_json::json!(n));
+        }
+        if let Some(n) = self.max_completion_tokens {
+            params.insert("max_completion_tokens".into(), serde_json::json!(n));
+        }
+        if let Some(t) = self.temperature {
+            params.insert("temperature".into(), serde_json::json!(t));
+        }
+        if let Some(r) = &self.reasoning {
+            params.insert("reasoning".into(), r.clone());
+        }
+        let mut tool = serde_json::json!({ "type": "openrouter:fusion" });
+        if !params.is_empty() {
+            tool["parameters"] = serde_json::Value::Object(params);
+        }
+        tool
+    }
+
+    /// `tool_choice` body value, or `None` to omit (let the model decide).
+    /// Only `"required"` is emitted — `"auto"` is OpenRouter's default.
+    pub fn tool_choice_value(&self) -> Option<serde_json::Value> {
+        match self.tool_choice.trim() {
+            "required" => Some(serde_json::json!("required")),
+            _ => None,
         }
     }
 }
@@ -414,6 +532,7 @@ impl Default for AppConfig {
             translator_subagent_model: None,
             remote_agent_url: None,
             gui_shell: None,
+            openrouter_fusion: FusionConfig::default(),
         }
     }
 }
@@ -670,6 +789,10 @@ pub struct ProjectConfig {
     /// never reaches the picker.
     #[serde(rename = "guiShell", skip_serializing_if = "Option::is_none")]
     pub gui_shell: Option<GuiShellSetting>,
+    /// Configuration for the `openrouter/fusion+` pseudo-model. See
+    /// [`AppConfig::openrouter_fusion`]. Absent ⇒ compiled defaults.
+    #[serde(rename = "openrouterFusion", skip_serializing_if = "Option::is_none")]
+    pub openrouter_fusion: Option<FusionConfig>,
 }
 
 /// On-disk shape of the `agent` block in `./.thclaws/settings.json`.
@@ -738,6 +861,7 @@ impl Default for ProjectConfig {
             cloud: None,
             agent: None,
             gui_shell: None,
+            openrouter_fusion: None,
         }
     }
 }
@@ -1050,6 +1174,9 @@ impl ProjectConfig {
         }
         if let Some(ref gs) = self.gui_shell {
             config.gui_shell = Some(gs.clone());
+        }
+        if let Some(ref f) = self.openrouter_fusion {
+            config.openrouter_fusion = f.clone();
         }
     }
 
@@ -1736,6 +1863,57 @@ mod tests {
         let c = AppConfig::default();
         assert_eq!(c.model, "claude-sonnet-4-6");
         assert_eq!(c.detect_provider().unwrap(), "anthropic");
+    }
+
+    #[test]
+    fn fusion_tool_json_omits_unset_and_uses_snake_case() {
+        // Empty config ⇒ bare tool, no parameters block (OpenRouter
+        // default panel); "auto" tool_choice ⇒ omitted from the body.
+        let f = FusionConfig::default();
+        let tool = f.tool_json();
+        assert_eq!(tool["type"], "openrouter:fusion");
+        assert!(tool.get("parameters").is_none());
+        assert!(f.tool_choice_value().is_none());
+
+        // Populated config ⇒ snake_case parameter keys, only set fields.
+        let f = FusionConfig {
+            analysis_models: vec!["anthropic/claude-opus-4.8".into(), "  ".into()],
+            judge_model: Some("openai/gpt-5.1".into()),
+            max_tool_calls: Some(12),
+            temperature: Some(0.7),
+            tool_choice: "required".into(),
+            ..Default::default()
+        };
+        let p = &f.tool_json()["parameters"];
+        // blank entry filtered out
+        assert_eq!(p["analysis_models"].as_array().unwrap().len(), 1);
+        assert_eq!(p["analysis_models"][0], "anthropic/claude-opus-4.8");
+        assert_eq!(p["model"], "openai/gpt-5.1");
+        assert_eq!(p["max_tool_calls"], 12);
+        assert_eq!(p["temperature"], 0.7);
+        assert!(p.get("max_completion_tokens").is_none());
+        assert_eq!(f.tool_choice_value().unwrap(), "required");
+    }
+
+    #[test]
+    fn fusion_config_parses_camelcase_project_settings() {
+        let json = r#"{
+            "openrouterFusion": {
+                "outerModel": "openrouter/anthropic/claude-opus-4.8",
+                "analysisModels": ["anthropic/claude-opus-4.8", "openai/gpt-5.1"],
+                "judgeModel": "openai/gpt-5.1",
+                "maxToolCalls": 10,
+                "toolChoice": "auto"
+            }
+        }"#;
+        let c: ProjectConfig = serde_json::from_str(json).unwrap();
+        let f = c.openrouter_fusion.unwrap();
+        assert_eq!(f.outer_model, "openrouter/anthropic/claude-opus-4.8");
+        assert_eq!(f.analysis_models.len(), 2);
+        assert_eq!(f.judge_model.as_deref(), Some("openai/gpt-5.1"));
+        assert_eq!(f.max_tool_calls, Some(10));
+        // missing fields fall back to FusionConfig defaults
+        assert!(f.temperature.is_none());
     }
 
     // dev-plan/33 Tier 2 — guiShell config parses both shapes.

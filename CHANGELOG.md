@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-06-14
+
+OpenRouter Fusion: fixed, plus a configurable variant with a GUI panel.
+
+### Added
+- **`openrouter/fusion+` — configurable OpenRouter Fusion.** Selecting it in the model picker opens a config modal to tune the deliberation panel: `analysis_models` (1–8 panel models), judge model, outer/orchestrator model, `max_tool_calls`, `max_completion_tokens`, `temperature`, reasoning effort, and `tool_choice` (`auto` — coexists with the agent's own tools — or `required`). The engine calls the outer model with the `openrouter:fusion` tool attached, carrying these parameters; unset fields fall through to OpenRouter's defaults. Config persists to `.thclaws/settings.json` under `openrouterFusion`, so it works headless / `--serve` too, not just the GUI.
+
+### Fixed
+- **`openrouter/fusion` and `openrouter/auto` 404'd with "No endpoints found that support tool use".** thClaws stores OpenRouter ids as `openrouter/<vendor>/<model>` and strips the leading `openrouter/` before the wire call — but these router models' vendor *is* `openrouter`, so stripping sent the vendor-less `fusion`/`auto`, which routes to nothing that supports tools. The prefix is now kept when stripping would leave a bare single segment (a real OpenRouter id is always `vendor/model`). Other providers' prefixes (`lmstudio/`, `dashscope/`, …) are unaffected.
+
 ## [0.60.0] - 2026-06-14
 
 More providers + media models, and a batch of Linux team/serve fixes.

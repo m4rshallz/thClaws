@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { send, subscribe } from "../hooks/useIPC";
+import { FusionConfigModal } from "./FusionConfigModal";
 
 /// One model row from the backend's `all_models_list` response.
 type ModelRow = {
@@ -62,6 +63,10 @@ export function ModelPickerDropdown({ current, onClose }: Props) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  // `openrouter/fusion+` opens a config modal instead of switching
+  // immediately — the model only takes effect once the panel/judge
+  // params are saved.
+  const [fusionOpen, setFusionOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -126,9 +131,24 @@ export function ModelPickerDropdown({ current, onClose }: Props) {
   );
 
   const pick = (id: string) => {
+    if (id === "openrouter/fusion+") {
+      // Defer the switch: the modal saves the config and sends model_set
+      // itself on Save. Keep the dropdown mounted underneath.
+      setFusionOpen(true);
+      return;
+    }
     send({ type: "model_set", model: id });
     onClose();
   };
+
+  if (fusionOpen) {
+    return (
+      <FusionConfigModal
+        onApplied={onClose}
+        onCancel={() => setFusionOpen(false)}
+      />
+    );
+  }
 
   return (
     <div

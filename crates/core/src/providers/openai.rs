@@ -44,6 +44,18 @@ pub struct OpenAIProvider {
     /// Azure's models path differs from the completions path, so it needs
     /// an explicit override.
     list_models_url: Option<String>,
+    /// When set, the request's model is replaced with this id before the
+    /// wire call (after which `strip_model_prefix` still applies). Used by
+    /// the `openrouter/fusion+` pseudo-model to call a configured outer
+    /// model while the user-facing model id stays `openrouter/fusion+`.
+    model_override: Option<String>,
+    /// Extra tool objects appended verbatim to the request `tools` array
+    /// (e.g. `{"type":"openrouter:fusion","parameters":{…}}`). Carried
+    /// alongside the agent's normal function tools.
+    injected_tools: Vec<Value>,
+    /// Optional `tool_choice` body value (e.g. `"required"`). `None` omits
+    /// it, leaving the provider's default (auto).
+    tool_choice: Option<Value>,
 }
 
 impl OpenAIProvider {
@@ -55,7 +67,30 @@ impl OpenAIProvider {
             strip_model_prefix: None,
             api_key_header: None,
             list_models_url: None,
+            model_override: None,
+            injected_tools: Vec::new(),
+            tool_choice: None,
         }
+    }
+
+    /// Replace the request model with `model` before the wire call (the
+    /// `strip_model_prefix`, if any, still runs afterward). See
+    /// [`Self::model_override`].
+    pub fn with_model_override(mut self, model: impl Into<String>) -> Self {
+        self.model_override = Some(model.into());
+        self
+    }
+
+    /// Append a raw tool object to every request's `tools` array.
+    pub fn with_injected_tool(mut self, tool: Value) -> Self {
+        self.injected_tools.push(tool);
+        self
+    }
+
+    /// Set the `tool_choice` body value (e.g. `json!("required")`).
+    pub fn with_tool_choice(mut self, choice: Value) -> Self {
+        self.tool_choice = Some(choice);
+        self
     }
 
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
@@ -287,7 +322,7 @@ impl OpenAIProvider {
         out
     }
 
-    fn build_body(req: &StreamRequest) -> Value {
+    fn build_body(&self, req: &StreamRequest) -> Value {
         let messages = Self::messages_to_openai(req);
         let mut body = json!({
             "model": req.model,
@@ -296,24 +331,50 @@ impl OpenAIProvider {
             "stream": true,
             "stream_options": {"include_usage": true},
         });
-        if !req.tools.is_empty() {
-            let tools: Vec<Value> = req
-                .tools
-                .iter()
-                .map(|t| {
-                    json!({
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.input_schema,
-                        }
-                    })
+        let mut tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    }
                 })
-                .collect();
+            })
+            .collect();
+        tools.extend(self.injected_tools.iter().cloned());
+        if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
+        if let Some(tc) = &self.tool_choice {
+            body["tool_choice"] = tc.clone();
+        }
         body
+    }
+}
+
+/// Strip the routing prefix from a stored model id before sending it
+/// upstream. Normally just removes `prefix` (e.g. `openrouter/` →
+/// `anthropic/claude-…`, `lmstudio/llama` → `llama`).
+///
+/// Special case for OpenRouter: its own router models (`openrouter/fusion`,
+/// `openrouter/auto`) have vendor == "openrouter", colliding with the
+/// `openrouter/` routing prefix. A real OpenRouter id is always
+/// `vendor/model` (contains a slash); if stripping `openrouter/` leaves a
+/// bare single segment, the original `openrouter/<x>` already WAS the
+/// correct upstream id — keep it. Sending the vendor-less `<x>` 404s with
+/// "No endpoints found that support tool use".
+fn strip_wire_prefix(model: &str, strip_prefix: Option<&str>) -> String {
+    let Some(prefix) = strip_prefix else {
+        return model.to_string();
+    };
+    match model.strip_prefix(prefix) {
+        Some(rest) if prefix == "openrouter/" && !rest.contains('/') => model.to_string(),
+        Some(rest) => rest.to_string(),
+        None => model.to_string(),
     }
 }
 
@@ -396,12 +457,11 @@ impl Provider for OpenAIProvider {
     }
 
     async fn stream(&self, mut req: StreamRequest) -> Result<EventStream> {
-        if let Some(prefix) = &self.strip_model_prefix {
-            if let Some(rest) = req.model.strip_prefix(prefix.as_str()) {
-                req.model = rest.to_string();
-            }
+        if let Some(m) = &self.model_override {
+            req.model = m.clone();
         }
-        let body = Self::build_body(&req);
+        req.model = strip_wire_prefix(&req.model, self.strip_model_prefix.as_deref());
+        let body = self.build_body(&req);
         let resp = self
             .client
             .post(&self.base_url)
@@ -1399,7 +1459,7 @@ mod tests {
             thinking_budget: None,
             stream_chunk_timeout_override: None,
         };
-        let body = OpenAIProvider::build_body(&req);
+        let body = OpenAIProvider::new("k").build_body(&req);
         assert_eq!(body["stream"], true);
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "read_file");
@@ -1408,6 +1468,51 @@ mod tests {
             body["tools"][0]["function"]["parameters"]["properties"]["path"]["type"],
             "string"
         );
+    }
+
+    #[test]
+    fn build_body_appends_injected_tool_and_tool_choice() {
+        use crate::types::ToolDef;
+        let req = StreamRequest {
+            model: "openai/gpt-4.1".into(),
+            system: None,
+            messages: vec![Message::user("hi")],
+            tools: vec![ToolDef {
+                name: "read_file".into(),
+                description: "read a file".into(),
+                input_schema: json!({"type":"object"}),
+            }],
+            max_tokens: 100,
+            thinking_budget: None,
+            stream_chunk_timeout_override: None,
+        };
+        let provider = OpenAIProvider::new("k")
+            .with_injected_tool(json!({
+                "type": "openrouter:fusion",
+                "parameters": {"analysis_models": ["anthropic/claude-opus-4.8"]}
+            }))
+            .with_tool_choice(json!("required"));
+        let body = provider.build_body(&req);
+        // Agent function tool stays first; fusion tool is appended after.
+        assert_eq!(body["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(body["tools"][1]["type"], "openrouter:fusion");
+        assert_eq!(
+            body["tools"][1]["parameters"]["analysis_models"][0],
+            "anthropic/claude-opus-4.8"
+        );
+        assert_eq!(body["tool_choice"], "required");
+    }
+
+    #[test]
+    fn model_override_then_strip_yields_outer_wire_model() {
+        // fusion+ scenario: stream() replaces the model with the configured
+        // outer model, then strip_model_prefix removes the routing prefix.
+        let provider = OpenAIProvider::new("k")
+            .with_strip_model_prefix("openrouter/")
+            .with_model_override("openrouter/openai/gpt-4.1");
+        let override_model = provider.model_override.clone().unwrap();
+        let wire = strip_wire_prefix(&override_model, provider.strip_model_prefix.as_deref());
+        assert_eq!(wire, "openai/gpt-4.1");
     }
 
     #[tokio::test]
@@ -1652,6 +1757,44 @@ mod tests {
     /// block, no text / tools) must still serialize a `content` field —
     /// some OpenAI-compatible providers 400 on an assistant message with
     /// no `content`. We fall back to an empty string.
+    #[test]
+    fn strip_wire_prefix_handles_openrouter_vendor_collision() {
+        // Normal OpenRouter models: strip the routing prefix → vendor/model.
+        assert_eq!(
+            strip_wire_prefix(
+                "openrouter/anthropic/claude-sonnet-4-6",
+                Some("openrouter/")
+            ),
+            "anthropic/claude-sonnet-4-6"
+        );
+        assert_eq!(
+            strip_wire_prefix("openrouter/openai/gpt-4.1", Some("openrouter/")),
+            "openai/gpt-4.1"
+        );
+        // OpenRouter-vendor router models: keep the full id (vendor is
+        // "openrouter") — stripping would send a vendor-less id that 404s.
+        assert_eq!(
+            strip_wire_prefix("openrouter/fusion", Some("openrouter/")),
+            "openrouter/fusion"
+        );
+        assert_eq!(
+            strip_wire_prefix("openrouter/auto", Some("openrouter/")),
+            "openrouter/auto"
+        );
+        // Other providers still strip to a bare id (no slash by design).
+        assert_eq!(
+            strip_wire_prefix("lmstudio/llama-3.2", Some("lmstudio/")),
+            "llama-3.2"
+        );
+        assert_eq!(
+            strip_wire_prefix("dashscope/qwen-max", Some("dashscope/")),
+            "qwen-max"
+        );
+        // No prefix configured / no match → unchanged.
+        assert_eq!(strip_wire_prefix("gpt-4o", None), "gpt-4o");
+        assert_eq!(strip_wire_prefix("gpt-4o", Some("openrouter/")), "gpt-4o");
+    }
+
     #[test]
     fn messages_to_openai_reasoning_only_turn_has_empty_content() {
         let history = vec![

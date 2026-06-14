@@ -5362,6 +5362,15 @@
           "input_per_mtok": -1000000.0,
           "output_per_mtok": -1000000.0
         },
+        "openrouter/fusion+": {
+          "context": 128000,
+          "source": "manual: thClaws pseudo-model (configurable Fusion; engine attaches openrouter:fusion tool)",
+          "verified_at": "2026-06-14",
+          "free": false,
+          "chat": true,
+          "input_per_mtok": -1000000.0,
+          "output_per_mtok": -1000000.0
+        },
         "openrouter/owl-alpha": {
           "context": 1048756,
           "max_output": 262144,
