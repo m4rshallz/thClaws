@@ -583,10 +583,13 @@ pub struct ProjectConfig {
     /// iframe-based `UI` tab are always available regardless.
     #[serde(rename = "shellTabEnabled")]
     pub shell_tab_enabled: Option<bool>,
-    /// Opt-in flag for the native Gemini image-generation tools
-    /// (`TextToImage`, `ImageToImage`). See `AppConfig::
-    /// image_tools_enabled` for the design.
-    #[serde(rename = "imageToolsEnabled")]
+    /// Opt-in flag for the built-in media tools — `TextToImage`,
+    /// `ImageToImage`, `TextToVideo`, `ImageToVideo`, `MediaJobStatus`
+    /// (dev-plan/40). Gates them for the agent and for shells' direct
+    /// `callTool` path; the built-in Media Studio shell auto-enables them
+    /// regardless (it's the media on-ramp). Accepts either
+    /// `mediaToolsEnabled` (preferred) or the legacy `imageToolsEnabled`.
+    #[serde(rename = "imageToolsEnabled", alias = "mediaToolsEnabled")]
     pub image_tools_enabled: Option<bool>,
     /// Engine-managed Playwright browser automation. See
     /// [`AppConfig::browser_enabled`].
@@ -2014,6 +2017,16 @@ mod tests {
         pc.apply_to(&mut cfg);
         assert_eq!(cfg.permissions, "auto");
         assert_eq!(cfg.allowed_tools.unwrap(), vec!["Read", "Write", "Bash"]);
+    }
+
+    #[test]
+    fn media_tools_flag_accepts_legacy_and_preferred_names() {
+        // Legacy key (still the serialized form for back-compat).
+        let a: ProjectConfig = serde_json::from_str(r#"{"imageToolsEnabled": true}"#).unwrap();
+        assert_eq!(a.image_tools_enabled, Some(true));
+        // Preferred alias — these tools are image + video now.
+        let b: ProjectConfig = serde_json::from_str(r#"{"mediaToolsEnabled": true}"#).unwrap();
+        assert_eq!(b.image_tools_enabled, Some(true));
     }
 
     /// First-run bootstrap exposes every ProjectConfig field name so

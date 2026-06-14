@@ -804,9 +804,18 @@ impl WorkerState {
                 .register(std::sync::Arc::new(crate::tools::TextToImageTool));
             self.tool_registry
                 .register(std::sync::Arc::new(crate::tools::ImageToImageTool));
+            self.tool_registry
+                .register(std::sync::Arc::new(crate::tools::TextToVideoTool));
+            self.tool_registry
+                .register(std::sync::Arc::new(crate::tools::ImageToVideoTool));
+            self.tool_registry
+                .register(std::sync::Arc::new(crate::tools::MediaJobStatusTool));
         } else {
             self.tool_registry.remove("TextToImage");
             self.tool_registry.remove("ImageToImage");
+            self.tool_registry.remove("TextToVideo");
+            self.tool_registry.remove("ImageToVideo");
+            self.tool_registry.remove("MediaJobStatus");
         }
         let prev_perm = self.agent.permission_mode;
         let prev_thinking = self.agent.thinking_budget;
@@ -1328,6 +1337,9 @@ async fn run_worker(
     if config.image_tools_enabled {
         tools.register(std::sync::Arc::new(crate::tools::TextToImageTool));
         tools.register(std::sync::Arc::new(crate::tools::ImageToImageTool));
+        tools.register(std::sync::Arc::new(crate::tools::TextToVideoTool));
+        tools.register(std::sync::Arc::new(crate::tools::ImageToVideoTool));
+        tools.register(std::sync::Arc::new(crate::tools::MediaJobStatusTool));
     }
 
     // Tool-parity audit fix: respect `searchEngine` config override

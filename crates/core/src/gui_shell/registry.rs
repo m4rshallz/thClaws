@@ -240,7 +240,7 @@ impl ShellRegistry {
 
     fn builtin_only_map() -> HashMap<String, EmbeddedShell> {
         let mut builtin = HashMap::new();
-        for shell in [session_explorer(), chatbot()] {
+        for shell in [session_explorer(), chatbot(), media_studio()] {
             builtin.insert(shell.manifest.id.clone(), shell);
         }
         builtin
@@ -486,6 +486,40 @@ fn chatbot() -> EmbeddedShell {
     )
 }
 
+/// Media Studio — image + video generation across providers
+/// (dev-plan/40 Tier 3). Drives the built-in TextToImage / ImageToImage
+/// / TextToVideo / ImageToVideo tools directly via `thclaws.callTool`;
+/// the submit tools route through the GuiApprover. Mode switch, model
+/// picker, params, gallery + lightbox.
+fn media_studio() -> EmbeddedShell {
+    build_embedded_shell(
+        include_str!("../../assets/gui-shells/media-studio/manifest.json"),
+        &[
+            (
+                "index.html",
+                include_bytes!("../../assets/gui-shells/media-studio/index.html"),
+                "text/html; charset=utf-8",
+            ),
+            (
+                "main.js",
+                include_bytes!("../../assets/gui-shells/media-studio/main.js"),
+                "application/javascript; charset=utf-8",
+            ),
+            (
+                "style.css",
+                include_bytes!("../../assets/gui-shells/media-studio/style.css"),
+                "text/css; charset=utf-8",
+            ),
+            (
+                "icon.svg",
+                include_bytes!("../../assets/gui-shells/media-studio/icon.svg"),
+                "image/svg+xml",
+            ),
+        ],
+        "media-studio",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +546,21 @@ mod tests {
         let names: Vec<_> = listed.iter().map(|(_, m)| m.id.as_str()).collect();
         assert!(names.contains(&"session-explorer"));
         assert!(names.contains(&"chatbot"));
+        assert!(names.contains(&"media-studio"));
+    }
+
+    #[test]
+    fn media_studio_resolves_and_ships_assets() {
+        let r = ShellRegistry::builtin_only();
+        let s = r.resolve("media-studio").expect("built-in present");
+        assert_eq!(s.manifest().id, "media-studio");
+        assert_eq!(s.source(), ShellSource::Builtin);
+        for rel in ["index.html", "main.js", "style.css", "icon.svg"] {
+            let (bytes, _) = s
+                .read_asset(rel)
+                .unwrap_or_else(|e| panic!("media-studio asset {rel}: {e}"));
+            assert!(!bytes.is_empty(), "{rel} is empty");
+        }
     }
 
     #[test]

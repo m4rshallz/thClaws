@@ -25,6 +25,9 @@
 //   thclaws.ui.onFullscreen(cb)      -> unsubscribe()    // fires with current state
 //   thclaws.ui.exitFullscreen()      -> void             // ask host to leave full-screen
 //   thclaws.ui.claimExitControl()    -> void             // hide the host's fallback chip
+//   thclaws.ui.theme                 — "light" | "dark", host's resolved theme
+//   thclaws.ui.onTheme(cb)           -> unsubscribe()    // fires with current theme
+//                                    // (bridge also sets data-theme + color-scheme on <html>)
 
 (() => {
   // Mode A URL: thclaws://localhost/gui-shell/<id>/<path>?session=<sid>
@@ -110,6 +113,24 @@
       // value.
       if (data.event === "fullscreen" && window.thclaws && window.thclaws.ui) {
         window.thclaws.ui.isFullscreen = !!(data.payload && data.payload.active);
+      }
+      // Theme sync — the host pushes its resolved theme ("light" |
+      // "dark") so shells can match the main UI instead of hardcoding
+      // colors. We set `data-theme` + `color-scheme` on the shell's
+      // root document directly so a shell only needs theme-aware CSS
+      // (`:root[data-theme="light"]{…}`) — no JS required. Subscribers
+      // of thclaws.ui.onTheme still fire below via the normal fanout.
+      if (data.event === "theme" && window.thclaws && window.thclaws.ui) {
+        const mode =
+          data.payload && data.payload.mode === "light" ? "light" : "dark";
+        window.thclaws.ui.theme = mode;
+        try {
+          const de = document.documentElement;
+          de.setAttribute("data-theme", mode);
+          de.style.colorScheme = mode;
+        } catch (e) {
+          /* document not ready / sandboxed — CSS default applies */
+        }
       }
       const set = subscribers.get(data.event);
       if (set) {
@@ -436,6 +457,13 @@
       // from the host's `fullscreen` events; starts false.
       isFullscreen: false,
 
+      // The host's resolved theme ("light" | "dark"), updated from the
+      // host's `theme` events. The bridge also mirrors this onto
+      // `document.documentElement[data-theme]` + `color-scheme`, so a
+      // shell can theme purely in CSS. Starts "dark" (the historical
+      // default) until the first host event arrives.
+      theme: "dark",
+
       // Ask the host to leave full-screen UI mode (reveals the tab bar
       // etc.). No-op in Mode B (standalone `--serve --gui-shell`, where
       // the shell already owns the whole page and there's no chrome to
@@ -471,6 +499,21 @@
         // Replay current state on the next tick so subscribers added
         // before the first host event still get an initial call.
         Promise.resolve().then(() => callback(window.thclaws.ui.isFullscreen));
+        return unsub;
+      },
+
+      // Subscribe to host theme changes. Fires immediately with the
+      // current theme ("light" | "dark"). Most shells won't need this —
+      // theme-aware CSS keyed on `:root[data-theme]` is enough — but
+      // it's here for shells that style via JS (e.g. canvas/charts).
+      onTheme(callback) {
+        if (typeof callback !== "function") {
+          throw new TypeError("thclaws.ui.onTheme: callback must be a function");
+        }
+        const unsub = window.thclaws.on("theme", (p) =>
+          callback(p && p.mode === "light" ? "light" : "dark"),
+        );
+        Promise.resolve().then(() => callback(window.thclaws.ui.theme));
         return unsub;
       },
     },

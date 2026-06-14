@@ -4220,6 +4220,9 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str, verbose: bool) -> R
     if config.image_tools_enabled {
         tool_registry.register(Arc::new(crate::tools::TextToImageTool));
         tool_registry.register(Arc::new(crate::tools::ImageToImageTool));
+        tool_registry.register(Arc::new(crate::tools::TextToVideoTool));
+        tool_registry.register(Arc::new(crate::tools::ImageToVideoTool));
+        tool_registry.register(Arc::new(crate::tools::MediaJobStatusTool));
     }
 
     // KMS tools always-on (pre-fix this was gated by
@@ -4527,6 +4530,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     if config.image_tools_enabled {
         tool_registry.register(Arc::new(crate::tools::TextToImageTool));
         tool_registry.register(Arc::new(crate::tools::ImageToImageTool));
+        tool_registry.register(Arc::new(crate::tools::TextToVideoTool));
+        tool_registry.register(Arc::new(crate::tools::ImageToVideoTool));
+        tool_registry.register(Arc::new(crate::tools::MediaJobStatusTool));
     }
 
     // KMS tools always-on (pre-fix this was gated by

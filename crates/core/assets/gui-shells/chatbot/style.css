@@ -1,5 +1,13 @@
+/* Theme follows the host app. The thClaws shell bridge sets
+   <html data-theme="light|dark"> (+ color-scheme) from the host's
+   resolved theme via thclaws.ui.onTheme — so a shell only needs
+   theme-aware CSS keyed on data-theme, no JS. Dark is the default;
+   light overrides below. The prefers-color-scheme block is a fallback
+   for the brief moment before the host's first theme event (and any
+   host that doesn't send one). This is the reference pattern for
+   theme-aware shells. */
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   --bg: #0f1115;
   --fg: #e6e6e6;
   --muted: #8a8a8a;
@@ -11,8 +19,22 @@
   --bot-bg: #161922;
   --danger: #ff7070;
 }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #666666;
+  --accent: #2057d8;
+  --border: #e0e0e0;
+  --card: #f5f5f5;
+  --hover: #ececec;
+  --user-bg: #e8efff;
+  --bot-bg: #f5f5f5;
+  --danger: #c43030;
+}
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
+    color-scheme: light;
     --bg: #ffffff;
     --fg: #1a1a1a;
     --muted: #666666;

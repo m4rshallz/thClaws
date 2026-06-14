@@ -141,6 +141,13 @@ pub struct ModelEntry {
     /// returns `None` for these.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier_billed: Option<bool>,
+    /// Per-image price in USD for image-generation models billed PER
+    /// IMAGE rather than per token (e.g. Qwen-Image-2.0 $0.035/image,
+    /// -pro $0.075). The `*_per_mtok` fields don't apply to these; this
+    /// is the SSOT figure for per-image gateway metering (dev-plan/40).
+    /// Desktop users with their own provider key are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_per_image_usd: Option<f64>,
 }
 
 impl ModelEntry {
@@ -695,6 +702,9 @@ impl EffectiveCatalogue {
                                 .reasoning_per_mtok
                                 .or(baseline.reasoning_per_mtok),
                             tier_billed: e.tier_billed.or(baseline.tier_billed),
+                            price_per_image_usd: e
+                                .price_per_image_usd
+                                .or(baseline.price_per_image_usd),
                         },
                         None => e.clone(),
                     };

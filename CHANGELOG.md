@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-06-14
+
+Built-in media generation — multi-provider image + video tools, plus a Media Studio GUI shell to drive them.
+
+### Added
+- **Provider-abstracted image tools.** `TextToImage` / `ImageToImage` are no longer Gemini-only — choose `flash`/`pro` (Gemini), `gpt-image-2` (OpenAI), or `qwen-image-2.0` / `-pro` (Alibaba Qwen, strong at multi-image edits + text rendering). The provider is inferred from the model.
+- **Built-in video tools.** New `TextToVideo` / `ImageToVideo` (Veo 3.1 fast/quality/lite) with an async submit→poll job model and a `MediaJobStatus` tool. Jobs persist to `.thclaws/media-jobs.jsonl` and resume across restarts; clips land in `output/vid-*.mp4`.
+- **Media Studio GUI shell.** A built-in shell (UI tab) for image + video: mode switch (text→image / image edit / text→video / image→video), provider + model picker, parameters, and a gallery with a lightbox. The gallery is disk-backed — it shows everything under `output/`, newest first, not just the current session.
+- **Theme-aware GUI shells.** chatbot, session-explorer, and Media Studio now follow the app's Light/Dark/System theme (the shell bridge exposes `thclaws.ui.theme` / `onTheme` and mirrors it onto `data-theme`). A starter template (`thclaws-gui-shell-template`) ships the correct pattern for new shells.
+
+### Changed
+- **Media tools are opt-in via `mediaToolsEnabled`** (alias of the legacy `imageToolsEnabled`; the flag now covers image *and* video) — but the Media Studio shell auto-enables them, so it works without toggling settings.
+- **GUI shells can drive tools through the approval flow.** A shell's `callTool` for a tool that costs money now raises the normal approval modal instead of being rejected outright.
+
+### Fixed
+- **Veo `durationSeconds` clamped to 4–8** — the API rejects values outside that range (a 2s request 400'd).
+- **Media Studio readability.** A lightbox backdrop with `display: flex` outranked its `hidden` attribute and dimmed the entire shell; it's now gated on the attribute.
+- **Clearer image-gen errors.** A Gemini "HTTP 200 but no image" now reports the `finishReason` / safety-block / raw body instead of an opaque "missing parts".
+
 ## [0.58.0] - 2026-06-14
 
 ### Added

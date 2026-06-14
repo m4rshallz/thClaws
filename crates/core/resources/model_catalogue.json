@@ -434,6 +434,18 @@
           "input_per_mtok": 0.25,
           "output_per_mtok": 2.0
         },
+        "dashscope/qwen-image-2.0": {
+          "source": "manual:https://www.alibabacloud.com/help/en/model-studio/qwen-image-api",
+          "verified_at": "2026-06-14",
+          "chat": false,
+          "price_per_image_usd": 0.035
+        },
+        "dashscope/qwen-image-2.0-pro": {
+          "source": "manual:https://www.alibabacloud.com/help/en/model-studio/qwen-image-api",
+          "verified_at": "2026-06-14",
+          "chat": false,
+          "price_per_image_usd": 0.075
+        },
         "dashscope/qwen-max": {
           "context": 131072,
           "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + litellm:dashscope/qwen-max",
@@ -2730,6 +2742,14 @@
           "input_per_mtok": 30.0,
           "output_per_mtok": 180.0,
           "cached_input_per_mtok": 3.0
+        },
+        "gpt-image-2": {
+          "source": "manual:https://platform.openai.com/docs/pricing",
+          "verified_at": "2026-06-14",
+          "chat": false,
+          "input_per_mtok": 5.0,
+          "output_per_mtok": 30.0,
+          "cached_input_per_mtok": 1.25
         },
         "o1": {
           "context": 200000,

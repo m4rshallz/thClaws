@@ -24,7 +24,9 @@
 //! build their own `IpcContext` flavor and call [`handle_ipc`] uniformly.
 //! The body of [`handle_ipc`] is identical regardless of transport.
 
-use crate::permissions::GuiApprover;
+use crate::permissions::{
+    AgentOrigin, ApprovalDecision, ApprovalRequest, ApprovalSink, GuiApprover,
+};
 use crate::shared_session::{SharedSessionHandle, ShellInput};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -285,25 +287,32 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             ctx.shared.request_cancel();
         }
 
-        // GUI Shell (dev-plan/33 Tier 2) — direct tool invocation
+        // GUI Shell (dev-plan/33 Tier 2/3) — direct tool invocation
         // bypassing the agent loop. The shell's domain UI uses this
-        // for deterministic actions ("Generate" button calls image_gen
-        // directly; no model round-trip needed).
+        // for deterministic actions (Media Studio's "Generate" button
+        // calls TextToImage/TextToVideo directly; no model round-trip).
         //
-        // Tier 2 rules:
+        // Rules:
         //   - Read-only tools (ls/read/glob/grep/web_fetch/...) → run.
         //   - Tools whose `requires_approval(&input)` returns true →
-        //     rejected with a clear error. Tier 3 wires the approval
-        //     flow so a shell can request approval through the same
-        //     GuiApprover the agent uses.
+        //     routed through the same `GuiApprover` the agent uses
+        //     (dev-plan/33 Tier 3 + dev-plan/40 Tier 3). The user gets
+        //     the normal approval modal; Deny surfaces as an error.
         //   - MCP-contributed tools are NOT visible here — the fresh
-        //     ToolRegistry::with_builtins() doesn't include them.
-        //     Tier 3 routes through the worker's registry for parity.
+        //     ToolRegistry::with_builtins() doesn't include them. The
+        //     media tools (dev-plan/40) are flagged by `imageToolsEnabled`
+        //     (same as for the agent) and registered below only when that
+        //     flag is on OR the calling shell is `media-studio` — the
+        //     built-in Media Studio is the media on-ramp, so loading it
+        //     auto-enables them without the user toggling settings.
         //
         // The IPC dispatch is sync but Tool::call is async + the wry
         // IPC thread has no tokio runtime context. Build a per-call
-        // single-threaded runtime in a fresh OS thread; cheap enough
-        // for the read-only call sites Tier 2 allows.
+        // single-threaded runtime in a fresh OS thread. The approval
+        // await resolves out-of-band: the GuiApprover sends a modal
+        // request to the frontend and the later `approval_response`
+        // IPC (on the main thread) calls `approver.resolve(id, ...)`,
+        // completing the oneshot this block_on is parked on.
         "gui_shell_tool_invoke" => {
             let request_id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
             let session_id = msg
@@ -317,26 +326,60 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                 .unwrap_or("")
                 .to_string();
             let args = msg.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let shell_id = msg
+                .get("shellId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // Media tools (dev-plan/40) are flagged by `imageToolsEnabled`
+            // like for the agent — but the built-in Media Studio shell is
+            // the on-ramp for media generation, so loading it auto-enables
+            // them without the user toggling settings. So: register the
+            // media tools into the invoke registry only when the flag is on
+            // OR the calling shell is media-studio. (Other shells stay
+            // gated by the flag.)
+            let media_enabled = shell_id == "media-studio"
+                || crate::config::AppConfig::load()
+                    .map(|c| c.image_tools_enabled)
+                    .unwrap_or(false);
             let dispatch = ctx.dispatch.clone();
+            let approver = ctx.approver.clone();
             std::thread::spawn(move || {
                 let outcome: std::result::Result<String, String> = (|| {
                     if tool_name.is_empty() {
                         return Err("gui_shell_tool_invoke: missing 'name' field".into());
                     }
-                    let registry = crate::tools::ToolRegistry::with_builtins();
+                    let mut registry = crate::tools::ToolRegistry::with_builtins();
+                    if media_enabled {
+                        registry.register(Arc::new(crate::tools::TextToImageTool));
+                        registry.register(Arc::new(crate::tools::ImageToImageTool));
+                        registry.register(Arc::new(crate::tools::TextToVideoTool));
+                        registry.register(Arc::new(crate::tools::ImageToVideoTool));
+                        registry.register(Arc::new(crate::tools::MediaJobStatusTool));
+                    }
                     let tool = registry
                         .get(&tool_name)
                         .ok_or_else(|| format!("unknown tool: {tool_name}"))?;
-                    if tool.requires_approval(&args) {
-                        return Err(format!(
-                            "tool '{tool_name}' requires approval; thclaws.tools.invoke is read-only in Tier 2 (Tier 3 wires the approval flow)"
-                        ));
-                    }
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
                         .map_err(|e| format!("tokio runtime build: {e}"))?;
-                    rt.block_on(tool.call(args)).map_err(|e| e.to_string())
+                    rt.block_on(async {
+                        if tool.requires_approval(&args) {
+                            let decision = approver
+                                .approve(&ApprovalRequest {
+                                    tool_name: tool_name.clone(),
+                                    input: args.clone(),
+                                    summary: Some(format!("{tool_name} (GUI shell)")),
+                                    originator: AgentOrigin::Main,
+                                })
+                                .await;
+                            if matches!(decision, ApprovalDecision::Deny) {
+                                return Err(format!("tool '{tool_name}' denied by user"));
+                            }
+                        }
+                        tool.call(args).await.map_err(|e| e.to_string())
+                    })
                 })();
                 let reply = match outcome {
                     Ok(output) => serde_json::json!({

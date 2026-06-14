@@ -83,6 +83,9 @@ pub async fn run(
     if config.image_tools_enabled {
         tools.register(Arc::new(crate::tools::TextToImageTool));
         tools.register(Arc::new(crate::tools::ImageToImageTool));
+        tools.register(Arc::new(crate::tools::TextToVideoTool));
+        tools.register(Arc::new(crate::tools::ImageToVideoTool));
+        tools.register(Arc::new(crate::tools::MediaJobStatusTool));
     }
 
     let provider = crate::repl::build_provider(&config)?;

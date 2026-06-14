@@ -79,6 +79,7 @@ pub mod line;
 pub mod login_codex;
 pub mod marketplace;
 pub mod mcp;
+pub mod media;
 pub mod memory;
 pub mod messenger;
 pub mod model_catalogue;

@@ -1,0 +1,10 @@
+{
+  "id": "media-studio",
+  "name": "Media Studio",
+  "version": "0.1.0",
+  "description": "Generate and edit images + video across providers (Gemini, OpenAI gpt-image-2, Veo). Pick a mode, model, and parameters; results land in a gallery with a lightbox. Drives the built-in TextToImage / ImageToImage / TextToVideo / ImageToVideo tools directly (dev-plan/40 Tier 3).",
+  "entry": "index.html",
+  "icon": "icon.svg",
+  "minBridgeVersion": "1",
+  "permissions": ["tool.invoke", "storage"]
+}

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Media Studio</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="bar">
+      <div class="title-row">
+        <h1>Media Studio</h1>
+        <button id="exit-fullscreen" class="ghost-btn" title="Exit full screen (⌘⇧U)" hidden>⤢ Exit</button>
+      </div>
+      <nav class="modes" id="modes">
+        <button class="mode-tab active" data-mode="text2image">Text → Image</button>
+        <button class="mode-tab" data-mode="image2image">Image Edit</button>
+        <button class="mode-tab" data-mode="text2video">Text → Video</button>
+        <button class="mode-tab" data-mode="image2video">Image → Video</button>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <label class="field">
+          <span class="label">Model</span>
+          <select id="model"></select>
+        </label>
+
+        <label class="field" id="input-path-field" hidden>
+          <span class="label">Source image (workspace path)</span>
+          <input id="input-path" type="text" placeholder="output/img-….png  — or click a gallery item" />
+        </label>
+
+        <label class="field">
+          <span class="label">Prompt</span>
+          <textarea id="prompt" rows="5" placeholder="Describe what to generate…"></textarea>
+        </label>
+
+        <div class="row">
+          <label class="field">
+            <span class="label">Aspect</span>
+            <select id="aspect">
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+              <option value="1:1">1:1</option>
+              <option value="3:4">3:4</option>
+              <option value="4:3">4:3</option>
+            </select>
+          </label>
+
+          <label class="field" id="size-field">
+            <span class="label">Size</span>
+            <select id="size">
+              <option value="1K">1K</option>
+              <option value="512">512</option>
+              <option value="2K">2K</option>
+            </select>
+          </label>
+
+          <label class="field" id="duration-field" hidden>
+            <span class="label">Duration (s)</span>
+            <select id="duration">
+              <option value="8">8</option>
+              <option value="6">6</option>
+              <option value="4">4</option>
+            </select>
+          </label>
+        </div>
+
+        <button id="generate" class="generate">Generate</button>
+        <p class="status" id="status"></p>
+        <p class="hint" id="hint"></p>
+      </section>
+
+      <section class="gallery-wrap">
+        <div class="gallery-head">
+          <h2>Gallery</h2>
+          <button id="clear-gallery" class="ghost-btn" title="Re-scan output/ for media">Refresh</button>
+        </div>
+        <div class="gallery" id="gallery">
+          <div class="empty" id="gallery-empty">Nothing generated yet.</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox" hidden>
+    <button class="lightbox-close" id="lightbox-close" title="Close (Esc)">✕</button>
+    <div class="lightbox-body" id="lightbox-body"></div>
+    <p class="lightbox-caption" id="lightbox-caption"></p>
+  </div>
+
+  <div class="transport-badge" id="transport-badge"></div>
+  <script src="main.js"></script>
+</body>
+</html>

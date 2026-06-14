@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { send, subscribe } from "../hooks/useIPC";
+import { useTheme } from "../hooks/useTheme";
 
 // dev-plan/33 Tier 1: render a GUI Shell inside a sandboxed iframe.
 // Marshals postMessage between the iframe and the IPC backend so the
@@ -37,6 +38,10 @@ const PARENT_ONLY_TYPES = new Set(["ready", "hotkey", "ui"]);
 
 export function UIView({ active, shellId, fullscreen = false }: UIViewProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // Resolved theme ("light" | "dark") of the main UI. Pushed into the
+  // shell so it can match the app theme instead of hardcoding colors
+  // (the bridge mirrors it onto the shell document's data-theme).
+  const { resolved: theme } = useTheme();
 
   // Push the current full-screen state into the iframe. Kept in a ref-
   // free helper so both the fullscreen-change effect and the iframe's
@@ -47,6 +52,16 @@ export function UIView({ active, shellId, fullscreen = false }: UIViewProps) {
     if (!target) return;
     target.postMessage(
       { ns: "thclaws-shell-event", event: "fullscreen", payload: { active: value } },
+      "*",
+    );
+  };
+
+  // Push the host theme into the iframe (same channel as fullscreen).
+  const sendTheme = (value: "light" | "dark") => {
+    const target = iframeRef.current?.contentWindow;
+    if (!target) return;
+    target.postMessage(
+      { ns: "thclaws-shell-event", event: "theme", payload: { mode: value } },
       "*",
     );
   };
@@ -63,9 +78,11 @@ export function UIView({ active, shellId, fullscreen = false }: UIViewProps) {
         return;
       }
       if (data.type === "ready") {
-        // Replay current full-screen state to a freshly-loaded shell so
-        // thclaws.ui.onFullscreen() fires with the right initial value.
+        // Replay current full-screen state + theme to a freshly-loaded
+        // shell so thclaws.ui.onFullscreen()/onTheme() fire with the
+        // right initial values and the shell paints in the app theme.
         sendFullscreen(fullscreen);
+        sendTheme(theme);
         return;
       }
       // Parent-only signals (hotkey / ui) are handled by App.tsx on the
@@ -85,13 +102,20 @@ export function UIView({ active, shellId, fullscreen = false }: UIViewProps) {
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shellId, fullscreen]);
+  }, [shellId, fullscreen, theme]);
 
   // Forward full-screen state changes into the iframe.
   useEffect(() => {
     sendFullscreen(fullscreen);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullscreen]);
+
+  // Forward theme changes into the iframe so the shell re-themes live
+  // when the user switches Light/Dark/System in the main UI.
+  useEffect(() => {
+    sendTheme(theme);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme]);
 
   useEffect(() => {
     // backend -> iframe: forward gui_shell_event dispatches.
