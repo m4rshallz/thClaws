@@ -149,8 +149,18 @@ function isMarkdownPath(path: string): boolean {
 // 404 at Traefik. Walk the prefix out of `location.pathname` instead.
 // Desktop / single-tenant `--serve` have no prefix; match returns "".
 function workspacePrefix(): string {
-  const m = location.pathname.match(/^(\/u\/[^/]+\/[^/]+)/);
-  return m ? m[1] : "";
+  // Path scheme — thclaws.cloud/u/<handle>/<slug>/… → the 3-segment prefix.
+  const u = location.pathname.match(/^(\/u\/[^/]+\/[^/]+)/);
+  if (u) return u[1];
+  // Subdomain scheme — <handle>.thclaws.cloud/<slug>/… → the slug is the
+  // first path segment (handle is in the hostname). The engine still
+  // serves at root behind Traefik's strip-prefix, so the file-asset URL
+  // just needs this one-segment prefix to route back through Traefik.
+  if (/\.thclaws\.cloud$/i.test(location.hostname)) {
+    const s = location.pathname.match(/^(\/[^/]+)/);
+    if (s) return s[1];
+  }
+  return "";
 }
 
 // Build a same-origin URL for the custom protocol's file-asset handler.

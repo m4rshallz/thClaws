@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-06-14
+
+### Added
+- **Settings-menu side flyouts.** The Instructions (Global / Folder
+  AGENTS.md), channel connectors (LINE / Telegram / Messenger), and
+  Appearance (Light / Dark / System) groups now fan out into compact
+  left-side popups instead of taking a row each — a much shorter menu.
+
+### Changed
+- **Default startup tab is now Chat** (was Terminal). Agents that pin a
+  tab via `guiShell.tabDefault` (e.g. a gui-shell workspace) still open
+  to their shell.
+- **Files tab resolves per-user subdomain URLs.** `workspacePrefix` now
+  derives the file-asset prefix for hosted workspaces served at
+  `<handle>.thclaws.cloud/<slug>/`, in addition to the legacy
+  `/u/<handle>/<slug>/` path scheme — so chapter images and other
+  relative assets load correctly under either URL form.
+
 ## [0.56.0] - 2026-06-14
 
 ### Added

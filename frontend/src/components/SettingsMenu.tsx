@@ -11,6 +11,9 @@ import {
   MessageCircle,
   Send,
   RotateCw,
+  MessagesSquare,
+  ChevronRight,
+  FileText,
 } from "lucide-react";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
 import { send, subscribe } from "../hooks/useIPC";
@@ -40,6 +43,10 @@ export function SettingsMenu({
   // once when the menu opens; updated optimistically on selection
   // so the dropdown reflects the click without a round-trip. #47.
   const [guiScale, setGuiScale] = useState<number | null>(null);
+  // Side-flyout submenus — closed by default.
+  const [channelsOpen, setChannelsOpen] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
 
   useEffect(() => {
     const unsub = subscribe((msg) => {
@@ -90,42 +97,51 @@ export function SettingsMenu({
     };
   }, [anchorRef, onClose]);
 
-  const items: { id: Choice; icon: React.ReactNode; label: string; hint: string }[] = [
+  // AGENTS.md editors — grouped into one "Instructions" side flyout.
+  const instructionItems: { id: Choice; icon: React.ReactNode; label: string; hint: string }[] = [
     {
       id: "global-instructions",
       icon: <Globe size={12} />,
-      label: "Global instructions",
-      hint: "Edit ~/.config/thclaws/AGENTS.md",
+      label: "Global",
+      hint: "~/.config/thclaws/AGENTS.md",
     },
     {
       id: "folder-instructions",
       icon: <Folder size={12} />,
-      label: "Folder instructions",
-      hint: "Edit AGENTS.md in the current directory",
+      label: "Folder",
+      hint: "AGENTS.md in current directory",
     },
+  ];
+
+  const items: { id: Choice; icon: React.ReactNode; label: string; hint: string }[] = [
     {
       id: "api-keys",
       icon: <KeyRound size={12} />,
       label: "Settings & API keys",
       hint: "Provider keys, gateway, deploy target, auto-learn",
     },
+  ];
+
+  // Messaging connectors — collapsed under one "Connect a channel" row
+  // (3 rows → 1 by default) to keep the settings menu compact.
+  const channelItems: { id: Choice; icon: React.ReactNode; label: string; hint: string }[] = [
     {
       id: "line-connect",
       icon: <MessageCircle size={12} />,
-      label: "Line Connect…",
-      hint: "Pair this thClaws install with your LINE OA",
+      label: "LINE",
+      hint: "Pair with your LINE OA",
     },
     {
       id: "telegram-connect",
       icon: <Send size={12} />,
-      label: "Telegram Connect…",
-      hint: "Pair this thClaws install with a Telegram bot",
+      label: "Telegram",
+      hint: "Pair with a Telegram bot",
     },
     {
       id: "messenger-connect",
       icon: <MessageCircle size={12} />,
-      label: "Messenger Connect…",
-      hint: "Pair this thClaws install with a Facebook Page",
+      label: "Messenger",
+      hint: "Pair with a Facebook Page",
     },
   ];
 
@@ -134,6 +150,7 @@ export function SettingsMenu({
     { id: "dark", icon: <Moon size={12} />, label: "Dark" },
     { id: "system", icon: <Monitor size={12} />, label: "System" },
   ];
+  const currentTheme = themeOptions.find((o) => o.id === mode);
 
   return (
     <div
@@ -168,6 +185,77 @@ export function SettingsMenu({
           color: rgba(255, 255, 255, 0.85) !important;
         }
       `}</style>
+      {/* Instructions (AGENTS.md editors) — side flyout, same pattern. */}
+      <div
+        className="relative"
+        onMouseEnter={() => setInstructionsOpen(true)}
+        onMouseLeave={() => setInstructionsOpen(false)}
+      >
+        <button
+          className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+          style={{ color: "var(--text-primary)", fontSize: "12px" }}
+          aria-haspopup="menu"
+          aria-expanded={instructionsOpen}
+          onClick={() => setInstructionsOpen((v) => !v)}
+        >
+          <span className="sm-subtle" style={{ color: "var(--text-secondary)" }}>
+            <FileText size={12} />
+          </span>
+          <div className="flex-1">
+            <div>Instructions</div>
+            <div
+              className="sm-subtle"
+              style={{ color: "var(--text-secondary)", fontSize: "10px" }}
+            >
+              Global · Folder AGENTS.md
+            </div>
+          </div>
+          <span className="sm-subtle" style={{ color: "var(--text-secondary)" }}>
+            <ChevronRight size={12} />
+          </span>
+        </button>
+        {instructionsOpen && (
+          <div
+            role="menu"
+            className="absolute rounded-md shadow-2xl py-1 z-50"
+            style={{
+              right: "100%",
+              top: "-1px",
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border)",
+              minWidth: "210px",
+            }}
+          >
+            {instructionItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  onPick(item.id);
+                  onClose();
+                }}
+                className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+                style={{ color: "var(--text-primary)", fontSize: "12px" }}
+              >
+                <span
+                  className="sm-subtle"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  {item.icon}
+                </span>
+                <div>
+                  <div>{item.label}</div>
+                  <div
+                    className="sm-subtle"
+                    style={{ color: "var(--text-secondary)", fontSize: "10px" }}
+                  >
+                    {item.hint}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       {items.map((item) => (
         <button
           key={item.id}
@@ -195,38 +283,153 @@ export function SettingsMenu({
           </div>
         </button>
       ))}
+      {/* Messaging connectors — a SIDE FLYOUT (separate popup to the
+          left of the menu) so this group stays one row tall and never
+          grows the main menu vertically. Opens on hover; the wrapping
+          container keeps it open while the cursor travels row → flyout
+          (the flyout is a descendant, so it doesn't trigger mouseleave).
+          Flush at right:100% (no gap) to avoid hover flicker. */}
+      <div
+        className="relative"
+        onMouseEnter={() => setChannelsOpen(true)}
+        onMouseLeave={() => setChannelsOpen(false)}
+      >
+        <button
+          className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+          style={{ color: "var(--text-primary)", fontSize: "12px" }}
+          aria-haspopup="menu"
+          aria-expanded={channelsOpen}
+          onClick={() => setChannelsOpen((v) => !v)}
+        >
+          <span className="sm-subtle" style={{ color: "var(--text-secondary)" }}>
+            <MessagesSquare size={12} />
+          </span>
+          <div className="flex-1">
+            <div>Connect a channel…</div>
+            <div
+              className="sm-subtle"
+              style={{ color: "var(--text-secondary)", fontSize: "10px" }}
+            >
+              LINE, Telegram, Messenger
+            </div>
+          </div>
+          <span className="sm-subtle" style={{ color: "var(--text-secondary)" }}>
+            <ChevronRight size={12} />
+          </span>
+        </button>
+        {channelsOpen && (
+          <div
+            role="menu"
+            className="absolute rounded-md shadow-2xl py-1 z-50"
+            style={{
+              right: "100%",
+              top: "-1px",
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border)",
+              minWidth: "200px",
+            }}
+          >
+            {channelItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  onPick(item.id);
+                  onClose();
+                }}
+                className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+                style={{ color: "var(--text-primary)", fontSize: "12px" }}
+              >
+                <span
+                  className="sm-subtle"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  {item.icon}
+                </span>
+                <div>
+                  <div>{item.label}</div>
+                  <div
+                    className="sm-subtle"
+                    style={{ color: "var(--text-secondary)", fontSize: "10px" }}
+                  >
+                    {item.hint}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div
         className="my-1"
         style={{ borderTop: "1px solid var(--border)" }}
       />
+      {/* Appearance (theme) — side flyout, same pattern as the channel
+          connectors, so the three options don't take three rows. */}
       <div
-        className="px-3 py-1 text-[10px] uppercase tracking-wider"
-        style={{ color: "var(--text-secondary)" }}
+        className="relative"
+        onMouseEnter={() => setAppearanceOpen(true)}
+        onMouseLeave={() => setAppearanceOpen(false)}
       >
-        Appearance
-      </div>
-      {themeOptions.map((opt) => {
-        const active = mode === opt.id;
-        return (
-          <button
-            key={opt.id}
-            onClick={() => setMode(opt.id)}
-            className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
-            style={{ color: "var(--text-primary)", fontSize: "12px" }}
-          >
-            <span
+        <button
+          className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+          style={{ color: "var(--text-primary)", fontSize: "12px" }}
+          aria-haspopup="menu"
+          aria-expanded={appearanceOpen}
+          onClick={() => setAppearanceOpen((v) => !v)}
+        >
+          <span className="sm-subtle" style={{ color: "var(--text-secondary)" }}>
+            {currentTheme?.icon ?? <Monitor size={12} />}
+          </span>
+          <div className="flex-1">
+            <div>Appearance</div>
+            <div
               className="sm-subtle"
-              style={{ color: "var(--text-secondary)" }}
+              style={{ color: "var(--text-secondary)", fontSize: "10px" }}
             >
-              {opt.icon}
-            </span>
-            <span className="flex-1">{opt.label}</span>
-            {active && (
-              <Check size={12} style={{ color: "var(--accent)" }} />
-            )}
-          </button>
-        );
-      })}
+              Theme: {currentTheme?.label ?? "System"}
+            </div>
+          </div>
+          <span className="sm-subtle" style={{ color: "var(--text-secondary)" }}>
+            <ChevronRight size={12} />
+          </span>
+        </button>
+        {appearanceOpen && (
+          <div
+            role="menu"
+            className="absolute rounded-md shadow-2xl py-1 z-50"
+            style={{
+              right: "100%",
+              top: "-1px",
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border)",
+              minWidth: "150px",
+            }}
+          >
+            {themeOptions.map((opt) => {
+              const active = mode === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  onClick={() => setMode(opt.id)}
+                  className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+                  style={{ color: "var(--text-primary)", fontSize: "12px" }}
+                >
+                  <span
+                    className="sm-subtle"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    {opt.icon}
+                  </span>
+                  <span className="flex-1">{opt.label}</span>
+                  {active && (
+                    <Check size={12} style={{ color: "var(--accent)" }} />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
       <div
         className="px-3 py-1.5 flex items-center gap-2"
         style={{ color: "var(--text-primary)", fontSize: "12px" }}

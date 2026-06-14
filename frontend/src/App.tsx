@@ -563,10 +563,10 @@ export default function App() {
 
   const [started, setStarted] = useState(false);
   const [currentCwd, setCurrentCwd] = useState("");
-  // Default tab is terminal; backend overrides via `initial_tab` on
+  // Default tab is chat; backend overrides via `initial_tab` on
   // current_cwd when `guiShell.tabDefault` is set in settings.json so
-  // the workspace lands on the GUI shell instead of terminal.
-  const [activeTab, setActiveTab] = useState<Tab>("terminal");
+  // the workspace lands on the GUI shell instead.
+  const [activeTab, setActiveTab] = useState<Tab>("chat");
   // Full-screen UI mode — hides tab strip, sidebar, status bar so the
   // GUI shell fills the viewport (the cloud equivalent of running
   // `thclaws --serve --gui-shell <id>`). Auto-enters when the backend
