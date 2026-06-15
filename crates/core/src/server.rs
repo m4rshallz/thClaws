@@ -1302,10 +1302,7 @@ fn build_kms_initial_payload(config: &AppConfig) -> Vec<serde_json::Value> {
             // Already saw this name in a higher-priority scope.
             continue;
         }
-        let scope = match kref.scope {
-            crate::kms::KmsScope::Project => "project",
-            crate::kms::KmsScope::User => "user",
-        };
+        let scope = kref.scope.as_str();
         let active_flag = active.contains(kref.name.as_str());
         all.push((kref.name, scope, active_flag));
     }

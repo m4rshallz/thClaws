@@ -3416,6 +3416,17 @@ async fn switch_model(
     events_tx: &broadcast::Sender<ViewEvent>,
     fallback_to_first: bool,
 ) {
+    // Shared-agent mode (dev-plan/41): when the company pins the model,
+    // members can't switch it. (Non-locked shared agents still allow
+    // switching among gateway models; build_provider rejects any
+    // non-gateway-routable target — see below.)
+    if crate::shared::is_model_locked() {
+        emit(
+            events_tx,
+            "this shared agent has a locked model — switching is disabled".into(),
+        );
+        return;
+    }
     let resolved_initial = crate::providers::ProviderKind::resolve_alias(new_model);
     if resolved_initial != new_model {
         emit(

@@ -87,6 +87,15 @@ impl CommandStore {
         }
         dirs.insert(0, PathBuf::from(".claude/commands"));
         dirs.insert(0, PathBuf::from(".thclaws/commands"));
+        // Shared-agent mode (dev-plan/41): the company's commands take
+        // priority (inserted first → win on name collision). Strict mode
+        // makes them the only source — members can't add their own.
+        if let Some(shared) = crate::shared::shared_commands_dir() {
+            if crate::shared::is_strict() {
+                return vec![shared];
+            }
+            dirs.insert(0, shared);
+        }
         dirs
     }
 

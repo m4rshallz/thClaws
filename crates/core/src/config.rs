@@ -1492,6 +1492,14 @@ impl AppConfig {
     /// Load order: env override → user settings.json → Claude Code fallback →
     ///             defaults → project overlay.
     pub fn load() -> Result<Self> {
+        // Shared-agent mode (dev-plan/41): the company brain is the ONLY
+        // config source. Member scopes (user / project / ~/.claude) are
+        // ignored so provider/tool/model settings can't be overridden,
+        // and the gateway is forced (no BYOK).
+        if crate::shared::is_active() {
+            return Self::load_shared();
+        }
+
         // 1. Explicit env override.
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Ok(p) = std::env::var("THCLAWS_CONFIG") {
@@ -1574,6 +1582,80 @@ impl AppConfig {
         // decides the user's choice was unreachable.
         if let Some(m) = cli_model_override() {
             config.model = m;
+        }
+
+        Ok(config)
+    }
+
+    /// Shared-agent config loader (dev-plan/41). Reads ONLY the company
+    /// brain at `$THCLAWS_SHARED_AGENT_DIR`: `settings.json` (read-only
+    /// base), `mcp.json` (config only — credentials resolve per-member).
+    /// Member-scope settings are never consulted. The gateway is forced
+    /// for every routable provider (no BYOK), and the model is pinned
+    /// when the company sets `THCLAWS_SHARED_MODEL_LOCKED`.
+    fn load_shared() -> Result<Self> {
+        let mut config = Self::default();
+
+        // Company settings base. A malformed file would otherwise
+        // silently disable every flag for every member, so surface the
+        // parse error loudly instead of swallowing it.
+        if let Some(path) = crate::shared::shared_settings_json() {
+            if path.exists() {
+                let contents = std::fs::read_to_string(&path)?;
+                let pc: ProjectConfig = serde_json::from_str(&contents)
+                    .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+                pc.apply_to(&mut config);
+            }
+        }
+
+        // Shared MCP config (read-only). Credentials (OAuth, etc.)
+        // resolve per-member at runtime, never from the shared brain.
+        if let Some(path) = crate::shared::shared_mcp_json() {
+            if let Some(servers) = ProjectConfig::parse_mcp_json(&path) {
+                config.mcp_servers = servers;
+            }
+        }
+
+        // Member-additive MCP from the private working dir, unless the
+        // company enforces strict mode. A member can never override a
+        // shared server by name.
+        if !crate::shared::is_strict() {
+            let shared_names: std::collections::HashSet<String> =
+                config.mcp_servers.iter().map(|s| s.name.clone()).collect();
+            for s in ProjectConfig::load_mcp_servers() {
+                if !shared_names.contains(&s.name) {
+                    config.mcp_servers.push(s);
+                }
+            }
+        }
+
+        // Gateway-only: force every gateway-routable provider through the
+        // gateway, ignoring any BYOK/native provider config in any layer.
+        // The gateway access key + base URL come from the pod's
+        // THCLAWS_GATEWAY_* env (injected by provisioning).
+        config.gateway_use_for = crate::shared::GATEWAY_ALL_PROVIDERS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Engine-managed browser MCP — same conditions as the normal path.
+        if config.browser_enabled
+            && !cfg!(test)
+            && !crate::policy::external_mcp_disallowed()
+            && !config.mcp_servers.iter().any(|s| s.name == "browser")
+        {
+            let server = Self::browser_mcp_config(config.browser_headless);
+            if command_on_path(&server.command) {
+                config.mcp_servers.push(server);
+            }
+        }
+
+        // Model: company model wins. A member `--model` override applies
+        // only when the company hasn't pinned the model.
+        if !crate::shared::is_model_locked() {
+            if let Some(m) = cli_model_override() {
+                config.model = m;
+            }
         }
 
         Ok(config)

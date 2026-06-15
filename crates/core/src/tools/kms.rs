@@ -19,6 +19,19 @@ use async_trait::async_trait;
 use regex::Regex;
 use serde_json::{json, Value};
 
+/// Refuse a mutation against a read-only shared-agent KMS (dev-plan/41).
+/// The company brain is mounted read-only; members fork the agent to
+/// change its knowledge. Reads/searches are unaffected.
+fn deny_if_read_only(kref: &crate::kms::KmsRef) -> Result<()> {
+    if kref.read_only() {
+        return Err(Error::Tool(format!(
+            "KMS '{}' belongs to a shared agent and is read-only — fork the agent to edit its knowledge",
+            kref.name
+        )));
+    }
+    Ok(())
+}
+
 pub struct KmsReadTool;
 
 #[async_trait]
@@ -257,6 +270,14 @@ fn kms_search_query_path(
     query: &str,
     input: &Value,
 ) -> Result<String> {
+    // dev-plan/41: a shared KMS is mounted read-only, so the BM25 index
+    // (written under `<root>/.index`) can't be built there — auto-rebuild
+    // would EROFS. Fall back to a read-only literal line-grep so `query:`
+    // still works on shared KMSes (degraded: no ranking, but no writes).
+    if kref.read_only() {
+        return kms_search_pattern_path(kref, _kms_name, &regex::escape(query));
+    }
+
     // Parse optional filters.
     let tags: Vec<String> = input
         .get("tags")
@@ -548,6 +569,7 @@ impl Tool for KmsWriteTool {
                 "no KMS named '{kms_name}' (check /kms list)"
             )));
         };
+        deny_if_read_only(&kref)?;
         // Pre-flight provenance check: pages without `sources:` in
         // frontmatter still write (soft enforcement keeps the tool
         // usable for legacy / quick captures), but the response
@@ -639,6 +661,7 @@ impl Tool for KmsAppendTool {
                 "no KMS named '{kms_name}' (check /kms list)"
             )));
         };
+        deny_if_read_only(&kref)?;
         let path = crate::kms::append_to_page(&kref, page, content)?;
         Ok(format!(
             "appended {} bytes to {}",
@@ -693,6 +716,7 @@ impl Tool for KmsDeleteTool {
                 "no KMS named '{kms_name}' (check /kms list)"
             )));
         };
+        deny_if_read_only(&kref)?;
         let path = crate::kms::delete_page(&kref, page)?;
         Ok(format!("deleted {}", path.display()))
     }

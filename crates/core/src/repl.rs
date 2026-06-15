@@ -3695,6 +3695,19 @@ fn compat_endpoint(
 pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
     let kind = config.detect_provider_kind()?;
 
+    // Shared-agent mode (dev-plan/41) is gateway-only: reject any provider
+    // that has no gateway route, so a member can't `/model` onto a native,
+    // un-metered backend (ollama/lmstudio/…) on a company-billed agent.
+    // Gateway-routable providers still get the overlay further down.
+    if crate::shared::is_active()
+        && crate::providers::thclaws_gateway::provider_name_for_config(kind).is_none()
+    {
+        return Err(crate::error::Error::Config(format!(
+            "shared agents are gateway-only — '{}' has no gateway route",
+            config.model
+        )));
+    }
+
     // Org policy gateway (EE Phase 3): when policies.gateway.enabled and
     // this provider should route through the gateway, replace the entire
     // provider with an OpenAI-compatible client pointing at the gateway

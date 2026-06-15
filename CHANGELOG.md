@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-06-15
+
+Engine support for thClaws.cloud **shared agents** (company-owned agents
+several people use). Cloud-only and fully dormant on desktop — running
+locally is unchanged.
+
+### Added
+- **Shared-agent mode** (activated by `THCLAWS_SHARED_AGENT_DIR`, set only
+  by the hosted runtime): instructions lock to the company `AGENTS.md`,
+  the KMS mounts read-only, the gateway is forced (no BYOK), and member
+  scopes (`~/.config/thclaws`, `~/.claude`, working dir) are ignored, so a
+  member can't override the company agent. Skills/commands/MCP load from
+  the shared brain (with optional strict mode). All of this is gated on
+  that env var being set — when it isn't (every desktop install), config,
+  instruction, KMS, skill/command, and provider resolution behave exactly
+  as before.
+
+(The cloud control-plane half of shared agents — the dashboard, launch,
+brain upload, members, and billing — lives in the thClaws.cloud service,
+not this binary.)
+
 ## [0.62.0] - 2026-06-15
 
 KMS ↔ Open Knowledge Format (OKF) interchange.

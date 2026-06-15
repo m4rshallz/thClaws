@@ -33,6 +33,9 @@ use std::path::{Path, PathBuf};
 pub enum KmsScope {
     User,
     Project,
+    /// Read-only KMS mounted from a shared-agent brain
+    /// (`$THCLAWS_SHARED_AGENT_DIR/kms`). See dev-plan/41. Never written.
+    Shared,
 }
 
 impl KmsScope {
@@ -40,6 +43,7 @@ impl KmsScope {
         match self {
             KmsScope::User => "user",
             KmsScope::Project => "project",
+            KmsScope::Shared => "shared",
         }
     }
 }
@@ -71,6 +75,14 @@ impl KmsRef {
 
     pub fn manifest_path(&self) -> PathBuf {
         self.root.join("manifest.json")
+    }
+
+    /// True for a KMS mounted read-only from a shared-agent brain
+    /// (dev-plan/41). Write tools (`KmsWrite`/`KmsAppend`/`KmsDelete`/
+    /// ingest/auto-learn) must refuse when this is set — members fork to
+    /// edit. Reads (`KmsRead`/`KmsSearch`) are unaffected.
+    pub fn read_only(&self) -> bool {
+        self.scope == KmsScope::Shared
     }
 
     /// Read `index.md`. Returns `""` (not an error) when the file is absent,
@@ -193,6 +205,7 @@ fn scope_root(scope: KmsScope) -> Option<PathBuf> {
     match scope {
         KmsScope::User => user_root(),
         KmsScope::Project => Some(project_root()),
+        KmsScope::Shared => crate::shared::shared_kms_root(),
     }
 }
 
@@ -238,16 +251,19 @@ fn list_in(scope: KmsScope) -> Vec<KmsRef> {
 pub fn list_all() -> Vec<KmsRef> {
     let mut out = list_in(KmsScope::Project);
     out.extend(list_in(KmsScope::User));
+    // Read-only shared-agent KMS (dev-plan/41) — only present when shared
+    // mode is active; listed last so a member's own same-named KMS wins.
+    out.extend(list_in(KmsScope::Shared));
     out
 }
 
-/// Find a KMS by name. Project scope wins over user on collision — this
-/// matches how project instructions override user instructions elsewhere
-/// in thClaws. Returns `None` when no KMS by that name exists, or when
-/// the matching directory is a symlink (symlinks are rejected to prevent
-/// `ln -s /etc <kms-name>` style exfiltration).
+/// Find a KMS by name. Project scope wins over user, then the read-only
+/// shared-agent scope last (dev-plan/41) — a member's own same-named KMS
+/// shadows the company one. Returns `None` when no KMS by that name
+/// exists, or when the matching directory is a symlink (symlinks are
+/// rejected to prevent `ln -s /etc <kms-name>` style exfiltration).
 pub fn resolve(name: &str) -> Option<KmsRef> {
-    for scope in [KmsScope::Project, KmsScope::User] {
+    for scope in [KmsScope::Project, KmsScope::User, KmsScope::Shared] {
         if let Some(root) = scope_root(scope) {
             let candidate = root.join(name);
             // symlink_metadata doesn't follow the symlink.
@@ -459,6 +475,7 @@ pub fn ingest(
     alias: Option<&str>,
     force: bool,
 ) -> Result<IngestResult> {
+    ensure_writable(kms)?;
     let meta = std::fs::metadata(source)
         .map_err(|e| Error::Tool(format!("cannot stat source '{}': {e}", source.display())))?;
     if !meta.is_file() {
@@ -1280,7 +1297,21 @@ fn fire_index_delete(kref: &KmsRef, page_stem: &str) {
     let _ = (kref, page_stem);
 }
 
+/// Reject any mutation of a read-only shared-agent KMS (dev-plan/41).
+/// Guards the core write paths so slash commands, ingest, and merge are
+/// covered uniformly — not just the model-callable tools.
+fn ensure_writable(kref: &KmsRef) -> Result<()> {
+    if kref.read_only() {
+        return Err(Error::Tool(format!(
+            "KMS '{}' is read-only (shared agent) — fork the agent to edit it",
+            kref.name
+        )));
+    }
+    Ok(())
+}
+
 pub fn write_page(kref: &KmsRef, page_name: &str, content: &str) -> Result<PathBuf> {
+    ensure_writable(kref)?;
     let path = writable_page_path(kref, page_name)?;
     let stem = path
         .file_stem()
@@ -1390,6 +1421,7 @@ fn body_has_leading_heading(body: &str) -> bool {
 /// `KmsWrite` to add metadata). Bumps `updated:` if frontmatter
 /// already present.
 pub fn append_to_page(kref: &KmsRef, page_name: &str, chunk: &str) -> Result<PathBuf> {
+    ensure_writable(kref)?;
     use std::io::Write;
     let path = writable_page_path(kref, page_name)?;
     let stem = path
@@ -1443,6 +1475,7 @@ pub fn append_to_page(kref: &KmsRef, page_name: &str, chunk: &str) -> Result<Pat
 /// strips the matching bullet from `index.md`, and appends a
 /// `## [YYYY-MM-DD] deleted | <stem>` entry to `log.md`.
 pub fn delete_page(kref: &KmsRef, page_name: &str) -> Result<PathBuf> {
+    ensure_writable(kref)?;
     let path = writable_page_path(kref, page_name)?;
     if !path.exists() {
         return Err(Error::Tool(format!("page not found: {}", path.display())));
@@ -1470,6 +1503,7 @@ pub fn delete_page(kref: &KmsRef, page_name: &str) -> Result<PathBuf> {
 /// identity/filename, not its title. Refuses to overwrite an existing
 /// page. Returns the new path.
 pub fn rename_page(kref: &KmsRef, old_name: &str, new_name: &str) -> Result<PathBuf> {
+    ensure_writable(kref)?;
     let old_path = writable_page_path(kref, old_name)?;
     if !old_path.exists() {
         return Err(Error::Tool(format!(
@@ -2067,6 +2101,7 @@ pub fn merge_into(src_name: &str, dst_name: &str) -> Result<MergeReport> {
         resolve(src_name).ok_or_else(|| Error::Tool(format!("KMS '{src_name}' not found")))?;
     let dst =
         resolve(dst_name).ok_or_else(|| Error::Tool(format!("KMS '{dst_name}' not found")))?;
+    ensure_writable(&dst)?;
 
     let mut report = MergeReport::default();
     // (original_stem → new_stem) for renamed pages, used to rewrite
@@ -3005,6 +3040,12 @@ pub fn auto_link(kref: &KmsRef, opts: AutoLinkOptions) -> Result<AutoLinkReport>
     use regex::Regex;
     use std::collections::HashMap;
 
+    // dev-plan/41: a read-only shared KMS can't be rewritten. Dry-run
+    // (preview) stays allowed; `--apply` is refused.
+    if opts.apply {
+        ensure_writable(kref)?;
+    }
+
     let pages_dir = kref.pages_dir();
     if !pages_dir.is_dir() {
         return Ok(AutoLinkReport::default());
@@ -3218,6 +3259,11 @@ pub async fn auto_link_llm(
     cancel: &crate::cancel::CancelToken,
 ) -> Result<AutoLinkReport> {
     use std::collections::HashSet;
+
+    // dev-plan/41: refuse writes to a read-only shared KMS (dry-run ok).
+    if opts.apply {
+        ensure_writable(kref)?;
+    }
 
     let pages_dir = kref.pages_dir();
     if !pages_dir.is_dir() {
@@ -6008,5 +6054,138 @@ Inline `PostgreSQL` in code span.\n\
         std::fs::write(bundle.join("a.md"), "---\ntype: Note\n---\nbody\n").unwrap();
         let err = import_okf(&bundle, "dup", KmsScope::Project).unwrap_err();
         assert!(format!("{err}").contains("already exists"));
+    }
+
+    // ── Shared-agent mode (dev-plan/41) ──────────────────────────────
+
+    /// Build a fake shared brain under `dir/kms/<name>` and point
+    /// THCLAWS_SHARED_AGENT_DIR at it. Caller must remove the env var.
+    fn seed_shared_kms(dir: &std::path::Path, name: &str) {
+        let kms = dir.join("kms").join(name);
+        std::fs::create_dir_all(kms.join("pages")).unwrap();
+        std::fs::write(kms.join("index.md"), format!("# {name}\n")).unwrap();
+        std::fs::write(
+            kms.join("pages").join("intro.md"),
+            "---\ncategory: x\n---\n# Intro\nshared knowledge\n",
+        )
+        .unwrap();
+        std::env::set_var("THCLAWS_SHARED_AGENT_DIR", dir);
+    }
+
+    #[test]
+    fn shared_kms_resolves_read_only_and_blocks_writes() {
+        let _home = scoped_home();
+        // scoped_home points cwd + HOME at fresh tempdirs; build the
+        // shared brain in a sibling dir under cwd.
+        let brain = std::env::current_dir().unwrap().join("brain");
+        seed_shared_kms(&brain, "company");
+
+        let kref = resolve("company").expect("shared KMS should resolve");
+        assert_eq!(kref.scope, KmsScope::Shared);
+        assert!(kref.read_only());
+
+        // Every mutation path refuses.
+        assert!(write_page(&kref, "newpage", "hi").is_err());
+        assert!(append_to_page(&kref, "intro", "more").is_err());
+        assert!(delete_page(&kref, "intro").is_err());
+        let src = std::env::current_dir().unwrap().join("src.md");
+        std::fs::write(&src, "raw").unwrap();
+        assert!(ingest(&kref, &src, Some("x"), false).is_err());
+
+        // merge INTO a shared KMS is refused; a normal user KMS still works.
+        create("scratch", KmsScope::Project).unwrap();
+        assert!(merge_into("scratch", "company").is_err());
+
+        // Reads are unaffected — the page is still listed in the index.
+        assert!(kref.read_index().contains("company"));
+
+        std::env::remove_var("THCLAWS_SHARED_AGENT_DIR");
+    }
+
+    #[test]
+    fn shared_mode_locks_instructions_to_company_agents_md() {
+        let _home = scoped_home();
+        let cwd = std::env::current_dir().unwrap();
+        // Member tries to override via working-dir + user-scope AGENTS.md.
+        std::fs::write(cwd.join("AGENTS.md"), "MEMBER OVERRIDE\n").unwrap();
+        let user_cfg = crate::util::home_dir().unwrap().join(".config/thclaws");
+        std::fs::create_dir_all(&user_cfg).unwrap();
+        std::fs::write(user_cfg.join("AGENTS.md"), "USER OVERRIDE\n").unwrap();
+
+        // Without shared mode the member sources are honored.
+        let normal = crate::context::find_claude_md_with(&cwd, false).unwrap_or_default();
+        assert!(normal.contains("MEMBER OVERRIDE"));
+
+        // With shared mode, ONLY the company AGENTS.md is used.
+        let brain = cwd.join("brain");
+        std::fs::create_dir_all(&brain).unwrap();
+        std::fs::write(brain.join("AGENTS.md"), "COMPANY RULES\n").unwrap();
+        std::env::set_var("THCLAWS_SHARED_AGENT_DIR", &brain);
+
+        let locked = crate::context::find_claude_md_with(&cwd, false).unwrap();
+        assert_eq!(locked.trim(), "COMPANY RULES");
+        assert!(!locked.contains("MEMBER OVERRIDE"));
+        assert!(!locked.contains("USER OVERRIDE"));
+
+        std::env::remove_var("THCLAWS_SHARED_AGENT_DIR");
+    }
+
+    #[test]
+    fn shared_kms_blocks_auto_link_apply_but_allows_dry_run() {
+        let _home = scoped_home();
+        let brain = std::env::current_dir().unwrap().join("brain");
+        seed_shared_kms(&brain, "company");
+        let kref = resolve("company").unwrap();
+        assert!(kref.read_only());
+        // Dry-run (read-only) is allowed.
+        assert!(auto_link(
+            &kref,
+            AutoLinkOptions {
+                min_len: 4,
+                apply: false
+            }
+        )
+        .is_ok());
+        // --apply against a read-only shared KMS is refused.
+        let err = auto_link(
+            &kref,
+            AutoLinkOptions {
+                min_len: 4,
+                apply: true,
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("read-only"));
+        std::env::remove_var("THCLAWS_SHARED_AGENT_DIR");
+    }
+
+    #[test]
+    fn shared_mode_forces_gateway_and_ignores_member_byok() {
+        let _home = scoped_home();
+        let brain = std::env::current_dir().unwrap().join("brain");
+        std::fs::create_dir_all(&brain).unwrap();
+        // Company settings pin a model; no provider/BYOK config.
+        std::fs::write(
+            brain.join("settings.json"),
+            "{\"model\":\"claude-opus-4-8\"}",
+        )
+        .unwrap();
+        // Member tries to inject a project-scope provider override.
+        std::fs::create_dir_all(".thclaws").unwrap();
+        std::fs::write(
+            ".thclaws/settings.json",
+            "{\"model\":\"gpt-4o\",\"gatewayUseFor\":[]}",
+        )
+        .unwrap();
+        std::env::set_var("THCLAWS_SHARED_AGENT_DIR", &brain);
+
+        let cfg = crate::config::AppConfig::load().unwrap();
+        // Company model wins (member's project override ignored).
+        assert_eq!(cfg.model, "claude-opus-4-8");
+        // Gateway forced for every routable provider.
+        assert!(cfg.gateway_use_for.iter().any(|p| p == "anthropic"));
+        assert!(cfg.gateway_use_for.iter().any(|p| p == "openai"));
+
+        std::env::remove_var("THCLAWS_SHARED_AGENT_DIR");
     }
 }

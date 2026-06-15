@@ -370,19 +370,31 @@ impl SkillStore {
         // for the `dream` built-in agent: ship a curated default,
         // let users redefine if they want.
         store.seed_builtins();
-        for dir in Self::user_skill_dirs() {
-            if dir.exists() {
-                store.load_dir(&dir);
+        // Shared-agent strict mode (dev-plan/41): skip every member-scope
+        // source so only built-ins + the company skills load.
+        let strict = crate::shared::is_strict();
+        if !strict {
+            for dir in Self::user_skill_dirs() {
+                if dir.exists() {
+                    store.load_dir(&dir);
+                }
+            }
+            for dir in extra {
+                if dir.exists() {
+                    store.load_dir(dir);
+                }
+            }
+            for dir in Self::project_skill_dirs() {
+                if dir.exists() {
+                    store.load_dir(&dir);
+                }
             }
         }
-        for dir in extra {
-            if dir.exists() {
-                store.load_dir(dir);
-            }
-        }
-        for dir in Self::project_skill_dirs() {
-            if dir.exists() {
-                store.load_dir(&dir);
+        // Company skills load LAST so they win on name collision (and are
+        // the only disk source under strict mode).
+        if let Some(shared) = crate::shared::shared_skills_dir() {
+            if shared.exists() {
+                store.load_dir(&shared);
             }
         }
         store
@@ -397,20 +409,31 @@ impl SkillStore {
     pub fn discover_in(workspace_dir: &Path, extra: &[PathBuf]) -> Self {
         let mut store = Self::default();
         store.seed_builtins();
-        for dir in Self::user_skill_dirs() {
-            if dir.exists() {
-                store.load_dir(&dir);
+        // dev-plan/41: mirror discover_with_extra's shared-agent handling
+        // on the workspace surface — strict mode skips member-scope skills,
+        // and the company's shared skills load last (and win).
+        let strict = crate::shared::is_strict();
+        if !strict {
+            for dir in Self::user_skill_dirs() {
+                if dir.exists() {
+                    store.load_dir(&dir);
+                }
+            }
+            for dir in extra {
+                if dir.exists() {
+                    store.load_dir(dir);
+                }
+            }
+            for rel in Self::project_skill_dirs() {
+                let dir = workspace_dir.join(rel);
+                if dir.exists() {
+                    store.load_dir(&dir);
+                }
             }
         }
-        for dir in extra {
-            if dir.exists() {
-                store.load_dir(dir);
-            }
-        }
-        for rel in Self::project_skill_dirs() {
-            let dir = workspace_dir.join(rel);
-            if dir.exists() {
-                store.load_dir(&dir);
+        if let Some(shared) = crate::shared::shared_skills_dir() {
+            if shared.exists() {
+                store.load_dir(&shared);
             }
         }
         store
