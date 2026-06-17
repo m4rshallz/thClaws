@@ -307,8 +307,6 @@ fn evict_lru(state: &mut RegistryState) {
 /// guest can't change the company agent). The OWNER seeds with
 /// `read_only = false` so they can author the def and "publish" updates.
 fn seed_def_into(src: &std::path::Path, dst: &std::path::Path, read_only: bool) {
-    use std::os::unix::fs::PermissionsExt;
-
     fn excluded(rel: &str) -> bool {
         const PREFIXES: &[&str] = &[
             ".users/",
@@ -366,8 +364,15 @@ fn seed_def_into(src: &std::path::Path, dst: &std::path::Path, read_only: bool) 
         }
         match std::fs::copy(entry.path(), &out) {
             Ok(_) => {
+                // Cross-platform read-only (unix: clears write bits → 0o444;
+                // Windows: sets the read-only attribute). Avoids the
+                // unix-only PermissionsExt that broke the Windows release.
                 if read_only {
-                    let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o444));
+                    if let Ok(meta) = std::fs::metadata(&out) {
+                        let mut perms = meta.permissions();
+                        perms.set_readonly(true);
+                        let _ = std::fs::set_permissions(&out, perms);
+                    }
                 }
             }
             Err(e) => eprintln!(
