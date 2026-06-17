@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { send, subscribe } from "../hooks/useIPC";
+import { FusionConfigModal } from "./FusionConfigModal";
 
 /// One row from the catalogue, as the backend ships it.
 export type PickerModel = {
@@ -99,6 +100,10 @@ export function ModelPickerModal({ provider, current, models, onClose }: Props) 
     provider === "openrouter" && isOpenRouterFreeOnly()
   );
   const inputRef = useRef<HTMLInputElement>(null);
+  // `openrouter/fusion+` opens the Fusion config modal instead of
+  // switching directly — same behaviour as the sidebar ModelPickerDropdown
+  // so both pickers are consistent (issue #167).
+  const [fusionOpen, setFusionOpen] = useState(false);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -136,9 +141,24 @@ export function ModelPickerModal({ provider, current, models, onClose }: Props) 
   }, [models, query, provider, freeOnly]);
 
   const pick = (id: string) => {
+    if (id === "openrouter/fusion+") {
+      // Defer the switch: the modal saves the config and sends model_set
+      // itself on Save. Keep this picker mounted underneath.
+      setFusionOpen(true);
+      return;
+    }
     send({ type: "model_set", model: id });
     onClose();
   };
+
+  if (fusionOpen) {
+    return (
+      <FusionConfigModal
+        onApplied={onClose}
+        onCancel={() => setFusionOpen(false)}
+      />
+    );
+  }
 
   return (
     <div
