@@ -1,5 +1,27 @@
 @import "tailwindcss";
 
+/* Hide the scrollbar on horizontally-scrollable strips (e.g. the mobile
+   tab bar) while keeping them scrollable by touch/trackpad. */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Mobile: iOS Safari/Chrome auto-zoom the page when a focused text field
+   has a font-size < 16px. Force 16px on phones so focusing the chat
+   input / API-key fields / search boxes doesn't yank the viewport. Only
+   affects font-size below `sm`; desktop sizing is untouched. */
+@media (max-width: 639px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -226,6 +248,21 @@ html, body, #root {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* Mobile: dial the prose + heading scale down a touch so KMS docs read
+   comfortably on a phone (the desktop scale wraps awkwardly < 640px). */
+@media (max-width: 639px) {
+  .kms-viewer-prose { font-size: 13.5px; }
+  .kms-viewer-prose h1 { font-size: 1.5em; }
+  .kms-viewer-prose h2 { font-size: 1.3em; }
+  .kms-viewer-prose h3 { font-size: 1.12em; }
+  .kms-viewer-prose h1,
+  .kms-viewer-prose h2,
+  .kms-viewer-prose h3,
+  .kms-viewer-prose h4,
+  .kms-viewer-prose h5,
+  .kms-viewer-prose h6 { margin: 1.2em 0 0.5em; }
 }
 
 .kms-viewer-prose p { margin: 0.85em 0; }

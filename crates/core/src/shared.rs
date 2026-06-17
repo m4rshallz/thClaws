@@ -36,6 +36,8 @@ pub const GATEWAY_ALL_PROVIDERS: &[&str] = &[
     "deepseek",
     "minimax",
     "thaillm",
+    "xai",
+    "moonshot",
 ];
 
 /// The shared-brain directory when shared mode is active, else `None`.

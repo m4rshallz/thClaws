@@ -3834,14 +3834,6 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
         }
     };
     match kind {
-        ProviderKind::AgenticPress => {
-            // Hosted gateway — URL is fixed by the service, no env override.
-            Ok(Arc::new(
-                OpenAIProvider::new(api_key)
-                    .with_base_url("https://llm.artech.cloud/v1/chat/completions")
-                    .with_strip_model_prefix("ap/"),
-            ))
-        }
         ProviderKind::OpenRouter => {
             // OpenAI-compatible; models use openrouter/<vendor>/<model> form
             // (e.g. openrouter/anthropic/claude-sonnet-4-6). Strip the
@@ -6192,9 +6184,20 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     println!("{COLOR_DIM}(session-only) {key} = {value}{COLOR_RESET}");
                 }
                 SlashCommand::Providers => {
+                    use crate::providers::ProviderTier;
                     let current = config.detect_provider_kind().ok();
-                    for kind in ProviderKind::ALL {
-                        let marker = if Some(*kind) == current { "*" } else { " " };
+                    let mut last_tier: Option<ProviderTier> = None;
+                    for kind in ProviderKind::display_ordered() {
+                        let tier = kind.tier();
+                        if Some(tier) != last_tier {
+                            let header = match tier {
+                                ProviderTier::Featured => "Featured (gateway-routable):",
+                                ProviderTier::Additional => "Additional (bring your own key):",
+                            };
+                            println!("{COLOR_BOLD}{header}{COLOR_RESET}");
+                            last_tier = Some(tier);
+                        }
+                        let marker = if Some(kind) == current { "*" } else { " " };
                         println!(
                             "{COLOR_DIM}  {marker} {:<10} → {}{COLOR_RESET}",
                             kind.name(),

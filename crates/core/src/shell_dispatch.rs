@@ -214,10 +214,20 @@ pub async fn dispatch(
 
         // ─── model / provider / catalogue ───────────────────────────
         SlashCommand::Providers => {
+            use crate::providers::ProviderTier;
             let current = state.config.detect_provider_kind().ok();
             let mut out = String::from("Providers:\n");
-            for kind in crate::providers::ProviderKind::ALL {
-                let marker = if Some(*kind) == current { "*" } else { " " };
+            let mut last_tier: Option<ProviderTier> = None;
+            for kind in crate::providers::ProviderKind::display_ordered() {
+                let tier = kind.tier();
+                if Some(tier) != last_tier {
+                    out.push_str(match tier {
+                        ProviderTier::Featured => "\nFeatured (gateway-routable):\n",
+                        ProviderTier::Additional => "\nAdditional (bring your own key):\n",
+                    });
+                    last_tier = Some(tier);
+                }
+                let marker = if Some(kind) == current { "*" } else { " " };
                 out.push_str(&format!(
                     "  {marker} {:<12} → {}\n",
                     kind.name(),

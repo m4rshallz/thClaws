@@ -192,7 +192,7 @@ export function SettingsMenu({
         onMouseLeave={() => setInstructionsOpen(false)}
       >
         <button
-          className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+          className="sm-row w-full text-left px-3 py-2.5 sm:py-1.5 flex items-center gap-2"
           style={{ color: "var(--text-primary)", fontSize: "12px" }}
           aria-haspopup="menu"
           aria-expanded={instructionsOpen}
@@ -233,7 +233,7 @@ export function SettingsMenu({
                   onPick(item.id);
                   onClose();
                 }}
-                className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+                className="sm-row w-full text-left px-3 py-2.5 sm:py-1.5 flex items-center gap-2"
                 style={{ color: "var(--text-primary)", fontSize: "12px" }}
               >
                 <span
@@ -263,7 +263,7 @@ export function SettingsMenu({
             onPick(item.id);
             onClose();
           }}
-          className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+          className="sm-row w-full text-left px-3 py-2.5 sm:py-1.5 flex items-center gap-2"
           style={{ color: "var(--text-primary)", fontSize: "12px" }}
         >
           <span
@@ -295,7 +295,7 @@ export function SettingsMenu({
         onMouseLeave={() => setChannelsOpen(false)}
       >
         <button
-          className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+          className="sm-row w-full text-left px-3 py-2.5 sm:py-1.5 flex items-center gap-2"
           style={{ color: "var(--text-primary)", fontSize: "12px" }}
           aria-haspopup="menu"
           aria-expanded={channelsOpen}
@@ -336,7 +336,7 @@ export function SettingsMenu({
                   onPick(item.id);
                   onClose();
                 }}
-                className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+                className="sm-row w-full text-left px-3 py-2.5 sm:py-1.5 flex items-center gap-2"
                 style={{ color: "var(--text-primary)", fontSize: "12px" }}
               >
                 <span
@@ -371,7 +371,7 @@ export function SettingsMenu({
         onMouseLeave={() => setAppearanceOpen(false)}
       >
         <button
-          className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+          className="sm-row w-full text-left px-3 py-2.5 sm:py-1.5 flex items-center gap-2"
           style={{ color: "var(--text-primary)", fontSize: "12px" }}
           aria-haspopup="menu"
           aria-expanded={appearanceOpen}
@@ -411,7 +411,7 @@ export function SettingsMenu({
                 <button
                   key={opt.id}
                   onClick={() => setMode(opt.id)}
-                  className="sm-row w-full text-left px-3 py-1.5 flex items-center gap-2"
+                  className="sm-row w-full text-left px-3 py-2.5 sm:py-1.5 flex items-center gap-2"
                   style={{ color: "var(--text-primary)", fontSize: "12px" }}
                 >
                   <span

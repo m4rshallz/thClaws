@@ -1057,7 +1057,7 @@ export function ChatView({ active, modalOpen }: Props) {
             return (
               <div key={i} className="flex justify-start">
                 <div
-                  className={`group flex max-w-[80%] flex-col gap-1 ${widget || todos ? "w-[80%]" : ""}`}
+                  className={`group flex max-w-[92%] sm:max-w-[80%] flex-col gap-1 ${widget || todos ? "w-[92%] sm:w-[80%]" : ""}`}
                   style={{
                     color: "var(--text-secondary)",
                     fontFamily:
@@ -1187,7 +1187,7 @@ export function ChatView({ active, modalOpen }: Props) {
               className={`flex ${msg.role === "user" ? "justify-end" : isSystem || isError ? "justify-center" : "justify-start"}${needsTurnGap ? " pt-4" : ""}`}
             >
               <div
-                className={`group relative max-w-[80%] rounded-lg py-2 pl-3 pr-9 text-sm ${isAssistant ? "" : "whitespace-pre-wrap"}`}
+                className={`group relative max-w-[92%] sm:max-w-[80%] rounded-lg py-2 pl-3 pr-9 text-sm ${isAssistant ? "" : "whitespace-pre-wrap"}`}
                 style={{
                   background:
                     msg.role === "user"

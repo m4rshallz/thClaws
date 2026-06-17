@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Terminal, MessageSquare, FolderTree, Users, FolderOpen, Folder, Settings, Sparkles, Layout, Maximize2, Globe } from "lucide-react";
+import { Terminal, MessageSquare, FolderTree, Users, FolderOpen, Folder, Settings, Sparkles, Layout, Maximize2, Globe, Menu } from "lucide-react";
 import { TerminalView } from "./components/TerminalView";
 import { ChatView } from "./components/ChatView";
 import { FilesView } from "./components/FilesView";
@@ -662,6 +662,10 @@ export default function App() {
   // Engine-managed Playwright browser (docs/browser Phase 1). The tab
   // only appears when `browserEnabled` is set in settings.json.
   const [browserEnabled, setBrowserEnabled] = useState(false);
+  // Mobile-only: the sidebar is an off-canvas drawer below the `sm`
+  // breakpoint (toggled by the hamburger in the tab bar). On `sm:`+ it's
+  // the normal inline column, so this flag is ignored there.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     const unsub = subscribe((msg) => {
@@ -690,17 +694,24 @@ export default function App() {
         send({ type: "team_enabled_get" });
         send({ type: "shell_tab_enabled_get" });
         send({ type: "browser_status_get" });
-      } else if (
-        msg.type === "initial_state" &&
-        typeof msg.team_enabled === "boolean"
-      ) {
-        // #95(c): the explicit `team_enabled_get` below races the WS
-        // CONNECTING state on first mount in --serve mode — wsSend
-        // drops the message if the socket isn't OPEN yet. initial_state
-        // fires on every WS (re)connect from the backend, so picking it
-        // up here heals the Team-tab-hidden race without requiring the
-        // user to open Settings to incidentally re-trigger the get.
-        setTeamEnabled(msg.team_enabled as boolean);
+      } else if (msg.type === "initial_state") {
+        // #95(c) + #168: the explicit `*_get` requests below race the WS
+        // CONNECTING state on first mount in --serve mode — wsSend drops
+        // the message if the socket isn't OPEN yet (far more likely over
+        // a high-latency tunnel like ngrok, which hid these tabs there
+        // but not on localhost). initial_state fires on every WS
+        // (re)connect from the backend, so reading the tab-visibility
+        // flags here self-heals the Team/Shell/Browser tabs regardless
+        // of WS timing — no need to re-trigger the get via Settings.
+        if (typeof msg.team_enabled === "boolean") {
+          setTeamEnabled(msg.team_enabled as boolean);
+        }
+        if (typeof msg.shell_tab_enabled === "boolean") {
+          setShellTabEnabled(msg.shell_tab_enabled as boolean);
+        }
+        if (typeof msg.browser_enabled === "boolean") {
+          setBrowserEnabled(msg.browser_enabled as boolean);
+        }
       }
     });
     send({ type: "team_enabled_get" });
@@ -764,7 +775,13 @@ export default function App() {
   const renderTab = fullscreen ? "ui" : effectiveTab;
 
   return (
-    <div className="flex flex-col h-screen">
+    // h-[100dvh] (dynamic viewport height), not h-screen (100vh): on mobile
+    // Chrome/Safari 100vh is the *large* viewport (address bar hidden), so
+    // when the address bar is visible the container overshoots and the top
+    // tab bar / bottom input get clipped behind the browser chrome. dvh
+    // tracks the actual visible height as the bar shows/hides (issue #168;
+    // Chrome 108+ / Safari 15.4+ — all current mobile devices).
+    <div className="flex flex-col h-[100dvh]">
       <FrontendReadyBeacon />
       {fullscreen && (
         <FullscreenExitChrome
@@ -781,37 +798,51 @@ export default function App() {
           borderColor: "var(--border)",
         }}
       >
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => {
-              setActiveTab(tab.id);
-              // M6.39.12: switching tabs closes both the KMS viewer
-              // pane and the KMS browser sidebar — the user is moving
-              // back to "real work" (chat / terminal / files / team)
-              // and the KMS browse session is implicitly done.
-              setViewerTarget(null);
-              setBrowsingKms(null);
-              setGraphKms(null);
-            }}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors"
-            style={{
-              color:
-                effectiveTab === tab.id
-                  ? "var(--text-primary)"
-                  : "var(--text-secondary)",
-              background:
-                effectiveTab === tab.id ? "var(--bg-primary)" : "transparent",
-              borderBottom:
-                effectiveTab === tab.id
-                  ? "2px solid var(--accent)"
-                  : "2px solid transparent",
-            }}
-          >
-            {tab.icon}
-            {tab.label}
-          </button>
-        ))}
+        {/* Hamburger — opens the sidebar drawer on mobile only. */}
+        <button
+          onClick={() => setSidebarOpen((v) => !v)}
+          className="sm:hidden flex items-center justify-center p-2 shrink-0"
+          title="Menu"
+          aria-label="Toggle sidebar"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          <Menu size={18} />
+        </button>
+        {/* Tabs — horizontally scrollable when they don't fit (mobile);
+            labels collapse to icons below `sm`. */}
+        <div className="flex items-center overflow-x-auto no-scrollbar">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => {
+                setActiveTab(tab.id);
+                // M6.39.12: switching tabs closes both the KMS viewer
+                // pane and the KMS browser sidebar — the user is moving
+                // back to "real work" (chat / terminal / files / team)
+                // and the KMS browse session is implicitly done.
+                setViewerTarget(null);
+                setBrowsingKms(null);
+                setGraphKms(null);
+              }}
+              className="flex items-center gap-1.5 px-3 sm:px-4 py-2.5 sm:py-2 text-xs font-medium transition-colors shrink-0"
+              style={{
+                color:
+                  effectiveTab === tab.id
+                    ? "var(--text-primary)"
+                    : "var(--text-secondary)",
+                background:
+                  effectiveTab === tab.id ? "var(--bg-primary)" : "transparent",
+                borderBottom:
+                  effectiveTab === tab.id
+                    ? "2px solid var(--accent)"
+                    : "2px solid transparent",
+              }}
+            >
+              {tab.icon}
+              <span className="hidden sm:inline">{tab.label}</span>
+            </button>
+          ))}
+        </div>
         <div className="flex-1" />
         <RunningChip />
         <button
@@ -819,7 +850,7 @@ export default function App() {
             setActiveTab("ui");
             setFullscreen(true);
           }}
-          className="flex items-center justify-center p-1.5 mr-1 rounded hover:opacity-100 transition-opacity"
+          className="flex items-center justify-center p-2 sm:p-1.5 mr-1 rounded hover:opacity-100 transition-opacity"
           title={`Full-screen UI (${navigator.platform.startsWith("Mac") ? "⌘⇧U" : "Ctrl⇧U"})`}
           style={{ color: "var(--text-secondary)", opacity: 0.7 }}
         >
@@ -838,7 +869,36 @@ export default function App() {
 
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
-        {!fullscreen && <Sidebar onBrowseKms={(name) => setBrowsingKms(name)} />}
+        {!fullscreen && (
+          <>
+            {/* Drawer backdrop (mobile only) — tap to dismiss. */}
+            {sidebarOpen && (
+              <div
+                className="fixed inset-0 z-30 sm:hidden"
+                style={{ background: "rgba(0,0,0,0.45)" }}
+                onClick={() => setSidebarOpen(false)}
+              />
+            )}
+            {/* Sidebar: off-canvas slide-in drawer below `sm`, normal
+                inline column at `sm:`+. `flex` lets the inner Sidebar
+                stretch to full height inside the fixed drawer. */}
+            <div
+              className={
+                "flex z-40 max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:shadow-2xl max-sm:transition-transform " +
+                (sidebarOpen
+                  ? "max-sm:translate-x-0"
+                  : "max-sm:-translate-x-full")
+              }
+            >
+              <Sidebar
+                onBrowseKms={(name) => {
+                  setBrowsingKms(name);
+                  setSidebarOpen(false);
+                }}
+              />
+            </div>
+          </>
+        )}
         <div className="flex-1 min-w-0 relative">
           {/* Keep every tab panel mounted AND full-sized via absolute+inset-0.
               Inactive panels get `invisible` + `pointer-events-none` so they
@@ -969,7 +1029,7 @@ export default function App() {
             setStarted(false);
             setCurrentCwd("");
           }}
-          className="p-1 rounded hover:bg-white/10 transition-colors"
+          className="p-2 sm:p-1 rounded hover:bg-white/10 transition-colors"
           title="Change working directory"
           style={{ flexShrink: 0 }}
         >
@@ -983,7 +1043,7 @@ export default function App() {
           <button
             ref={settingsButtonRef}
             onClick={() => setShowSettingsMenu((v) => !v)}
-            className="p-1 rounded hover:bg-white/10 transition-colors"
+            className="p-2 sm:p-1 rounded hover:bg-white/10 transition-colors"
             title="Settings"
           >
             <Settings size={14} style={{ opacity: 0.7 }} />

@@ -58,7 +58,6 @@ pub mod thclaws_gateway;
 /// any omission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
-    AgenticPress,
     Anthropic,
     AgentSdk,
     OpenAI,
@@ -110,9 +109,93 @@ pub enum ProviderKind {
     XAi,
 }
 
+/// Two-tier provider classification.
+///
+/// **Featured** providers are the curated set thClaws promotes: they are
+/// (or will be) routable through the thClaws cloud gateway, their pricing
+/// is verified against official vendor sources, and they are listed before
+/// Additional providers in every model picker. **Additional** providers
+/// still work (BYOK / local), they're just the long tail shown afterwards.
+///
+/// NOTE (gateway alignment, deferred): the gateway-routable set in
+/// [`thclaws_gateway::provider_segment`] does not yet match Featured 1:1 —
+/// `xai`/`moonshot` need server-side gateway routes added, and
+/// `qwen-cloud`/`thaillm` are routable today but Additional. Those moves
+/// ship with a later gateway deploy; the tier here is the source of truth
+/// for "primary".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderTier {
+    Featured,
+    Additional,
+}
+
+impl ProviderTier {
+    /// Lowercase wire/display key (used in the model-list payload so the
+    /// frontend can group + label sections).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Featured => "featured",
+            Self::Additional => "additional",
+        }
+    }
+}
+
+impl ProviderKind {
+    /// Curated display order for the Featured tier in model pickers — the
+    /// priority order the product promotes. Additional providers follow,
+    /// in `ALL` order. Must contain exactly the Featured providers (a test
+    /// enforces this against `tier()`).
+    pub const FEATURED_ORDER: &'static [Self] = &[
+        Self::OpenAI,
+        Self::Anthropic,
+        Self::Gemini,
+        Self::XAi,
+        Self::DeepSeek,
+        Self::DashScope,
+        Self::Moonshot,
+        Self::ZAi,
+        Self::Minimax,
+        Self::OpenRouter,
+    ];
+
+    /// Featured (primary) vs Additional (secondary) classification.
+    /// The 10 Featured providers map to the standard provider kinds only —
+    /// auth/protocol variants (OpenAI-Responses, ChatGPT-Codex, Agent-SDK)
+    /// and regional siblings (QwenCloud) stay Additional.
+    pub fn tier(&self) -> ProviderTier {
+        match self {
+            Self::OpenAI
+            | Self::Anthropic
+            | Self::Gemini
+            | Self::XAi
+            | Self::DeepSeek
+            | Self::DashScope
+            | Self::Moonshot
+            | Self::ZAi
+            | Self::Minimax
+            | Self::OpenRouter => ProviderTier::Featured,
+            _ => ProviderTier::Additional,
+        }
+    }
+
+    /// Providers in display order for the `/providers` list and model
+    /// pickers: Featured first (in FEATURED_ORDER), then Additional in
+    /// ALL order. Iterating this and emitting a header when `tier()`
+    /// changes yields the two grouped sections.
+    pub fn display_ordered() -> Vec<Self> {
+        let mut out: Vec<Self> = Self::FEATURED_ORDER.to_vec();
+        out.extend(
+            Self::ALL
+                .iter()
+                .copied()
+                .filter(|k| k.tier() == ProviderTier::Additional),
+        );
+        out
+    }
+}
+
 impl ProviderKind {
     pub const ALL: &'static [Self] = &[
-        Self::AgenticPress,
         Self::Anthropic,
         Self::AgentSdk,
         Self::OpenAI,
@@ -141,7 +224,6 @@ impl ProviderKind {
 
     pub fn name(&self) -> &'static str {
         match self {
-            Self::AgenticPress => "agentic-press",
             Self::Anthropic => "anthropic",
             Self::AgentSdk => "anthropic-agent",
             Self::OpenAI => "openai",
@@ -171,7 +253,6 @@ impl ProviderKind {
 
     pub fn default_model(&self) -> &'static str {
         match self {
-            Self::AgenticPress => "ap/gemma4-12b",
             Self::Anthropic => "claude-sonnet-4-6",
             Self::AgentSdk => "agent/claude-sonnet-4-6",
             Self::OpenAI => "gpt-4.1",
@@ -262,8 +343,6 @@ impl ProviderKind {
     /// self-hosted or regional endpoints.
     pub fn endpoint_env(&self) -> Option<&'static str> {
         match self {
-            // Agentic Press is a hosted gateway with a fixed URL — no env
-            // override, no UI knob. Build-time only.
             Self::TokenRouter => Some("TOKENROUTER_BASE_URL"),
             Self::DashScope => Some("DASHSCOPE_BASE_URL"),
             Self::QwenCloud => Some("QWENCLOUD_BASE_URL"),
@@ -285,7 +364,7 @@ impl ProviderKind {
     }
 
     /// Whether the Settings UI should expose this provider's base URL. We
-    /// keep hosted services (Agentic Press, DashScope, Z.ai) locked to their
+    /// keep hosted services (DashScope, Z.ai) locked to their
     /// defaults so users can't accidentally mis-point them; only self-hosted
     /// backends like Ollama and LMStudio are surfaced for editing. The env
     /// var still overrides at startup for power users who need it.
@@ -305,7 +384,6 @@ impl ProviderKind {
     /// concept (Anthropic, OpenAI, etc. — those always hit the official API).
     pub fn default_endpoint(&self) -> Option<&'static str> {
         match self {
-            // Agentic Press URL is fixed build-time; no UI placeholder.
             Self::TokenRouter => Some("https://api.tokenrouter.com/v1"),
             Self::DashScope => Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
             // International / Singapore region of DashScope.
@@ -367,7 +445,6 @@ impl ProviderKind {
     /// Env var holding the API key, if any. Ollama has no auth.
     pub fn api_key_env(&self) -> Option<&'static str> {
         match self {
-            Self::AgenticPress => Some("AGENTIC_PRESS_LLM_API_KEY"),
             Self::Anthropic => Some("ANTHROPIC_API_KEY"),
             Self::AgentSdk => None, // Uses Claude Code's own auth
             Self::OpenAI => Some("OPENAI_API_KEY"),
@@ -466,16 +543,6 @@ impl ProviderKind {
                 }
                 None
             }
-            Self::AgenticPress => {
-                // ap/* mirrors the same families with an `ap/` prefix.
-                if let Some(id) = anthropic_id {
-                    return Some(format!("ap/{id}"));
-                }
-                if let Some(id) = google_id {
-                    return Some(format!("ap/{id}"));
-                }
-                None
-            }
             // Providers without a notion of these aliases. Returning None
             // signals "alias doesn't apply here" so the caller can fall
             // back to whatever default the user had configured rather than
@@ -518,8 +585,6 @@ impl ProviderKind {
             // gateway. Models look like tokenrouter/anthropic/claude-sonnet-4.5;
             // the `tokenrouter/` prefix is stripped before the upstream call.
             Some(Self::TokenRouter)
-        } else if model.starts_with("ap/") {
-            Some(Self::AgenticPress)
         } else if model.starts_with("agent/") {
             Some(Self::AgentSdk)
         } else if model.starts_with("claude-") {
@@ -1062,6 +1127,10 @@ pub async fn build_all_models_payload() -> String {
     let cat = crate::model_catalogue::EffectiveCatalogue::load();
     let app_cfg = crate::config::AppConfig::load().unwrap_or_default();
     let free_only_or = app_cfg.openrouter_free_only;
+    // Gateway mode (hosted cloud, metered): only Featured providers have a
+    // gateway route, so the picker hides Additional ones. BYOK sessions
+    // (desktop / own keys) see the full catalogue.
+    let gateway_mode = crate::providers::thclaws_gateway::is_active(&app_cfg);
     let ollama_live: Vec<String> = {
         let base = std::env::var("OLLAMA_BASE_URL")
             .unwrap_or_else(|_| crate::providers::ollama::DEFAULT_BASE_URL.to_string());
@@ -1097,9 +1166,15 @@ pub async fn build_all_models_payload() -> String {
             None => Vec::new(),
         }
     };
-    let mut groups: Vec<serde_json::Value> = Vec::new();
-    for kind in ProviderKind::ALL {
+    // Each entry carries a sort rank so Featured providers list first
+    // (in FEATURED_ORDER), then Additional providers in ALL order.
+    let mut groups: Vec<(u32, serde_json::Value)> = Vec::new();
+    for (all_idx, kind) in ProviderKind::ALL.iter().enumerate() {
         let name = kind.name();
+        // In gateway mode, Additional providers aren't routable — skip them.
+        if gateway_mode && kind.tier() != ProviderTier::Featured {
+            continue;
+        }
         let mut model_ids: std::collections::BTreeMap<String, Option<u32>> =
             std::collections::BTreeMap::new();
         let is_openrouter = matches!(kind, ProviderKind::OpenRouter);
@@ -1137,11 +1212,28 @@ pub async fn build_all_models_payload() -> String {
             .into_iter()
             .map(|(id, ctx)| serde_json::json!({ "id": id, "context": ctx }))
             .collect();
-        groups.push(serde_json::json!({
-            "provider": name,
-            "models": model_rows,
-        }));
+        let tier = kind.tier();
+        let rank = match tier {
+            ProviderTier::Featured => ProviderKind::FEATURED_ORDER
+                .iter()
+                .position(|p| p == kind)
+                .map(|p| p as u32)
+                .unwrap_or(99),
+            // Additional providers sort after every Featured one, keeping
+            // their relative ALL order.
+            ProviderTier::Additional => 100 + all_idx as u32,
+        };
+        groups.push((
+            rank,
+            serde_json::json!({
+                "provider": name,
+                "tier": tier.as_str(),
+                "models": model_rows,
+            }),
+        ));
     }
+    groups.sort_by_key(|(rank, _)| *rank);
+    let groups: Vec<serde_json::Value> = groups.into_iter().map(|(_, g)| g).collect();
     serde_json::json!({
         "type": "all_models_list",
         "groups": groups,
@@ -1355,12 +1447,6 @@ mod tests {
             None,
         );
 
-        // Agentic Press mirrors the family names with `ap/` prefix.
-        assert_eq!(
-            ProviderKind::resolve_alias_for_provider("opus", ProviderKind::AgenticPress).as_deref(),
-            Some("ap/claude-opus-4-6"),
-        );
-
         // Providers with no alias notion return None — caller falls back
         // to default config rather than surprise-switching providers.
         assert!(ProviderKind::resolve_alias_for_provider("sonnet", ProviderKind::OpenAI).is_none());
@@ -1491,6 +1577,80 @@ mod tests {
     // Serialises the env-var mutation in `preferred_default_model_*`
     // tests (api-key + gateway-key vars are process-global).
     static PREF_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn tier_classifies_featured_vs_additional() {
+        // The 10 Featured (primary) providers.
+        for k in [
+            ProviderKind::OpenAI,
+            ProviderKind::Anthropic,
+            ProviderKind::Gemini,
+            ProviderKind::XAi,
+            ProviderKind::DeepSeek,
+            ProviderKind::DashScope,
+            ProviderKind::Moonshot,
+            ProviderKind::ZAi,
+            ProviderKind::Minimax,
+            ProviderKind::OpenRouter,
+        ] {
+            assert_eq!(k.tier(), ProviderTier::Featured, "{k:?} should be Featured");
+        }
+        // Variants / regional siblings / local stay Additional.
+        for k in [
+            ProviderKind::OpenAIResponses,
+            ProviderKind::ChatGptCodex,
+            ProviderKind::AgentSdk,
+            ProviderKind::QwenCloud,
+            ProviderKind::ThaiLLM,
+            ProviderKind::Nvidia,
+            ProviderKind::Ollama,
+            ProviderKind::OpenCodeGo,
+        ] {
+            assert_eq!(
+                k.tier(),
+                ProviderTier::Additional,
+                "{k:?} should be Additional"
+            );
+        }
+    }
+
+    #[test]
+    fn featured_order_matches_tier_set() {
+        use std::collections::HashSet;
+        let from_order: HashSet<ProviderKind> =
+            ProviderKind::FEATURED_ORDER.iter().copied().collect();
+        assert_eq!(
+            from_order.len(),
+            ProviderKind::FEATURED_ORDER.len(),
+            "FEATURED_ORDER has duplicates"
+        );
+        let from_tier: HashSet<ProviderKind> = ProviderKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| k.tier() == ProviderTier::Featured)
+            .collect();
+        assert_eq!(
+            from_order, from_tier,
+            "FEATURED_ORDER must list exactly the Featured-tier providers"
+        );
+        assert_eq!(ProviderKind::FEATURED_ORDER.len(), 10);
+    }
+
+    #[test]
+    fn display_ordered_is_featured_then_additional() {
+        let ord = ProviderKind::display_ordered();
+        // Every provider exactly once — no drops, no duplicates.
+        assert_eq!(ord.len(), ProviderKind::ALL.len());
+        let uniq: std::collections::HashSet<_> = ord.iter().copied().collect();
+        assert_eq!(uniq.len(), ord.len());
+        // Featured block first, in FEATURED_ORDER.
+        let n = ProviderKind::FEATURED_ORDER.len();
+        assert_eq!(&ord[..n], ProviderKind::FEATURED_ORDER);
+        // Then every remaining entry is Additional.
+        assert!(ord[n..]
+            .iter()
+            .all(|k| k.tier() == ProviderTier::Additional));
+    }
 
     #[test]
     fn preferred_default_provider_models_match_requested() {

@@ -3,73 +3,6 @@
   "source": "baseline 2026-06-10 — pricing synced from LiteLLM (github.com/BerriAI/litellm)",
   "fetched_at": "2026-06-17T00:00:00Z",
   "providers": {
-    "agentic-press": {
-      "list_url": "https://llm.artech.cloud/v1/models",
-      "default_context": 128000,
-      "models": {
-        "ap/deepseek-3.2": {
-          "context": 131072,
-          "max_output": 65536,
-          "source": "https://openrouter.ai/api/v1/models (via deepseek/deepseek-v3.2)",
-          "verified_at": "2026-04-25"
-        },
-        "ap/gemma4-12b": {
-          "context": 128000,
-          "source": "https://llm.artech.cloud/v1/models",
-          "verified_at": "2026-06-02"
-        },
-        "ap/gemma4-26b": {
-          "context": 262144,
-          "max_output": 32768,
-          "source": "derived:google/gemma-4-26b-a4b-it",
-          "verified_at": "2026-04-25"
-        },
-        "ap/gemma4-31b": {
-          "context": 262144,
-          "max_output": 32768,
-          "source": "derived:google/gemma-4-31b-it",
-          "verified_at": "2026-04-25"
-        },
-        "ap/glm-5.1": {
-          "context": 202752,
-          "max_output": 65535,
-          "source": "https://openrouter.ai/api/v1/models (via z-ai/glm-5.1)",
-          "verified_at": "2026-04-25"
-        },
-        "ap/kimi-k2.5": {
-          "context": 262144,
-          "max_output": 65535,
-          "source": "https://openrouter.ai/api/v1/models (via moonshotai/kimi-k2.5)",
-          "verified_at": "2026-04-25"
-        },
-        "ap/qwen3.6-plus": {
-          "context": 1000000,
-          "max_output": 65536,
-          "source": "https://openrouter.ai/api/v1/models (via qwen/qwen3.6-plus)",
-          "verified_at": "2026-04-25"
-        },
-        "ap/thaillm-kbtg": {
-          "context": 128000,
-          "source": "agentic-press operator note",
-          "verified_at": "2026-04-25"
-        },
-        "ap/thaillm-openthaigpt": {
-          "context": 128000,
-          "source": "agentic-press operator note",
-          "verified_at": "2026-04-25"
-        },
-        "ap/thaillm-pathumma": {
-          "context": 128000,
-          "source": "agentic-press operator note",
-          "verified_at": "2026-04-25"
-        },
-        "ap/thaillm-typhoon": {
-          "context": 128000,
-          "source": "agentic-press operator note",
-          "verified_at": "2026-04-25"
-        }
-      }
-    },
     "anthropic": {
       "list_url": "https://api.anthropic.com/v1/models",
       "default_context": 200000,
@@ -376,7 +309,8 @@
         "dashscope/ccai-pro": {
           "context": 131072,
           "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "verified_at": "2026-06-02",
+          "chat": false
         },
         "dashscope/deepseek-v3.2": {
           "context": 131072,
@@ -572,11 +506,6 @@
           "input_per_mtok": 0.21,
           "output_per_mtok": 0.63
         },
-        "dashscope/qwen2-7b-instruct": {
-          "context": 131072,
-          "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
-        },
         "dashscope/qwen3-14b": {
           "context": 131072,
           "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified) + manual:qwen3-14b",
@@ -643,22 +572,26 @@
         "dashscope/qwen3-asr-flash-2026-02-10": {
           "context": 131072,
           "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "verified_at": "2026-06-02",
+          "chat": false
         },
         "dashscope/qwen3-asr-flash-realtime": {
           "context": 131072,
           "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "verified_at": "2026-06-02",
+          "chat": false
         },
         "dashscope/qwen3-asr-flash-realtime-2025-10-27": {
           "context": 131072,
           "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "verified_at": "2026-06-02",
+          "chat": false
         },
         "dashscope/qwen3-asr-flash-realtime-2026-02-10": {
           "context": 131072,
           "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "verified_at": "2026-06-02",
+          "chat": false
         },
         "dashscope/qwen3-coder-480b-a35b-instruct": {
           "context": 131072,
@@ -705,12 +638,14 @@
         "dashscope/qwen3-livetranslate-flash": {
           "context": 131072,
           "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "verified_at": "2026-05-13",
+          "chat": false
         },
         "dashscope/qwen3-livetranslate-flash-2025-12-01": {
           "context": 131072,
           "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "verified_at": "2026-05-13",
+          "chat": false
         },
         "dashscope/qwen3-livetranslate-flash-realtime": {
           "context": 131072,
@@ -820,7 +755,8 @@
         "dashscope/qwen3-s2s-flash-realtime": {
           "context": 131072,
           "source": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models (context unverified)",
-          "verified_at": "2026-05-13"
+          "verified_at": "2026-05-13",
+          "chat": false
         },
         "dashscope/qwen3-vl-235b-a22b-instruct": {
           "context": 131072,
@@ -1126,7 +1062,8 @@
         "dashscope/tongyi-tingwu-slp": {
           "context": 131072,
           "source": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-          "verified_at": "2026-06-02"
+          "verified_at": "2026-06-02",
+          "chat": false
         }
       }
     },
@@ -1327,7 +1264,8 @@
         "gemini-robotics-er-1.6-preview": {
           "context": 1000000,
           "source": "https://generativelanguage.googleapis.com/v1beta/models",
-          "verified_at": "2026-06-02"
+          "verified_at": "2026-06-02",
+          "chat": false
         }
       }
     },

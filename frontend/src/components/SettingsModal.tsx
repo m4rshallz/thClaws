@@ -39,7 +39,6 @@ function isSentinel(s: string): boolean {
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
-  "agentic-press": "Agentic Press LLM",
   anthropic: "Anthropic",
   openai: "OpenAI",
   openrouter: "OpenRouter",
@@ -423,6 +422,8 @@ const GATEWAY_PROVIDERS = new Set([
   "deepseek",
   "minimax",
   "thaillm",
+  "xai",
+  "moonshot",
 ]);
 
 /// OpenRouter-only inline toggle. When on, both the model picker
@@ -467,6 +468,8 @@ const PROVIDER_TO_GATEWAY_SEGMENT: Record<string, string> = {
   deepseek: "deepseek",
   minimax: "minimax",
   thaillm: "thaillm",
+  xai: "xai",
+  moonshot: "moonshot",
 };
 
 type GatewaySettings = {

@@ -116,7 +116,9 @@ export function TerminalView({ active, modalOpen }: Props) {
 
     const term = new Terminal({
       fontFamily: "Menlo, Monaco, 'Courier New', monospace",
-      fontSize: 13,
+      // 12px below the `sm` breakpoint buys a few more columns on a
+      // phone (wrapped logs / code read better wide); 13px on desktop.
+      fontSize: window.innerWidth < 640 ? 12 : 13,
       cursorBlink: true,
       scrollback: 10000,
       theme: TERMINAL_PALETTES[themeModeRef.current],
@@ -869,7 +871,14 @@ export function TerminalView({ active, modalOpen }: Props) {
       className="relative h-full w-full"
       style={{ background: "var(--terminal-bg)" }}
     >
-      <div ref={ref} className="h-full w-full p-1.5" />
+      {/* Explicit tap-to-focus so a touch reliably brings up the mobile
+          keyboard (and reinforces focus in the wry webview), matching
+          ShellTab. Focusing an already-focused terminal is a no-op. */}
+      <div
+        ref={ref}
+        className="h-full w-full p-1.5"
+        onClick={() => termRef.current?.focus()}
+      />
       {streaming && (
         // Floating Stop button overlay — sits top-right while the
         // agent is generating, fires shell_cancel on click. Mirrors

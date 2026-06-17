@@ -1354,14 +1354,22 @@ fn build_initial_state_payload(sessions_dir: Option<std::path::PathBuf>) -> Stri
         })
         .collect();
     let kmss = build_kms_initial_payload(&config);
-    // #95(c): on WS open the frontend's mount-time `team_enabled_get`
-    // request can be dropped if the socket is still CONNECTING — the
-    // wsSend guard logs and discards (frontend/src/hooks/useIPC.ts:114).
-    // Ship the flag here so every (re)connect-driven initial_state
-    // carries it and the Team tab heals automatically without the user
-    // having to open Settings to incidentally refire the get.
-    let team_enabled = crate::config::ProjectConfig::load()
+    // #95(c) + #168: the frontend's mount-time tab-visibility `*_get`
+    // requests (team / shell / browser) can be dropped if the socket is
+    // still CONNECTING — the wsSend guard logs and discards
+    // (frontend/src/hooks/useIPC.ts). That race is far more likely over a
+    // high-latency tunnel (e.g. ngrok), which left the Browser/Shell tabs
+    // hidden there but visible on localhost. Ship every flag in the
+    // (re)connect-driven initial_state so the tabs self-heal regardless of
+    // WS timing, without the user re-firing the get via Settings.
+    let project = crate::config::ProjectConfig::load();
+    let team_enabled = project
+        .as_ref()
         .and_then(|c| c.team_enabled)
+        .unwrap_or(false);
+    let shell_tab_enabled = project
+        .as_ref()
+        .and_then(|c| c.shell_tab_enabled)
         .unwrap_or(false);
     serde_json::json!({
         "type": "initial_state",
@@ -1372,6 +1380,8 @@ fn build_initial_state_payload(sessions_dir: Option<std::path::PathBuf>) -> Stri
         "sessions": sessions,
         "kmss": kmss,
         "team_enabled": team_enabled,
+        "shell_tab_enabled": shell_tab_enabled,
+        "browser_enabled": config.browser_enabled,
         "version": crate::version::VERSION,
     })
     .to_string()

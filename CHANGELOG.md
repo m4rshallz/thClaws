@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-06-17
+
+### Added
+- **Provider tiers — Featured vs Additional.** The ten first-class providers (OpenAI, Anthropic, Gemini, xAI, DeepSeek, DashScope, Moonshot/Kimi, z.ai, MiniMax, OpenRouter) are now grouped as **Featured** and listed before everything else in the model picker and `/providers`. On thClaws.cloud, gateway-routed sessions show only Featured providers (the gateway-routable set); bring-your-own-key sessions still see the full catalogue. Featured-provider pricing is enforced to come from an official source (the provider's own pricing API, LiteLLM, or a vendor pricing page) — a missing price is now a release-blocking error instead of a silent placeholder.
+- **The `--serve` web UI is now mobile-friendly.** Opening a thClaws server from a phone browser gets a real mobile layout: the sidebar becomes a slide-in drawer (hamburger in the tab bar), the tab strip scrolls and collapses to icons, the Files view stacks tree-over-editor, modals fit narrow screens, touch targets are larger, text inputs no longer trigger iOS zoom-on-focus, and the terminal accepts a tap to bring up the on-screen keyboard.
+
+### Changed
+- **Removed the `agentic-press` provider.** Its `ap/` model ids no longer resolve.
+
+### Fixed
+- **`openrouter/fusion+` works from `/model` and the picker** ([#167](https://github.com/thClaws/thClaws/issues/167)). `/model openrouter/fusion+` in the CLI/terminal no longer reports "unknown model", and selecting `openrouter/fusion+` from the `/model ` popup now opens the Fusion config modal (matching the sidebar picker).
+- **Mobile Chrome no longer clips the layout** ([#168](https://github.com/thClaws/thClaws/issues/168)). The root container uses `100dvh`, so the tab bar and input aren't hidden behind the browser address bar.
+- **Browser/Shell tabs appear over high-latency connections.** Their visibility flags now ride the initial-state push the server sends on every (re)connect, instead of a mount-time request that a slow WebSocket (e.g. through a tunnel) could silently drop.
+- **`zai/glm-5.2` reports its real 1M context** ([#161](https://github.com/thClaws/thClaws/issues/161)) instead of the 131k provider-default fallback.
+
 ## [0.66.0] - 2026-06-17
 
 ### Added

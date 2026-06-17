@@ -71,6 +71,8 @@ pub fn provider_segment(kind: ProviderKind) -> Option<&'static str> {
         ProviderKind::DeepSeek => Some("deepseek"),
         ProviderKind::Minimax => Some("minimax"),
         ProviderKind::ThaiLLM => Some("thaillm"),
+        ProviderKind::XAi => Some("xai"),
+        ProviderKind::Moonshot => Some("moonshot"),
         _ => None,
     }
 }
@@ -80,6 +82,15 @@ pub fn provider_segment(kind: ProviderKind) -> Option<&'static str> {
 /// vocabulary.
 pub fn provider_name_for_config(kind: ProviderKind) -> Option<&'static str> {
     provider_segment(kind)
+}
+
+/// True when this session routes through the thClaws gateway: at least
+/// one provider is toggled into `gateway_use_for` AND the access key is
+/// present (hosted cloud pods force both; desktop BYOK has neither).
+/// The model picker uses this to show only Featured (gateway-routable)
+/// providers in gateway mode, and the full catalogue for BYOK sessions.
+pub fn is_active(config: &AppConfig) -> bool {
+    !config.gateway_use_for.is_empty() && resolve_access_key().is_some()
 }
 
 /// Map a catalogue/picker provider NAME (not kind) to its gateway
@@ -97,6 +108,8 @@ pub fn segment_for_provider_name(name: &str) -> Option<&'static str> {
         "deepseek" => Some("deepseek"),
         "minimax" => Some("minimax"),
         "thaillm" => Some("thaillm"),
+        "xai" => Some("xai"),
+        "moonshot" => Some("moonshot"),
         _ => None,
     }
 }
@@ -191,6 +204,24 @@ mod tests {
         );
         assert_eq!(provider_segment(ProviderKind::Ollama), None);
         assert_eq!(provider_segment(ProviderKind::LMStudio), None);
+        // Featured providers added to the gateway in part 3.
+        assert_eq!(provider_segment(ProviderKind::XAi), Some("xai"));
+        assert_eq!(provider_segment(ProviderKind::Moonshot), Some("moonshot"));
+        assert_eq!(segment_for_provider_name("xai"), Some("xai"));
+        assert_eq!(segment_for_provider_name("moonshot"), Some("moonshot"));
+    }
+
+    #[test]
+    fn is_active_requires_toggle_and_key() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("THCLAWS_GATEWAY_API_KEY", "gw_v1_test");
+        assert!(is_active(&cfg(&["openai"])), "toggle + key → active");
+        assert!(!is_active(&cfg(&[])), "no provider toggled → inactive");
+        std::env::remove_var("THCLAWS_GATEWAY_API_KEY");
+        // No key (unless the test host has a keychain 'gateway' entry).
+        if crate::secrets::get("gateway").is_none() {
+            assert!(!is_active(&cfg(&["openai"])), "no key → inactive");
+        }
     }
 
     #[test]

@@ -656,10 +656,14 @@ export function FilesView({ active }: Props) {
 
 
   return (
-    <div className="flex h-full" style={{ background: "var(--bg-primary)" }}>
-      {/* Tree panel */}
+    <div
+      className="flex flex-col sm:flex-row h-full"
+      style={{ background: "var(--bg-primary)" }}
+    >
+      {/* Tree panel — full-width strip on top below `sm` (capped height so
+          the editor stays visible), fixed-width left column at `sm:`+. */}
       <div
-        className="w-64 overflow-y-auto border-r shrink-0 flex flex-col"
+        className="w-full sm:w-64 max-sm:max-h-[38%] overflow-y-auto border-b sm:border-b-0 sm:border-r shrink-0 flex flex-col"
         style={{ borderColor: "var(--border)" }}
       >
         <div

@@ -13,6 +13,9 @@ type ModelRow = {
 /// by id ascending.
 type Group = {
   provider: string;
+  /// "featured" | "additional" — the backend orders Featured groups first
+  /// and tags each with its tier so the picker can show section headers.
+  tier?: string;
   models: ModelRow[];
 };
 
@@ -41,7 +44,6 @@ function stripProviderPrefix(id: string, provider: string): string {
   // Special-cased shortcuts where the model prefix and provider name diverge.
   // Falls through to the general "strip any leading <prefix>/" otherwise.
   const aliases: Record<string, string> = {
-    "agentic-press": "ap",
     "ollama-anthropic": "oa",
     "openai-compat": "oai",
   };
@@ -115,7 +117,7 @@ export function ModelPickerDropdown({ current, onClose }: Props) {
     if (!q) return groups;
     return groups
       .map((g) => ({
-        provider: g.provider,
+        ...g,
         models: g.models.filter(
           (m) =>
             m.id.toLowerCase().includes(q) ||
@@ -207,8 +209,29 @@ export function ModelPickerDropdown({ current, onClose }: Props) {
             No models match "{query}".
           </div>
         ) : (
-          filtered.map((g) => (
+          filtered.map((g, i) => {
+            // Tier divider: shown once above the first group of each tier
+            // (Featured providers come first, then Additional).
+            const showTier = i === 0 || filtered[i - 1].tier !== g.tier;
+            const tierLabel =
+              g.tier === "featured"
+                ? "Featured"
+                : g.tier === "additional"
+                  ? "Additional"
+                  : null;
+            return (
             <div key={g.provider}>
+              {showTier && tierLabel && (
+                <div
+                  className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-widest"
+                  style={{
+                    color: "var(--text-primary)",
+                    borderTop: i === 0 ? "none" : "1px solid var(--border)",
+                  }}
+                >
+                  {tierLabel}
+                </div>
+              )}
               <div
                 className="px-2 py-1 text-[10px] uppercase tracking-wider sticky top-0"
                 style={{
@@ -264,7 +287,8 @@ export function ModelPickerDropdown({ current, onClose }: Props) {
                 );
               })}
             </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

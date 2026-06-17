@@ -833,7 +833,7 @@ export function Sidebar({ onBrowseKms }: SidebarProps = {}) {
           }}
         >
           <div
-            className="rounded-lg border shadow-xl w-80"
+            className="rounded-lg border shadow-xl w-80 max-w-[92vw]"
             style={{
               background: "var(--bg-primary)",
               borderColor: "var(--border)",
@@ -945,7 +945,7 @@ export function Sidebar({ onBrowseKms }: SidebarProps = {}) {
           }}
         >
           <div
-            className="rounded-lg border shadow-xl w-80"
+            className="rounded-lg border shadow-xl w-80 max-w-[92vw]"
             style={{
               background: "var(--bg-primary)",
               borderColor: "var(--border)",

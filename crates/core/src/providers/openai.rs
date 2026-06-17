@@ -32,8 +32,8 @@ pub struct OpenAIProvider {
     api_key: String,
     base_url: String,
     /// Optional prefix stripped from `req.model` before sending to the
-    /// remote. Used by aggregator-style providers (e.g. `ap/gemma4-12b` →
-    /// `gemma4-12b`) where the prefix exists only to route `detect()` on
+    /// remote. Used by aggregator-style providers (e.g. `zai/glm-5.2` →
+    /// `glm-5.2`) where the prefix exists only to route `detect()` on
     /// our side.
     strip_model_prefix: Option<String>,
     /// Override the auth header name. `None` → `Authorization: Bearer {key}`.
@@ -456,7 +456,7 @@ impl Provider for OpenAIProvider {
                     .filter_map(|m| {
                         let raw = m.get("id").and_then(Value::as_str)?;
                         // Prefix the listing so users can paste IDs straight
-                        // into `/model` (e.g. `ap/gemma4-12b`). `detect()`
+                        // into `/model` (e.g. `zai/glm-5.2`). `detect()`
                         // routes on this prefix; the stream call strips it
                         // before hitting the remote.
                         let id = if prefix.is_empty() || raw.starts_with(prefix) {

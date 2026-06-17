@@ -2,7 +2,7 @@
 //!
 //! Backend: macOS Keychain, Windows Credential Manager, or Linux Secret
 //! Service (via the `keyring` crate). Service name is `"thclaws"`, account
-//! is the provider short name (`"agentic-press"`, `"anthropic"`, `"openai"`,
+//! is the provider short name (`"anthropic"`, `"openai"`,
 //! `"gemini"`, `"dashscope"`).
 //!
 //! Keys are decrypted only when read. At startup [`load_into_env`] pulls
@@ -91,7 +91,6 @@ fn resolved_backend() -> Backend {
 /// variants that share an env var with another provider (we dedupe by env
 /// var name in the UI layer).
 const MANAGED: &[ProviderKind] = &[
-    ProviderKind::AgenticPress,
     ProviderKind::Anthropic,
     ProviderKind::OpenAI,
     ProviderKind::OpenRouter,
@@ -441,7 +440,6 @@ mod tests {
     fn status_lists_known_providers() {
         let s = status();
         let names: Vec<_> = s.iter().map(|k| k.provider).collect();
-        assert!(names.contains(&"agentic-press"));
         assert!(names.contains(&"anthropic"));
         assert!(names.contains(&"openai"));
         assert!(names.contains(&"gemini"));
