@@ -165,6 +165,15 @@ pub struct SkillDef {
     /// model supports what.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<SkillModelSpec>,
+    /// Optional tool gate this skill opens when invoked. Parsed from the
+    /// `tool-gate:` frontmatter key. When set, `SkillTool::call` calls
+    /// `crate::tools::activate_gate(<value>)`, making every tool whose
+    /// `requires_gate()` matches become visible to the model — lets a
+    /// skill lazily surface a whole tool group (e.g. `gui-shell`) that's
+    /// otherwise hidden, instead of carrying its docs in the system
+    /// prompt. See `dev-plan/43`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_gate: Option<String>,
     pub dir: PathBuf,
     /// Body access goes through [`Self::content`]. Serialization
     /// always materializes to a string so cached SkillDef snapshots
@@ -228,6 +237,7 @@ impl SkillDef {
             description,
             when_to_use,
             model: None,
+            tool_gate: None,
             dir,
             content: SkillContent::Eager(content),
         }
@@ -451,10 +461,16 @@ impl SkillStore {
     /// produce a clearly-broken path the user can spot — pure-prompt
     /// skills don't reference `{skill_dir}` at all.
     fn seed_builtins(&mut self) {
-        const BUILTINS: &[(&str, &str)] = &[(
-            "extract-and-save",
-            include_str!("default_prompts/skills/extract-and-save.md"),
-        )];
+        const BUILTINS: &[(&str, &str)] = &[
+            (
+                "extract-and-save",
+                include_str!("default_prompts/skills/extract-and-save.md"),
+            ),
+            (
+                "gui-shell",
+                include_str!("default_prompts/skills/gui-shell.md"),
+            ),
+        ];
         for (fallback_name, raw) in BUILTINS {
             if let Some(skill) = parse_builtin_skill(fallback_name, raw) {
                 self.skills.insert(skill.name.clone(), skill);
@@ -529,6 +545,11 @@ impl SkillStore {
         let model = frontmatter
             .get("model")
             .and_then(|raw| parse_skill_model(raw));
+        let tool_gate = frontmatter
+            .get("tool-gate")
+            .or_else(|| frontmatter.get("tool_gate"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
         // Canonicalize once at index time so the `{skill_dir}`
         // substitution inside the lazy body load doesn't have to —
@@ -547,6 +568,7 @@ impl SkillStore {
             description,
             when_to_use,
             model,
+            tool_gate,
             dir: abs_dir.clone(),
             // Body is read on demand by `SkillDef::content()`. Only
             // the path + abs_dir are captured at boot.
@@ -586,6 +608,11 @@ fn parse_builtin_skill(fallback_name: &str, raw: &str) -> Option<SkillDef> {
     let model = frontmatter
         .get("model")
         .and_then(|raw| parse_skill_model(raw));
+    let tool_gate = frontmatter
+        .get("tool-gate")
+        .or_else(|| frontmatter.get("tool_gate"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     let synthetic_dir = PathBuf::from(format!("<builtin>/{name}"));
     let body_with_subst = body.replace("{skill_dir}", &synthetic_dir.to_string_lossy());
@@ -595,6 +622,7 @@ fn parse_builtin_skill(fallback_name: &str, raw: &str) -> Option<SkillDef> {
         description,
         when_to_use,
         model,
+        tool_gate,
         dir: synthetic_dir,
         content: SkillContent::Eager(body_with_subst),
     })
@@ -660,7 +688,7 @@ fn enforce_scripts_policy(skill_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn is_zip_url(url: &str) -> bool {
+pub(crate) fn is_zip_url(url: &str) -> bool {
     // Strip query/fragment before checking the extension so
     // `?token=...` or `#frag` don't mask the `.zip` suffix.
     let without_query = url.split(['?', '#']).next().unwrap_or(url);
@@ -811,7 +839,7 @@ fn target_root(project_scope: bool) -> Result<PathBuf> {
     }
 }
 
-async fn download_zip(url: &str) -> Result<Vec<u8>> {
+pub(crate) async fn download_zip(url: &str) -> Result<Vec<u8>> {
     // Cap the download at 64 MiB. Real skills are orders of magnitude
     // smaller; anything bigger is almost certainly the wrong URL.
     const MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -856,7 +884,7 @@ async fn download_zip(url: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
+pub(crate) fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| Error::Tool(format!("open zip: {e}")))?;
@@ -900,7 +928,7 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
 
 /// If `dir` contains exactly one child directory and no files, return that
 /// child. Covers the common `archive-v1/...` wrapper pattern in zips.
-fn single_wrapper_subdir(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn single_wrapper_subdir(dir: &Path) -> Option<PathBuf> {
     let mut subdirs = Vec::new();
     let mut has_files = false;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
@@ -1391,6 +1419,16 @@ impl Tool for SkillTool {
         // notices on every invocation. Idempotent: pip install with
         // already-installed deps is a no-op + cached.
         append_skill_runtime_hints(&mut result, &skill.dir);
+
+        // Open the tool gate this skill declares (if any), making the
+        // gated tool group visible to the model from the next turn. The
+        // gate is process-global and session-sticky (dev-plan/43).
+        if let Some(gate) = skill.tool_gate.as_deref() {
+            crate::tools::activate_gate(gate);
+            result.push_str(&format!(
+                "\n\n_(The `{gate}` tools are now available for this session.)_\n"
+            ));
+        }
 
         // Resolve the effective model recommendation. settings.json
         // may carry a per-skill override (e.g.
@@ -1895,6 +1933,20 @@ mod tests {
         assert!(matches!(skill.content, SkillContent::Eager(_)));
         // Body content is non-empty and recognizable.
         assert!(skill.content().contains("Extract"));
+    }
+
+    #[test]
+    fn seed_builtins_includes_gui_shell_with_tool_gate() {
+        let mut store = SkillStore::default();
+        store.seed_builtins();
+        let skill = store
+            .get("gui-shell")
+            .expect("gui-shell should be seeded as a built-in");
+        assert_eq!(skill.name, "gui-shell");
+        // The `tool-gate:` frontmatter must parse so SkillTool::call can
+        // open the gate that surfaces GuiShellCreate etc.
+        assert_eq!(skill.tool_gate.as_deref(), Some("gui-shell"));
+        assert!(skill.content().contains("GuiShellCreate"));
     }
 
     #[test]

@@ -150,6 +150,8 @@ pub fn render_chat_dispatches(ev: &ViewEvent) -> Vec<String> {
         ViewEvent::ResearchUpdate(json) => vec![json.clone()],
         ViewEvent::ModelPickerOpen(json) => vec![json.clone()],
         ViewEvent::ScheduleAddOpen(json) => vec![json.clone()],
+        ViewEvent::AgentEditorOpen(json) => vec![json.clone()],
+        ViewEvent::MarketplaceOpen(json) => vec![json.clone()],
         ViewEvent::ContextWarning { file_size_mb } => vec![serde_json::json!({
             "type": "chat_context_warning",
             "file_size_mb": file_size_mb,
@@ -626,6 +628,8 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
         ViewEvent::ResearchUpdate(_) => None,
         ViewEvent::ModelPickerOpen(_) => None,
         ViewEvent::ScheduleAddOpen(_) => None,
+        ViewEvent::AgentEditorOpen(_) => None,
+        ViewEvent::MarketplaceOpen(_) => None,
         ViewEvent::ContextWarning { file_size_mb } => Some(format!(
             "\r\n\x1b[33m[ session {:.1} MB — /fork to continue in a new session with summary ]\x1b[0m\r\n",
             file_size_mb

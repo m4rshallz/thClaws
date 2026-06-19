@@ -307,7 +307,7 @@ impl Default for ShellRegistry {
 /// Falls back to `./.thclaws/gui-shell/` if HOME is unset (shouldn't
 /// happen on any reasonable OS — the project dir scan would catch
 /// the same shells anyway in that degenerate case).
-fn user_shell_dir() -> PathBuf {
+pub fn user_shell_dir() -> PathBuf {
     if let Some(home) = crate::util::home_dir() {
         return home.join(".config").join("thclaws").join("gui-shell");
     }
@@ -316,7 +316,7 @@ fn user_shell_dir() -> PathBuf {
 
 /// `./.thclaws/gui-shell/` — project-scoped, sits next to
 /// `./.thclaws/sessions/`. Resolved relative to current cwd at call time.
-fn project_shell_dir() -> PathBuf {
+pub fn project_shell_dir() -> PathBuf {
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".thclaws")

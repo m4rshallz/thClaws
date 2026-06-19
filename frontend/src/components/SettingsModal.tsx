@@ -549,8 +549,10 @@ function GatewaySettingsSection() {
         </span>
       </div>
       <p className="text-xs mb-2" style={{ color: "var(--text-secondary)" }}>
-        Route per-provider traffic through <span className="font-mono">{settings.base_url}</span>.
-        Paste your access key here, then flip "Use thClaws Gateway" on the provider cards below.
+        Route per-provider traffic through <span className="font-mono">{settings.base_url}</span>,
+        then flip "Use thClaws Gateway" on the provider cards below. If you're signed in to
+        thClaws.cloud (Settings → thClaws.cloud), your login is used automatically — the access key
+        below is optional, only needed for a standalone <span className="font-mono">gw_v1_…</span> key.
       </p>
       <FieldLabel icon={<KeyRound size={11} />} text="Access key" env="THCLAWS_GATEWAY_API_KEY" />
       <div className="flex gap-1.5">

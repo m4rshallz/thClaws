@@ -1492,6 +1492,46 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             (ctx.dispatch)(payload.to_string());
         }
 
+        // ── Agent editor (/agent new · /agent edit) ────────────────
+        "agent_save" => {
+            // Frontend AgentEditorModal submits the full `.md` body
+            // (YAML frontmatter + system prompt). Always write the
+            // project-scoped path `.thclaws/agents/<name>.md` — edits to
+            // a user-scoped or built-in agent land here as an override.
+            let raw_name = msg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let body = msg.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            let (ok, error, path) = match crate::agent_defs::sanitize_agent_name(raw_name) {
+                None => (
+                    false,
+                    "invalid agent name (letters, digits, '-' or '_' only)".to_string(),
+                    None,
+                ),
+                Some(name) => {
+                    let path = crate::agent_defs::AgentDefsConfig::project_agent_path(&name);
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::write(&path, body) {
+                        Ok(()) => (true, String::new(), Some(path.display().to_string())),
+                        Err(e) => (false, e.to_string(), Some(path.display().to_string())),
+                    }
+                }
+            };
+            // Reload the worker's def snapshot so the new/edited agent is
+            // usable in-session (side-channel spawns + existence checks).
+            if ok {
+                let _ = ctx.shared.input_tx.send(ShellInput::AgentDefsChanged);
+            }
+            let payload = serde_json::json!({
+                "type": "agent_save_result",
+                "name": raw_name,
+                "path": path,
+                "ok": ok,
+                "error": error,
+            });
+            (ctx.dispatch)(payload.to_string());
+        }
+
         // ── Deploy target (dev-plan/28: /deploy command config) ────
         "remote_agent_get" => {
             let url = crate::remote_agent::url();

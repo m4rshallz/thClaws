@@ -9,8 +9,8 @@ use crate::error::{Error, Result};
 use crate::types::{ToolDef, ToolResultContent};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub mod ask;
 pub mod bash;
@@ -21,6 +21,7 @@ pub mod edit;
 pub mod epub_create;
 pub mod glob;
 pub mod grep;
+pub mod gui_shell;
 pub mod hal;
 pub mod image_gen;
 pub mod kms;
@@ -130,6 +131,58 @@ pub trait Tool: Send + Sync {
     fn requires_env(&self) -> &'static [&'static str] {
         &[]
     }
+
+    /// Optional gate this tool belongs to. `None` (default) → always
+    /// visible (subject to `requires_env`). `Some("gui-shell")` → hidden
+    /// from [`ToolRegistry::tool_defs`] and rejected by
+    /// [`ToolRegistry::call`] until something opens that gate via
+    /// [`activate_gate`]. Lets a whole group of tools (e.g. GUI-Shell
+    /// authoring) be lazily surfaced by a skill instead of living in the
+    /// always-on system prompt — zero token cost while closed, because
+    /// the model never sees a gated tool's name. Mirrors `requires_env`:
+    /// the gate is re-checked every turn by the same per-turn filter, so
+    /// opening it takes effect on the next request without rebuilding the
+    /// registry or the agent.
+    fn requires_gate(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+/// Process-global set of open tool gates. Session-sticky: once a gate is
+/// opened it stays open for the process lifetime (a user mid-task keeps
+/// needing the group's tools across turns). Same global-state model as
+/// the env vars `tool_is_available` already reads and the
+/// `skills_state` model-override slot.
+fn open_gates() -> &'static Mutex<HashSet<String>> {
+    static G: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    G.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Open a tool gate — every registered tool whose `requires_gate()`
+/// matches `name` becomes visible to the model on the next turn. Called
+/// from `SkillTool::call` when an invoked skill declares `tool-gate:`.
+pub fn activate_gate(name: &str) {
+    open_gates()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(name.to_string());
+}
+
+/// Whether a named gate is currently open.
+pub fn gate_is_active(name: &str) -> bool {
+    open_gates()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains(name)
+}
+
+/// Test helper — close every gate so cases don't leak gate state.
+#[cfg(test)]
+pub fn reset_gates() {
+    open_gates()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
 }
 
 /// True when the engine runs in hosted gateway mode — the runner routes
@@ -175,10 +228,13 @@ pub(crate) const GATEWAY_SERVED_ENVS: &[&str] = &["HAL_API_KEY"];
 /// on a gateway-served key counts as satisfied even with no local key.
 fn tool_is_available(t: &dyn Tool) -> bool {
     let gw = gateway_mode();
-    t.requires_env().iter().all(|v| {
+    let env_ok = t.requires_env().iter().all(|v| {
         std::env::var(v).map(|val| !val.is_empty()).unwrap_or(false)
             || (gw && GATEWAY_SERVED_ENVS.contains(v))
-    })
+    });
+    // A gated tool is available only once its gate has been opened.
+    let gate_ok = t.requires_gate().is_none_or(gate_is_active);
+    env_ok && gate_ok
 }
 
 /// A resolved MCP-Apps UI resource ready to be mounted in an iframe.
@@ -256,6 +312,10 @@ impl ToolRegistry {
         r.register(Arc::new(ExitPlanModeTool));
         r.register(Arc::new(SubmitPlanTool));
         r.register(Arc::new(UpdatePlanStepTool));
+        // GUI-shell authoring tools — gated behind the `gui-shell` gate
+        // (the `gui-shell` skill opens it), so they're invisible to the
+        // model until a user asks to build a shell.
+        gui_shell::register(&mut r);
         r
     }
 
@@ -306,6 +366,11 @@ impl ToolRegistry {
             .get(name)
             .ok_or_else(|| Error::Tool(format!("unknown tool: {name}")))?;
         if !tool_is_available(tool.as_ref()) {
+            if let Some(gate) = tool.requires_gate().filter(|g| !gate_is_active(g)) {
+                return Err(Error::Tool(format!(
+                    "tool '{name}' is gated behind '{gate}' — invoke the matching skill to enable it"
+                )));
+            }
             let needed = tool.requires_env().join(", ");
             return Err(Error::Tool(format!(
                 "tool '{name}' requires env var(s) [{needed}] — set in Settings → Providers and retry"
@@ -553,6 +618,61 @@ mod tests {
         }));
         let defs = reg.tool_defs();
         assert!(!defs.iter().any(|d| d.name == "NeedsKey"));
+    }
+
+    /// Stub tool that declares a fixed gate.
+    struct GatedStub;
+    #[async_trait]
+    impl Tool for GatedStub {
+        fn name(&self) -> &'static str {
+            "GatedTool"
+        }
+        fn description(&self) -> &'static str {
+            "gated stub"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+        async fn call(&self, _input: Value) -> Result<String> {
+            Ok("ok".into())
+        }
+        fn requires_gate(&self) -> Option<&'static str> {
+            Some("test-gate")
+        }
+    }
+
+    #[test]
+    fn gated_tool_hidden_until_gate_opened() {
+        let _g = env_lock().lock().unwrap();
+        reset_gates();
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(GatedStub));
+        assert!(
+            !reg.tool_defs().iter().any(|d| d.name == "GatedTool"),
+            "gated tool must be hidden before the gate opens"
+        );
+        activate_gate("test-gate");
+        assert!(
+            reg.tool_defs().iter().any(|d| d.name == "GatedTool"),
+            "gated tool must appear once the gate opens"
+        );
+        reset_gates();
+    }
+
+    #[tokio::test]
+    async fn gated_tool_call_rejected_until_gate_opened() {
+        let _g = env_lock().lock().unwrap();
+        reset_gates();
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(GatedStub));
+        let err = reg
+            .call("GatedTool", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("gated"), "got: {err}");
+        activate_gate("test-gate");
+        assert!(reg.call("GatedTool", serde_json::json!({})).await.is_ok());
+        reset_gates();
     }
 
     #[tokio::test]

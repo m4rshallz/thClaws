@@ -1655,6 +1655,150 @@ pub async fn dispatch(
                 ),
             }
         }
+        SlashCommand::SubagentMarketplace { refresh } => {
+            if refresh {
+                if let Err(e) = crate::marketplace::refresh_from_remote().await {
+                    emit(events_tx, format!("refresh failed: {e}"));
+                }
+            }
+            let mp = crate::marketplace::load();
+            let age_suffix = match crate::marketplace::cache_age_label() {
+                Some(label) => format!(", {label}"),
+                None => String::new(),
+            };
+            let mut out = format!(
+                "marketplace ({}, {} subagent(s){age_suffix})\n",
+                mp.source,
+                mp.subagents.len(),
+            );
+            for s in &mp.subagents {
+                let tags = crate::marketplace::entry_tags(s);
+                out.push_str(&format!("  {:<24}{tags} — {}\n", s.name, s.short_line()));
+            }
+            out.push_str("install with: /subagent install <name>   |   browse all: /marketplace");
+            emit(events_tx, out);
+        }
+        SlashCommand::SubagentSearch(query) => {
+            let mp = crate::marketplace::load();
+            let hits = mp.search_subagent(&query);
+            if hits.is_empty() {
+                emit(
+                    events_tx,
+                    format!("no matches for '{query}' — try /subagent marketplace"),
+                );
+            } else {
+                let mut out = format!("{} match(es) for '{query}':\n", hits.len());
+                for s in hits {
+                    out.push_str(&format!("  {:<24} — {}\n", s.name, s.short_line()));
+                }
+                emit(events_tx, out);
+            }
+        }
+        SlashCommand::SubagentInfo(name) => {
+            let mp = crate::marketplace::load();
+            match mp.find_subagent(&name) {
+                Some(s) => {
+                    let mut out = format!("name:        {}\n", s.name);
+                    out.push_str(&format!("description: {}\n", s.description));
+                    if !s.category.is_empty() {
+                        out.push_str(&format!("category:    {}\n", s.category));
+                    }
+                    out.push_str(&format!(
+                        "license:     {} ({})\n",
+                        s.license, s.license_tier
+                    ));
+                    if !s.homepage.is_empty() {
+                        out.push_str(&format!("homepage:    {}\n", s.homepage));
+                    }
+                    match (s.license_tier.as_str(), s.install_url.as_ref()) {
+                        ("linked-only", _) => out.push_str(&format!(
+                            "install:     not redistributable — install from {}",
+                            if s.homepage.is_empty() {
+                                "the upstream repo"
+                            } else {
+                                &s.homepage
+                            }
+                        )),
+                        (_, Some(url)) => out.push_str(&format!(
+                            "install:     /subagent install {} (resolves to {url})",
+                            s.name
+                        )),
+                        (_, None) => out.push_str("install:     no install_url in catalogue"),
+                    }
+                    emit(events_tx, out);
+                }
+                None => emit(
+                    events_tx,
+                    format!("no subagent named '{name}' in marketplace — try /subagent search"),
+                ),
+            }
+        }
+        SlashCommand::SubagentInstall { arg, name, project } => {
+            let (effective_url, abort_msg) =
+                crate::agent_defs::resolve_subagent_install_target(&arg);
+            if let Some(msg) = abort_msg {
+                emit(events_tx, msg);
+                return;
+            }
+            match crate::agent_defs::install_subagent_from_url(
+                &effective_url,
+                name.as_deref(),
+                project,
+            )
+            .await
+            {
+                Ok(report) => {
+                    // Reload the worker's def snapshot so a `/agent <name>`
+                    // side-channel can spawn it right away (matches the
+                    // `AgentDefsChanged` handler). Model-driven Task picks
+                    // up the new def on the next session.
+                    let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
+                    let mut reloaded =
+                        crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+                    reloaded.apply_builtin_subagent_overrides(&state.config);
+                    state.agent_defs = reloaded;
+                    let mut out = report.join("\n");
+                    out.push_str(
+                        "\n(spawn now via /agent <name>; model-driven Task sees it next session)",
+                    );
+                    emit(events_tx, out);
+                }
+                Err(e) => emit(events_tx, format!("subagent install failed: {e}")),
+            }
+        }
+        SlashCommand::Marketplace { refresh } => {
+            if refresh {
+                if let Err(e) = crate::marketplace::refresh_from_remote().await {
+                    emit(events_tx, format!("refresh failed: {e}"));
+                }
+            }
+            let mp = crate::marketplace::load();
+            // Installed-name sets for the [installed ✓] badges. Skills
+            // from the live SkillStore; subagents from the loaded defs
+            // (built-in or disk). MCP / plugin badges are a follow-up.
+            let installed_skills: Vec<String> = state
+                .skill_store
+                .lock()
+                .map(|s| s.skills.keys().cloned().collect())
+                .unwrap_or_default();
+            let installed_subagents: Vec<String> = state
+                .agent_defs
+                .names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let payload = serde_json::json!({
+                "type": "marketplace_open",
+                "source": mp.source,
+                "cacheAge": crate::marketplace::cache_age_label(),
+                "catalog": mp,
+                "installed": {
+                    "skills": installed_skills,
+                    "subagents": installed_subagents,
+                },
+            });
+            let _ = events_tx.send(ViewEvent::MarketplaceOpen(payload.to_string()));
+        }
         SlashCommand::McpMarketplace { refresh } => {
             if refresh {
                 if let Err(e) = crate::marketplace::refresh_from_remote().await {
@@ -3227,6 +3371,71 @@ pub async fn dispatch(
                 );
             }
         }
+        SlashCommand::AgentNew(name) => {
+            let Some(name) = crate::agent_defs::sanitize_agent_name(&name) else {
+                emit(
+                    events_tx,
+                    "/agent new: name must be non-empty letters, digits, '-' or '_'".into(),
+                );
+                return;
+            };
+            if crate::agent_defs::AgentDefsConfig::find_on_disk(&name).is_some() {
+                emit(
+                    events_tx,
+                    format!("/agent new: '{name}' already exists — use /agent edit {name}"),
+                );
+                return;
+            }
+            let payload = serde_json::json!({
+                "type": "agent_editor_open",
+                "mode": "new",
+                "name": name,
+                "body": agent_starter_template(&name),
+            });
+            let _ = events_tx.send(ViewEvent::AgentEditorOpen(payload.to_string()));
+        }
+        SlashCommand::AgentEdit(name) => {
+            let Some(name) = crate::agent_defs::sanitize_agent_name(&name) else {
+                emit(
+                    events_tx,
+                    "/agent edit: name must be non-empty letters, digits, '-' or '_'".into(),
+                );
+                return;
+            };
+            // Prefer the raw on-disk file (preserves the user's exact
+            // YAML + formatting). Fall back to reconstructing from the
+            // loaded def so built-ins (translator, dream, …) open with
+            // their real content — saving lands a project override.
+            let body = match crate::agent_defs::AgentDefsConfig::find_on_disk(&name) {
+                Some(path) => match std::fs::read_to_string(&path) {
+                    Ok(raw) => raw,
+                    Err(e) => {
+                        emit(
+                            events_tx,
+                            format!("/agent edit: can't read {}: {e}", path.display()),
+                        );
+                        return;
+                    }
+                },
+                None => match state.agent_defs.get(&name) {
+                    Some(def) => def.to_markdown(),
+                    None => {
+                        emit(
+                            events_tx,
+                            format!("/agent edit: no such agent '{name}' (try /agent new {name})"),
+                        );
+                        return;
+                    }
+                },
+            };
+            let payload = serde_json::json!({
+                "type": "agent_editor_open",
+                "mode": "edit",
+                "name": name,
+                "body": body,
+            });
+            let _ = events_tx.send(ViewEvent::AgentEditorOpen(payload.to_string()));
+        }
         SlashCommand::Dream {
             focus,
             all_sessions,
@@ -3677,6 +3886,25 @@ fn doctor_report(state: &WorkerState) -> String {
 
 fn emit(events_tx: &broadcast::Sender<ViewEvent>, text: String) {
     let _ = events_tx.send(ViewEvent::SlashOutput(text));
+}
+
+/// Starter `.md` body for `/agent new` — a commented frontmatter
+/// skeleton plus a system-prompt stub. Mirrors the field set the
+/// parser understands (see [`crate::agent_defs`]).
+fn agent_starter_template(name: &str) -> String {
+    format!(
+        "---\n\
+         name: {name}\n\
+         description: \n\
+         tools: Read, Glob, Grep\n\
+         permissionMode: ask\n\
+         maxTurns: 20\n\
+         color: cyan\n\
+         ---\n\n\
+         You are the {name} agent.\n\n\
+         Describe the task this agent should focus on, what to return, and \
+         anything it must not do.\n"
+    )
 }
 
 /// dev-plan/32 Tier 3 `/workflow run` for the GUI / chat surface.

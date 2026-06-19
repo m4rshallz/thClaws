@@ -8,8 +8,10 @@ Agent Teams (Chapter 17), the orchestrator here is **code**, not the
 model — which means rerunning the same workflow gives the same shape
 of work every time and a long-running job leaves a checkpoint on disk.
 
-Workflows are **Tier 1** in v0.23 — fan-out works, schema validation
-and resume land in Tier 2 (see "What's missing in Tier 1" below).
+Fan-out, JSON-schema validation, per-worker token/time budgets,
+retries, KMS-write grants, and resume all work today. The main
+remaining gap is **true parallel execution** — workers still run one
+at a time even inside `Promise.all` (see "Current limitations" below).
 
 ## When to use workflows
 
@@ -56,7 +58,8 @@ to …" in chat.
 
 Both paths reject nested calls: a script that tries to invoke
 `WorkflowRun` inside itself fails with a clear error — orchestrate
-through `thclaws.subagent(...)` / `thclaws.parallel(...)` instead.
+through `thclaws.subagent(...)` instead (the script's only fan-out
+primitive; there is no `thclaws.parallel`).
 
 ## Quick start
 
@@ -134,23 +137,29 @@ fields:
 ```js
 thclaws.subagent({
   prompt: string,           // required — the worker's task
-  budget?: {                // Stages G + I: both enforced
+  budget?: {                // both enforced
     time?: number | string, //   "60s" / "2m" / "1m30s" / 60 (seconds)
     tokens?: number,        //   input + output cap per worker call
   },
-  schema?: object,          // Stage H: JSON Schema. Worker is asked for JSON
+  schema?: object,          // JSON Schema. Worker is asked for JSON
                             //   matching the schema; on success the call
                             //   returns the parsed value (not text).
-  retry?: number | {        // Stage H: retries on hard errors + schema misses
+  retry?: number | {        // retries on hard errors + schema misses
     max: number,
     backoff?: string,       //   "exponential" / "linear" / "500ms" / etc.
   },
-  caps?: {                  // Stage M: explicit grants — default DENY for KMS writes
+  caps?: {                  // explicit grants — default DENY for KMS writes
     kms?: { write?: string[] },
   },
-  // model? — Stage L
+  agent?: string,           // run as a named agent def (.thclaws/agents/<name>.md);
+                            //   inherits its tools/instructions. See Chapter 15.
 }) → string | parsed_value
 ```
+
+The script also gets `thclaws.include(path)` — pull in another `.js`
+file (helpers, shared prompt strings) relative to the script's
+directory. Path traversal (`..`), absolute paths, and symlinks that
+escape the base dir are rejected.
 
 **`caps.kms.write` controls what a worker can write.** Outside a
 workflow run KMS write tools work as before. Inside `/workflow run`,
@@ -173,9 +182,10 @@ the same `DEFAULT_MAX_DEPTH = 3` ceiling sub-agents already honour.
 
 **Async syntax works** — scripts that use `await` / `async` /
 `Promise.all` route through Boa Module mode. `thclaws.subagent` is
-still synchronous internally in Stage J MVP, so `Promise.all([...])`
-resolves correctly but workers execute in source order (one at a
-time). Genuine parallelism via tokio JobExecutor is Stage J.2.
+still synchronous internally, so `Promise.all([...])` resolves
+correctly but workers execute in source order (one at a time).
+Genuine parallel execution is still pending (see "Current
+limitations").
 
 ### What you can write in the script
 
@@ -237,7 +247,9 @@ JSONL, never opaque. The companion `script.js` (the approved JS) is
 written next to it at start, so `/workflow resume <id>` can replay
 against the same source.
 
-Slash commands for managing runs (all REPL-only in Tier 2):
+Slash commands for managing runs (these work in both the CLI REPL and
+the GUI chat tab, **except** `/workflow rm`, which needs an interactive
+y/N confirm the chat tab can't show — run it from `thclaws --cli`):
 
 ```text
 /workflow list             one line per run on disk, newest first
@@ -260,17 +272,22 @@ workflow runs anyway and prints:
 ```
 You lose the audit trail but not the run.
 
-## Headless mode
+## Running a pre-authored script (skip the author phase)
 
-`thclaws -p "/workflow run <goal>"` is **refused**. The author phase
-produces a script that needs your review before execution; `-p` mode
-has no surface for that review and default-approving an arbitrary
-script is dangerous.
+When you already have a `.js` workflow on disk — one you wrote by hand,
+or the `script.js` saved from an earlier `/workflow run` — you can run
+it directly, skipping the author + review phase entirely:
 
-Pre-authored scripts run headless via `thclaws --workflow <file.js>`
-(Stage L). The author phase is skipped entirely — the file is
-operator-vetted. Useful for CI, cron jobs (chapter 19), and
-dev-plan/28 deploy hooks.
+- **Mid-session:** `/workflow exec <path>` (aliases `file` / `script`)
+  runs the script from disk in the current REPL **or** GUI session.
+- **Headless:** `thclaws --workflow <file.js>` runs it from the command
+  line — useful for CI, cron jobs (chapter 19), and deploy hooks.
+
+Every `/workflow run` persists its approved script to
+`.thclaws/workflows/wf-<id>/script.js`, so a workflow the model
+authored once can be re-run deterministically with `/workflow exec`
+against that path (or replayed from its checkpoint with
+`/workflow resume <id>`).
 
 ```sh
 # Fresh run:
@@ -284,31 +301,35 @@ thclaws --workflow ./scripts/audit-crates.js --resume wf-18b3fa
 thclaws --workflow ./scripts/audit-crates.js > result.txt
 ```
 
-Exit code is 0 on success, 1 on script failure. Headless mode auto-
-approves every subagent tool call (same as
-`--dangerously-skip-permissions` — the operator vetted the script).
+Exit code is 0 on success, 1 on script failure. **Both** `/workflow
+exec` and `--workflow` auto-approve every tool call the workers make
+(same as `--dangerously-skip-permissions`) — the script is treated as
+operator-vetted, so only run scripts you trust.
 
-## What's missing in Tier 1
+> `thclaws -p "/workflow run <goal>"` is not a useful path: one-shot
+> print mode has no surface for the author/review loop, and the
+> `thclaws.subagent` host function isn't wired there. For
+> non-interactive runs, pre-author a script and use `--workflow`.
 
-These are documented gaps, not bugs — they land in Tier 2 / 3 per
+## Current limitations
+
+These are documented gaps, not bugs — tracked in
 [dev-plan/32](../dev-plan/32-dynamic-workflows.md) (workspace-only):
 
-- **`Promise.all` resolves but doesn't truly parallelise (Stage J MVP).**
-  Boa now runs scripts that use `await` / `Promise.all` in Module mode,
-  so the syntax parses and `await thclaws.subagent(...)` returns the
-  worker's text. But the host function still blocks the JS thread
-  per-call, so each subagent call inside `Promise.all` runs
-  sequentially. Wall-clock = sum of latencies, not max. Stage J.2 will
-  add a tokio-integrated JobExecutor so workers genuinely run in
-  parallel.
-- **No budget caps.** Per-worker `budget: { tokens, time }` is
-  ignored. Tier 2 enforces both.
-- **No verification phase.** `thclaws.verify({...})` doesn't exist
-  yet — Tier 3.
-- **No GUI worker grid.** From the chat tab `/workflow run` is
-  explicitly refused with a one-line explanation. The interactive
-  review UX doesn't fit a single chat bubble, and a real-time grid of
-  worker progress is a Tier 3 frontend deliverable.
+- **`Promise.all` resolves but doesn't truly parallelise.** Boa runs
+  scripts that use `await` / `Promise.all` in Module mode, so the
+  syntax parses and `await thclaws.subagent(...)` returns the worker's
+  text. But the host function still blocks the JS thread per-call, so
+  each subagent call inside `Promise.all` runs sequentially. Wall-clock
+  = sum of latencies, not max. A tokio-integrated executor for genuine
+  parallelism is still pending.
+- **No verification phase.** A dedicated `thclaws.verify({...})`
+  primitive doesn't exist yet — scripts that want a check step author
+  it as another `thclaws.subagent` call.
+- **No real-time GUI worker grid.** `/workflow run` and the management
+  commands work from the chat tab, but worker progress streams as text
+  rather than a live grid. A real-time progress UI is still a frontend
+  deliverable.
 
 ## Cost awareness
 
@@ -333,7 +354,7 @@ Two practical guardrails:
 | Number of workers | 1 (blocking) | 1 (concurrent) | 3–5 collaborators | Tens to hundreds |
 | Inter-worker chat | No | No | Yes (mailbox) | No (stateless) |
 | Determinism | Model-driven | Model-driven | Model-driven | Deterministic execution |
-| Resumable | No | No | Limited | Logged (Tier 2 reads it back) |
+| Resumable | No | No | Limited | Yes (`/workflow resume` replays the checkpoint) |
 | Best for | Side-quest during a turn | Specialist running in parallel | Debate / collaboration | Bulk fan-out |
 
 ## Troubleshooting
@@ -347,8 +368,9 @@ probably running a script outside `/workflow run`. The `thclaws.*`
 global only exists inside the workflow sandbox.
 
 **Workflow hangs after `⠋ wN  …` line** — that worker is taking a
-while. Subagent calls have no timeout in Tier 1; Ctrl-C cancels the
-whole run.
+while. Unless the call sets `budget: { time }`, subagent calls run
+unbounded; Ctrl-C cancels the whole run. Add a per-worker `time`
+budget in the script to cap individual workers.
 
 **Re-author loop keeps producing the same script** — the model may be
 ignoring your revision note. Try cancelling and re-running with a

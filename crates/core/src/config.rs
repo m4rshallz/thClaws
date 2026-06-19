@@ -1619,14 +1619,23 @@ impl AppConfig {
             }
         }
 
-        // dev-plan/42: in a multiuser pod the guest's settings.json + .env
-        // live in their WRITABLE workspace, so without this they could
-        // BYOK and bypass the owner's gateway (billing + governance).
-        // Force every gateway-routable provider through the gateway,
-        // ignoring any BYOK/native config in the workspace. Mirrors
-        // shared-mode's gateway-only rule (load_shared), but triggered by
-        // multiuser — here the def is in-workspace, not a $SHARED mount.
-        if crate::workdir::is_multiuser() {
+        // In any hosted gateway pod, every gateway-routable provider must
+        // route through the gateway (the user has no BYOK keys; BYOK would
+        // bypass billing + governance — dev-plan/42). Derive the routed set
+        // from the engine's CURRENT `GATEWAY_ALL_PROVIDERS` rather than the
+        // per-workspace `gatewayUseFor`: that list is written by a
+        // provision-time init container whose default is baked then, so it
+        // goes STALE when new gateway-routable providers ship — e.g. xai /
+        // moonshot landed in v0.67.0 but pre-existing workspaces' lists
+        // predate them, so those Featured providers wrongly fell back to
+        // BYOK ("set XAI_API_KEY") in gateway mode. Keying off the engine
+        // here keeps Featured == gateway-supported without re-provisioning.
+        // `THCLAWS_USES_GATEWAY=1` marks a cloud gateway runner (the
+        // provisioner sets it; desktop never does) and covers multiuser
+        // pods too.
+        let in_gateway_pod = crate::workdir::is_multiuser()
+            || std::env::var("THCLAWS_USES_GATEWAY").ok().as_deref() == Some("1");
+        if in_gateway_pod {
             config.gateway_use_for = crate::shared::GATEWAY_ALL_PROVIDERS
                 .iter()
                 .map(|s| s.to_string())

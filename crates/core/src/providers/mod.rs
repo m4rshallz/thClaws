@@ -258,7 +258,7 @@ impl ProviderKind {
             Self::OpenAI => "gpt-4.1",
             Self::OpenAIResponses => "codex/gpt-5.2-codex",
             Self::ChatGptCodex => "chatgpt-codex/gpt-5.4",
-            Self::OpenRouter => "openrouter/anthropic/claude-sonnet-4-6",
+            Self::OpenRouter => "openrouter/qwen/qwen3.7-plus",
             Self::TokenRouter => "tokenrouter/anthropic/claude-sonnet-4.5",
             // Pinned to a versioned ID (matching Anthropic / OpenAI
             // convention) rather than `gemini-flash-latest` — `-latest`

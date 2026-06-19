@@ -136,6 +136,12 @@ pub enum ShellInput {
     /// Lighter than [`Self::ReloadConfig`] (no provider rebuild) — only
     /// touches `state.system_prompt`.
     InstructionsChanged,
+    /// The user just saved an agent def via the GUI's `/agent new` /
+    /// `/agent edit` editor. Reload `state.agent_defs` from disk so a
+    /// newly-created agent is immediately spawnable via `/agent <name>`
+    /// in the same session. The model-driven Task tool keeps the def
+    /// snapshot it captured at init (refreshes on next session).
+    AgentDefsChanged,
     /// Widget-initiated tool call from an embedded MCP App. The
     /// originating widget called `app.callServerTool({name, arguments})`;
     /// we look up the qualified tool in the registry, run it, and
@@ -359,6 +365,21 @@ pub enum ViewEvent {
     /// CLI renderer ignores this; the REPL handler prints help text
     /// instead since a multi-field form doesn't fit a terminal line.
     ScheduleAddOpen(String),
+    /// Open the agent-editor modal — pre-built JSON payload shaped
+    /// `{type: "agent_editor_open", mode: "new"|"edit", name, body}`
+    /// where `body` is the full `.md` (YAML frontmatter + system
+    /// prompt). Emitted by `/agent new` / `/agent edit` from a GUI
+    /// surface; the CLI renderer ignores it (the REPL handler prints a
+    /// GUI-only hint). Save round-trips via the `agent_save` IPC.
+    AgentEditorOpen(String),
+    /// Open the unified marketplace browser modal — pre-built JSON
+    /// payload `{type:"marketplace_open", source, cacheAge, catalog:{
+    /// skills,mcp_servers,plugins,subagents}, installed:{skills,subagents}}`.
+    /// Emitted by `/marketplace` from a GUI surface. Install + refresh
+    /// happen by injecting slash commands through the `shell_input` IPC,
+    /// so there's no dedicated install channel. CLI renderer ignores it
+    /// (the REPL `/marketplace` prints a combined text summary instead).
+    MarketplaceOpen(String),
     /// The session's on-disk JSONL has crossed the fork threshold.
     /// Frontend renders a dismissible banner with a "Fork into new
     /// session with summary" action. Fired once per session.
@@ -2962,6 +2983,17 @@ async fn run_worker(
                     "[instructions] system prompt rebuilt — new content applies on next turn"
                         .into(),
                 ));
+            }
+            ShellInput::AgentDefsChanged => {
+                // The agent editor saved `.thclaws/agents/<name>.md`.
+                // Reload the worker's def snapshot (cheap, no agent
+                // rebuild) so side-channel `/agent <name>` spawns see
+                // the new/edited def right away.
+                let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
+                let mut reloaded =
+                    crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+                reloaded.apply_builtin_subagent_overrides(&state.config);
+                state.agent_defs = reloaded;
             }
             ShellInput::ChangeCwd(new_cwd) => {
                 // No-op short-circuit: the StartupModal's "Start"

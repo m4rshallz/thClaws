@@ -486,6 +486,28 @@ pub enum SlashCommand {
     PluginSearch(String),
     /// `/plugin info <name>` — detail for a marketplace plugin entry.
     PluginInfo(String),
+    /// `/subagent marketplace [--refresh]` — list subagents (agent defs)
+    /// in the catalogue.
+    SubagentMarketplace {
+        refresh: bool,
+    },
+    /// `/subagent search <query>` — search subagent catalogue.
+    SubagentSearch(String),
+    /// `/subagent info <name>` — detail for a marketplace subagent entry.
+    SubagentInfo(String),
+    /// `/subagent install [--project] <url-or-name> [name]` — install a
+    /// single agent def `.md` into `~/.config/thclaws/agents/` (user) or
+    /// `.thclaws/agents/` (project).
+    SubagentInstall {
+        arg: String,
+        name: Option<String>,
+        project: bool,
+    },
+    /// `/marketplace [--refresh]` — open the unified GUI marketplace
+    /// browser (all four types). CLI prints a combined summary.
+    Marketplace {
+        refresh: bool,
+    },
     Permissions(String),
     /// `/plan` — toggle plan mode (M2). With no args, flips the
     /// session into plan mode (mutating tools blocked, sidebar opens
@@ -715,6 +737,15 @@ pub enum SlashCommand {
     /// side channel. The agent's `cancelled().await` wakes and the
     /// spawn task emits `SideChannelError { error: "cancelled" }`.
     AgentCancel(String),
+    /// `/agent new <name>` — GUI-only. Open the agent-editor modal
+    /// pre-filled with a starter template to author a new agent def
+    /// at `.thclaws/agents/<name>.md`.
+    AgentNew(String),
+    /// `/agent edit <name>` — GUI-only. Open the agent-editor modal
+    /// pre-filled with the named agent's current frontmatter + system
+    /// prompt (from disk, or reconstructed from a built-in). Saves a
+    /// project override at `.thclaws/agents/<name>.md`.
+    AgentEdit(String),
     /// `/dream [focus]` — dispatch the built-in `dream` agent as a
     /// side channel to consolidate the project's KMS by mining recent
     /// sessions. `focus` is optional free-text passed as the user
@@ -1716,6 +1747,11 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
                 ))
             }
         }
+        "subagent" => parse_subagent_subcommand(args),
+        "marketplace" | "market" => {
+            let refresh = args.split_whitespace().any(|p| p == "--refresh");
+            SlashCommand::Marketplace { refresh }
+        }
         "permissions" | "perms" => SlashCommand::Permissions(args.to_string()),
         "plan" => SlashCommand::Plan(args.trim().to_string()),
         "team" => SlashCommand::Team,
@@ -1863,9 +1899,75 @@ fn parse_deploy_subcommand(args: &str) -> SlashCommand {
     }
 }
 
-/// Parse `/agent <name> <prompt>` and `/agent cancel <id>`. Bare
-/// `/agent` returns Unknown with a usage hint. Empty name (only
-/// whitespace after the slash) → Unknown.
+/// Strip a leading standalone `word` (followed by whitespace, or the
+/// whole string) from `s`, returning the trimmed remainder. `None`
+/// when `s` doesn't start with that exact word — so `new` matches but
+/// `newsletter` doesn't.
+fn strip_word_prefix<'a>(s: &'a str, word: &str) -> Option<&'a str> {
+    let rest = s.strip_prefix(word)?;
+    if rest.is_empty() {
+        return Some("");
+    }
+    if rest.starts_with(char::is_whitespace) {
+        return Some(rest.trim());
+    }
+    None
+}
+
+/// Parse `/subagent marketplace|search|info|install` — the subagent
+/// (agent-def) corner of the marketplace. Mirrors the `/skill` parser.
+fn parse_subagent_subcommand(args: &str) -> SlashCommand {
+    let rest = args.trim();
+    if let Some(after_mp) = rest.strip_prefix("marketplace").map(str::trim_start) {
+        let refresh = after_mp.split_whitespace().any(|p| p == "--refresh");
+        SlashCommand::SubagentMarketplace { refresh }
+    } else if let Some(after_search) = rest.strip_prefix("search").map(str::trim_start) {
+        if after_search.is_empty() {
+            SlashCommand::Unknown("usage: /subagent search <query>".into())
+        } else {
+            SlashCommand::SubagentSearch(after_search.to_string())
+        }
+    } else if let Some(after_info) = rest.strip_prefix("info").map(str::trim_start) {
+        if after_info.is_empty() {
+            SlashCommand::Unknown("usage: /subagent info <name>".into())
+        } else {
+            SlashCommand::SubagentInfo(after_info.to_string())
+        }
+    } else if let Some(after_install) = rest.strip_prefix("install").map(str::trim_start) {
+        let mut project = true;
+        let mut parts: Vec<&str> = after_install.split_whitespace().collect();
+        if parts.first().copied() == Some("--user") {
+            project = false;
+            parts.remove(0);
+        } else if parts.first().copied() == Some("--project") {
+            parts.remove(0);
+        }
+        match parts.as_slice() {
+            [arg] => SlashCommand::SubagentInstall {
+                arg: arg.to_string(),
+                name: None,
+                project,
+            },
+            [arg, name] => SlashCommand::SubagentInstall {
+                arg: arg.to_string(),
+                name: Some(name.to_string()),
+                project,
+            },
+            _ => SlashCommand::Unknown(
+                "usage: /subagent install [--user] <name-or-git-url-or-.md> [name]".into(),
+            ),
+        }
+    } else {
+        SlashCommand::Unknown(format!(
+            "unknown subagent subcommand: '{rest}' (try: /subagent install, /subagent marketplace, /subagent search, /subagent info)"
+        ))
+    }
+}
+
+/// Parse `/agent <name> <prompt>`, `/agent cancel <id>`, and the
+/// GUI-only `/agent new <name>` / `/agent edit <name>`. Bare `/agent`
+/// returns Unknown with a usage hint. Empty name (only whitespace
+/// after the slash) → Unknown.
 fn parse_agent_subcommand(args: &str) -> SlashCommand {
     let args = args.trim();
     if args.is_empty() {
@@ -1883,6 +1985,21 @@ fn parse_agent_subcommand(args: &str) -> SlashCommand {
             );
         }
         return SlashCommand::AgentCancel(rest.to_string());
+    }
+    // `new <name>` / `edit <name>` — GUI-only editor subcommands.
+    // Matched before the generic `<name> <prompt>` path; require the
+    // keyword to be a standalone word (`new`, not `newsletter`).
+    if let Some(rest) = strip_word_prefix(args, "new") {
+        if rest.is_empty() {
+            return SlashCommand::Unknown("usage: /agent new <name>".into());
+        }
+        return SlashCommand::AgentNew(rest.to_string());
+    }
+    if let Some(rest) = strip_word_prefix(args, "edit") {
+        if rest.is_empty() {
+            return SlashCommand::Unknown("usage: /agent edit <name>".into());
+        }
+        return SlashCommand::AgentEdit(rest.to_string());
     }
     let (name, prompt) = match args.split_once(char::is_whitespace) {
         Some((n, p)) => (n.trim(), p.trim()),
@@ -8106,6 +8223,163 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         }
                     }
                 }
+                SlashCommand::SubagentMarketplace { refresh } => {
+                    if refresh {
+                        if let Err(e) = crate::marketplace::refresh_from_remote().await {
+                            println!("{COLOR_YELLOW}refresh failed ({e}){COLOR_RESET}");
+                        }
+                    }
+                    let mp = crate::marketplace::load();
+                    let age_suffix = match crate::marketplace::cache_age_label() {
+                        Some(label) => format!(", {label}"),
+                        None => String::new(),
+                    };
+                    println!(
+                        "{COLOR_DIM}marketplace ({}, {} subagent(s){age_suffix}){COLOR_RESET}",
+                        mp.source,
+                        mp.subagents.len(),
+                    );
+                    let mut by_cat: std::collections::BTreeMap<
+                        String,
+                        Vec<&crate::marketplace::MarketplaceSubagent>,
+                    > = std::collections::BTreeMap::new();
+                    for s in &mp.subagents {
+                        let cat = if s.category.is_empty() {
+                            "other".to_string()
+                        } else {
+                            s.category.clone()
+                        };
+                        by_cat.entry(cat).or_default().push(s);
+                    }
+                    for (cat, items) in by_cat {
+                        println!("{COLOR_DIM}── {cat} ──{COLOR_RESET}");
+                        for s in items {
+                            let tags = crate::marketplace::entry_tags(s);
+                            println!(
+                                "{COLOR_DIM}  {:<24}{tags} — {}{COLOR_RESET}",
+                                s.name,
+                                s.short_line()
+                            );
+                        }
+                    }
+                    println!(
+                        "{COLOR_DIM}install with: /subagent install <name>   |   detail: /subagent info <name>{COLOR_RESET}"
+                    );
+                }
+                SlashCommand::SubagentSearch(query) => {
+                    let mp = crate::marketplace::load();
+                    let hits = mp.search_subagent(&query);
+                    if hits.is_empty() {
+                        println!(
+                            "{COLOR_DIM}no matches for '{query}' — try /subagent marketplace to browse all{COLOR_RESET}"
+                        );
+                    } else {
+                        println!(
+                            "{COLOR_DIM}{} match(es) for '{query}':{COLOR_RESET}",
+                            hits.len()
+                        );
+                        for s in hits {
+                            println!(
+                                "{COLOR_DIM}  {:<24} — {}{COLOR_RESET}",
+                                s.name,
+                                s.short_line()
+                            );
+                        }
+                    }
+                }
+                SlashCommand::SubagentInfo(name) => {
+                    let mp = crate::marketplace::load();
+                    match mp.find_subagent(&name) {
+                        Some(s) => {
+                            println!("{COLOR_DIM}name:        {}{COLOR_RESET}", s.name);
+                            println!("{COLOR_DIM}description: {}{COLOR_RESET}", s.description);
+                            if !s.category.is_empty() {
+                                println!("{COLOR_DIM}category:    {}{COLOR_RESET}", s.category);
+                            }
+                            println!(
+                                "{COLOR_DIM}license:     {} ({}){COLOR_RESET}",
+                                s.license, s.license_tier
+                            );
+                            if !s.homepage.is_empty() {
+                                println!("{COLOR_DIM}homepage:    {}{COLOR_RESET}", s.homepage);
+                            }
+                            match (s.license_tier.as_str(), s.install_url.as_ref()) {
+                                ("linked-only", _) => {
+                                    println!(
+                                        "{COLOR_YELLOW}install:     not redistributable — install from {}{COLOR_RESET}",
+                                        if s.homepage.is_empty() {
+                                            "the upstream repo"
+                                        } else {
+                                            &s.homepage
+                                        }
+                                    );
+                                }
+                                (_, Some(url)) => {
+                                    println!(
+                                        "{COLOR_DIM}install:     /subagent install {} (resolves to {url}){COLOR_RESET}",
+                                        s.name
+                                    );
+                                }
+                                (_, None) => {
+                                    println!(
+                                        "{COLOR_YELLOW}install:     no install_url in catalogue{COLOR_RESET}"
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            println!(
+                                "{COLOR_YELLOW}no subagent named '{name}' in marketplace — try /subagent search <query>{COLOR_RESET}"
+                            );
+                        }
+                    }
+                }
+                SlashCommand::SubagentInstall { arg, name, project } => {
+                    let (effective_url, abort_msg) =
+                        crate::agent_defs::resolve_subagent_install_target(&arg);
+                    if let Some(msg) = abort_msg {
+                        println!("{COLOR_YELLOW}{msg}{COLOR_RESET}");
+                    } else {
+                        match crate::agent_defs::install_subagent_from_url(
+                            &effective_url,
+                            name.as_deref(),
+                            project,
+                        )
+                        .await
+                        {
+                            Ok(report) => {
+                                for line in report {
+                                    println!("{COLOR_DIM}  {line}{COLOR_RESET}");
+                                }
+                                println!(
+                                    "{COLOR_DIM}  available to Task(agent: \"…\") / /agent on the next session{COLOR_RESET}"
+                                );
+                            }
+                            Err(e) => {
+                                println!("{COLOR_YELLOW}subagent install failed: {e}{COLOR_RESET}");
+                            }
+                        }
+                    }
+                }
+                SlashCommand::Marketplace { refresh } => {
+                    if refresh {
+                        if let Err(e) = crate::marketplace::refresh_from_remote().await {
+                            println!("{COLOR_YELLOW}refresh failed ({e}){COLOR_RESET}");
+                        }
+                    }
+                    let mp = crate::marketplace::load();
+                    println!(
+                        "{COLOR_DIM}marketplace ({}): {} skill(s), {} mcp server(s), {} plugin(s), {} subagent(s){COLOR_RESET}",
+                        mp.source,
+                        mp.skills.len(),
+                        mp.mcp_servers.len(),
+                        mp.plugins.len(),
+                        mp.subagents.len(),
+                    );
+                    println!(
+                        "{COLOR_DIM}browse a type: /skill · /mcp · /plugin · /subagent  marketplace  (GUI: /marketplace opens the browser){COLOR_RESET}"
+                    );
+                }
                 SlashCommand::McpMarketplace { refresh } => {
                     if refresh {
                         if let Err(e) = crate::marketplace::refresh_from_remote().await {
@@ -9726,6 +10000,17 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             "{COLOR_YELLOW}/agent cancel not available in thclaws-cli.{COLOR_RESET}"
                         );
                     }
+                }
+                SlashCommand::AgentNew(name) | SlashCommand::AgentEdit(name) => {
+                    // GUI-only: the editor is a modal with no terminal
+                    // surface. Point CLI users at the file they can edit
+                    // by hand instead.
+                    let _ = name;
+                    println!(
+                        "{COLOR_YELLOW}/agent new and /agent edit are only available in GUI mode \
+                         (thclaws or thclaws --serve). In the terminal, edit \
+                         .thclaws/agents/<name>.md directly.{COLOR_RESET}"
+                    );
                 }
                 SlashCommand::Dream { focus, all_sessions } => {
                     let _ = (focus, all_sessions);
@@ -12462,6 +12747,72 @@ mod tests {
             }
             other => panic!("expected Unknown, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_slash_agent_new_and_edit() {
+        assert_eq!(
+            parse_slash("/agent new reviewer"),
+            Some(SlashCommand::AgentNew("reviewer".into())),
+        );
+        assert_eq!(
+            parse_slash("/agent edit translator"),
+            Some(SlashCommand::AgentEdit("translator".into())),
+        );
+        // Bare keyword → usage hint.
+        match parse_slash("/agent new") {
+            Some(SlashCommand::Unknown(msg)) => assert!(msg.contains("usage: /agent new")),
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+        // `new`/`edit` must be standalone words — `newsletter` is an
+        // agent name with a prompt, not the new-agent subcommand.
+        assert_eq!(
+            parse_slash("/agent newsletter write today's digest"),
+            Some(SlashCommand::Agent {
+                name: "newsletter".into(),
+                prompt: "write today's digest".into(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_slash_subagent_and_marketplace() {
+        assert_eq!(
+            parse_slash("/subagent marketplace"),
+            Some(SlashCommand::SubagentMarketplace { refresh: false }),
+        );
+        assert_eq!(
+            parse_slash("/subagent marketplace --refresh"),
+            Some(SlashCommand::SubagentMarketplace { refresh: true }),
+        );
+        assert_eq!(
+            parse_slash("/subagent search review"),
+            Some(SlashCommand::SubagentSearch("review".into())),
+        );
+        assert_eq!(
+            parse_slash("/subagent install reviewer"),
+            Some(SlashCommand::SubagentInstall {
+                arg: "reviewer".into(),
+                name: None,
+                project: true,
+            }),
+        );
+        assert_eq!(
+            parse_slash("/subagent install --user reviewer myrev"),
+            Some(SlashCommand::SubagentInstall {
+                arg: "reviewer".into(),
+                name: Some("myrev".into()),
+                project: false,
+            }),
+        );
+        assert_eq!(
+            parse_slash("/marketplace"),
+            Some(SlashCommand::Marketplace { refresh: false }),
+        );
+        assert_eq!(
+            parse_slash("/marketplace --refresh"),
+            Some(SlashCommand::Marketplace { refresh: true }),
+        );
     }
 
     #[test]

@@ -17,7 +17,9 @@ pub mod storage;
 pub mod tokens;
 
 pub use manifest::ShellManifest;
-pub use registry::{EmbeddedShell, ShellRef, ShellRegistry, ShellSource};
+pub use registry::{
+    project_shell_dir, user_shell_dir, EmbeddedShell, ShellRef, ShellRegistry, ShellSource,
+};
 pub use router::resolve_default_shell;
 pub use tokens::ShellToken;
 

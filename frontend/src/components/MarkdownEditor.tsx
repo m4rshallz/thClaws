@@ -1,5 +1,6 @@
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, Node } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import Image from "@tiptap/extension-image";
 import { marked } from "marked";
 import TurndownService from "turndown";
 import { useEffect, useRef } from "react";
@@ -16,11 +17,68 @@ interface Props {
 // forces `marked.parse` to return a string synchronously so TipTap
 // never sees `[object Promise]`.
 marked.setOptions({ gfm: true, breaks: false, async: false });
+
+// ── Preserve raw HTML comments through the round-trip ────────────────
+// ProseMirror's DOM parser silently DROPS comment nodes (`<!-- … -->`),
+// so wrapper markers like `<!-- img:foo -->` were lost on every save. We
+// pre-transform each comment into a `<div data-html-comment>` placeholder
+// that survives DOM parsing, hold it as an atom node (shown as a muted
+// chip via CSS), and turn it back into a real comment on serialize.
+const HtmlComment = Node.create({
+  name: "htmlComment",
+  group: "block",
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      text: {
+        default: "",
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-html-comment") || "",
+        renderHTML: (attrs: Record<string, unknown>) => ({
+          "data-html-comment": String(attrs.text ?? ""),
+        }),
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: "div[data-html-comment]" }];
+  },
+  renderHTML({ HTMLAttributes }: { HTMLAttributes: Record<string, unknown> }) {
+    return ["div", { ...HTMLAttributes, class: "md-html-comment" }];
+  },
+});
+
+function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Turn marked's emitted `<!-- … -->` into placeholder divs. Comments
+// inside code blocks are already entity-escaped by marked (`&lt;!--`),
+// so this only matches real, block-level comments.
+function commentsToPlaceholders(html: string): string {
+  return html.replace(
+    /<!--([\s\S]*?)-->/g,
+    (_m, inner: string) => `<div data-html-comment="${escapeAttr(inner)}"></div>`,
+  );
+}
+
 const turndownService = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
   codeBlockStyle: "fenced",
   emDelimiter: "_",
+});
+// Placeholder div → real HTML comment. (Images use turndown's built-in
+// rule → `![alt](src)`.)
+turndownService.addRule("htmlComment", {
+  filter: (node) =>
+    node.nodeName === "DIV" && node.getAttribute("data-html-comment") !== null,
+  replacement: (_content, node) =>
+    "<!--" + ((node as HTMLElement).getAttribute("data-html-comment") || "") + "-->",
 });
 
 export function MarkdownEditor({ source, onChange }: Props) {
@@ -29,7 +87,11 @@ export function MarkdownEditor({ source, onChange }: Props) {
   const lastEmittedRef = useRef<string | null>(null);
 
   const editor = useEditor({
-    extensions: [StarterKit.configure({})],
+    extensions: [
+      StarterKit.configure({}),
+      Image.configure({ inline: false, allowBase64: true }),
+      HtmlComment,
+    ],
     content: "",
     onUpdate: ({ editor }) => {
       const html = editor.getHTML();
@@ -55,7 +117,7 @@ export function MarkdownEditor({ source, onChange }: Props) {
     if (!editor) return;
     if (lastEmittedRef.current === source) return;
     const parsed = marked.parse(source);
-    const html = typeof parsed === "string" ? parsed : "";
+    const html = commentsToPlaceholders(typeof parsed === "string" ? parsed : "");
     queueMicrotask(() => {
       editor.commands.setContent(html, {
         emitUpdate: false,
@@ -111,6 +173,18 @@ export function MarkdownEditor({ source, onChange }: Props) {
         .tiptap-compact strong { font-weight: 600; }
         .tiptap-compact em { font-style: italic; }
         .tiptap-compact hr { border: none; border-top: 1px solid var(--border); margin: 0.8em 0; }
+        .tiptap-compact img { max-width: 100%; height: auto; border-radius: 4px; margin: 0.4em 0; }
+        .tiptap-compact .md-html-comment {
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 11px;
+          color: var(--text-secondary);
+          opacity: 0.65;
+          margin: 0.25em 0;
+          white-space: pre-wrap;
+          user-select: none;
+        }
+        .tiptap-compact .md-html-comment::before { content: "<!--" attr(data-html-comment) "-->"; }
+        .tiptap-compact .md-html-comment.ProseMirror-selectednode { outline: 2px solid var(--accent, #61afef); border-radius: 3px; opacity: 1; }
       `}</style>
       <EditorContent editor={editor} className="h-full" />
     </div>

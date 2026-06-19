@@ -33,6 +33,74 @@ fn default_bridge_version() -> String {
     "1".to_string()
 }
 
+/// Permission strings the authoring tools accept. `tools.invoke:<t>` and
+/// `network.outbound:<host>` are prefix forms (any suffix allowed).
+const ALLOWED_PERMISSION_PREFIXES: &[&str] = &[
+    "agent.run",
+    "session.read",
+    "session.list",
+    "fs.shell-scoped",
+    "tools.invoke:",
+    "network.outbound:",
+];
+
+impl ShellManifest {
+    /// Validate a manifest built from tool input before it's written to
+    /// disk. Returns a human-readable error on the first problem so the
+    /// model can fix and retry, rather than producing a shell that fails
+    /// silently at load time.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if !is_kebab_id(&self.id) {
+            return Err(format!(
+                "invalid id '{}': must be lowercase kebab-case (a-z, 0-9, '-'), no slashes",
+                self.id
+            ));
+        }
+        for (field, val) in [
+            ("name", &self.name),
+            ("version", &self.version),
+            ("entry", &self.entry),
+        ] {
+            if val.trim().is_empty() {
+                return Err(format!("'{field}' must not be empty"));
+            }
+        }
+        if self.entry.contains('/') || self.entry.contains("..") {
+            return Err(format!(
+                "entry '{}' must be a bare filename inside the shell folder",
+                self.entry
+            ));
+        }
+        for p in &self.permissions {
+            let ok = ALLOWED_PERMISSION_PREFIXES.iter().any(|prefix| {
+                if prefix.ends_with(':') {
+                    p.starts_with(prefix) && p.len() > prefix.len()
+                } else {
+                    p == prefix
+                }
+            });
+            if !ok {
+                return Err(format!(
+                    "unknown permission '{p}'. Allowed: agent.run, session.read, session.list, \
+                     fs.shell-scoped, tools.invoke:<tool>, network.outbound:<host>"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Lowercase kebab id: non-empty, no leading/trailing dash, only
+/// `[a-z0-9-]`. Keeps ids safe as a single path segment.
+fn is_kebab_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('-')
+        && !id.ends_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -334,6 +334,325 @@ impl AgentDefsConfig {
             .map(|a| (a.name.clone(), a.clone()))
             .collect()
     }
+
+    /// Locate the on-disk `.md` file that backs `name`, if any. Walks
+    /// the same standard dirs as [`agent_dirs`] and returns the
+    /// highest-priority existing file (project wins over user, same
+    /// order load uses). Returns `None` for names that only exist as a
+    /// compiled-in built-in (e.g. `translator`) — those have no source
+    /// file on disk until the user saves a project override.
+    pub fn find_on_disk(name: &str) -> Option<PathBuf> {
+        let mut found = None;
+        for dir in Self::agent_dirs() {
+            let candidate = dir.join(format!("{name}.md"));
+            if candidate.is_file() {
+                found = Some(candidate); // later dirs (higher priority) overwrite
+            }
+        }
+        found
+    }
+
+    /// Path a project-scoped agent def is saved to: `.thclaws/agents/<name>.md`
+    /// relative to the current working directory. This is the single
+    /// write target for the GUI editor — edits to a user-scoped or
+    /// built-in agent land here as a project override.
+    pub fn project_agent_path(name: &str) -> PathBuf {
+        PathBuf::from(".thclaws/agents").join(format!("{name}.md"))
+    }
+}
+
+/// Validate an agent name for use as a `.md` filename. Accepts
+/// non-empty strings of ASCII alphanumerics plus `-` / `_` — enough
+/// for real agent names while rejecting path separators, `..`, and
+/// other traversal vectors. Returns the trimmed name on success.
+pub fn sanitize_agent_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return None;
+    }
+    if name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
+impl AgentDef {
+    /// Render this def back to a markdown file body (YAML frontmatter +
+    /// instructions). Used as the starting point when the GUI editor
+    /// opens a built-in (or otherwise file-less) agent — the user edits
+    /// the reconstruction and saves it as a project override. Only
+    /// non-empty / non-default fields are emitted to keep the file
+    /// readable.
+    pub fn to_markdown(&self) -> String {
+        let mut fm = String::from("---\n");
+        fm.push_str(&format!("name: {}\n", self.name));
+        if !self.description.is_empty() {
+            fm.push_str(&format!("description: {}\n", self.description));
+        }
+        if let Some(m) = &self.model {
+            fm.push_str(&format!("model: {m}\n"));
+        }
+        if !self.tools.is_empty() {
+            fm.push_str(&format!("tools: {}\n", self.tools.join(", ")));
+        }
+        if !self.disallowed_tools.is_empty() {
+            fm.push_str(&format!(
+                "disallowedTools: {}\n",
+                self.disallowed_tools.join(", ")
+            ));
+        }
+        if let Some(p) = &self.permission_mode {
+            fm.push_str(&format!("permissionMode: {p}\n"));
+        }
+        if self.max_iterations != default_max_iterations() {
+            fm.push_str(&format!("maxTurns: {}\n", self.max_iterations));
+        }
+        if let Some(c) = &self.color {
+            fm.push_str(&format!("color: {c}\n"));
+        }
+        if let Some(i) = &self.isolation {
+            fm.push_str(&format!("isolation: {i}\n"));
+        }
+        fm.push_str("---\n\n");
+        fm.push_str(&self.instructions);
+        if !self.instructions.ends_with('\n') {
+            fm.push('\n');
+        }
+        fm
+    }
+}
+
+// ── Marketplace install (single-.md subagent) ───────────────────────
+
+/// Install target dir for agent defs: project `.thclaws/agents` or
+/// user `~/.config/thclaws/agents` (default).
+fn agents_target_root(project_scope: bool) -> crate::Result<PathBuf> {
+    if project_scope {
+        Ok(std::env::current_dir()
+            .map_err(|e| crate::Error::Tool(format!("cwd: {e}")))?
+            .join(".thclaws/agents"))
+    } else {
+        crate::util::home_dir()
+            .ok_or_else(|| crate::Error::Tool("cannot locate user home directory".into()))
+            .map(|h| h.join(".config/thclaws/agents"))
+    }
+}
+
+/// Resolve a `/subagent install` argument: a bare marketplace name →
+/// its `install_url` (rejecting `linked-only`), or a URL/path passed
+/// through unchanged. Returns `(install_url, abort_message)`; a
+/// non-`None` message means stop and show it to the user. Mirrors
+/// `repl::resolve_skill_install_target`.
+pub fn resolve_subagent_install_target(arg: &str) -> (String, Option<String>) {
+    let arg = arg.trim();
+    let looks_like_url = arg.contains("://")
+        || arg.starts_with("git@")
+        || arg.starts_with('/')
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.ends_with(".zip")
+        || arg.ends_with(".md");
+    if looks_like_url {
+        return (arg.to_string(), None);
+    }
+    let mp = crate::marketplace::load();
+    match mp.find_subagent(arg) {
+        Some(entry) => match &entry.install_url {
+            Some(url) if !url.is_empty() => (url.clone(), None),
+            _ => (
+                String::new(),
+                Some(format!(
+                    "'{arg}' is linked-only — install from upstream: {}",
+                    if entry.homepage.is_empty() {
+                        "(no homepage)"
+                    } else {
+                        &entry.homepage
+                    }
+                )),
+            ),
+        },
+        None => (
+            String::new(),
+            Some(format!(
+                "no subagent named '{arg}' in marketplace and not a URL — try /subagent search <query> or pass a git URL"
+            )),
+        ),
+    }
+}
+
+fn is_md(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md"))
+        .unwrap_or(false)
+}
+
+/// Pick the single agent `.md` in `dir`, ignoring common repo docs
+/// (README/LICENSE/…). Errors when zero or many candidates remain.
+fn single_md_in_dir(dir: &Path) -> crate::Result<PathBuf> {
+    let mut mds: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| crate::Error::Tool(format!("read {}: {e}", dir.display())))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && is_md(p))
+        .collect();
+    mds.retain(|p| {
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        !matches!(
+            stem.as_str(),
+            "readme" | "license" | "changelog" | "contributing"
+        )
+    });
+    match mds.len() {
+        1 => Ok(mds.pop().unwrap()),
+        0 => Err(crate::Error::Tool(
+            "no agent `.md` found in the source — point the install URL at the file \
+             (e.g. …#main:agents/<name>.md)"
+                .into(),
+        )),
+        _ => Err(crate::Error::Tool(format!(
+            "multiple .md files found ({}) — specify the file via #<branch>:<path/to/agent.md>",
+            mds.len()
+        ))),
+    }
+}
+
+/// Resolve the agent `.md` inside a staged checkout/extract. With a
+/// `subpath`, resolve it (a `.md` file, or a dir holding one). Without
+/// one, accept a single `.md` at the root.
+fn locate_agent_md(root: &Path, subpath: Option<&str>) -> crate::Result<PathBuf> {
+    if let Some(sub) = subpath {
+        let cand = root.join(sub);
+        if cand.is_file() && is_md(&cand) {
+            return Ok(cand);
+        }
+        if cand.is_dir() {
+            return single_md_in_dir(&cand);
+        }
+        return Err(crate::Error::Tool(format!(
+            "subpath '{sub}' not found (or not a .md / dir) in the source"
+        )));
+    }
+    single_md_in_dir(root)
+}
+
+/// Install a single agent-def `.md` from a git URL or `.zip`. Mirrors
+/// [`crate::skills::install_from_url`] but lands one file in the agents
+/// dir (project or user scope). Reuses the skills zip/git helpers.
+/// Returns human-readable report lines.
+pub async fn install_subagent_from_url(
+    url: &str,
+    override_name: Option<&str>,
+    project_scope: bool,
+) -> crate::Result<Vec<String>> {
+    if let crate::policy::AllowDecision::Denied { reason } = crate::policy::check_url(url) {
+        return Err(crate::Error::Tool(format!(
+            "subagent install blocked by org policy: {reason}"
+        )));
+    }
+    let target_root = agents_target_root(project_scope)?;
+    std::fs::create_dir_all(&target_root)
+        .map_err(|e| crate::Error::Tool(format!("mkdir {}: {e}", target_root.display())))?;
+
+    // Stage under the target root, then copy just the resolved `.md`.
+    let stage = target_root.join(format!(
+        ".thclaws-install-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let (md_src, source_label) = if crate::skills::is_zip_url(url) {
+        let bytes = crate::skills::download_zip(url).await?;
+        if let Err(e) = std::fs::create_dir_all(&stage)
+            .map_err(|e| crate::Error::Tool(format!("mkdir stage: {e}")))
+        {
+            return Err(e);
+        }
+        if let Err(e) = crate::skills::extract_zip(&bytes, &stage) {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(e);
+        }
+        let root = crate::skills::single_wrapper_subdir(&stage).unwrap_or_else(|| stage.clone());
+        (locate_agent_md(&root, None), url.to_string())
+    } else {
+        let (base_url, branch, subpath) = crate::skills::parse_git_subpath(url);
+        let mut args: Vec<String> = vec!["clone".into(), "--depth".into(), "1".into()];
+        if let Some(b) = &branch {
+            args.push("--branch".into());
+            args.push(b.clone());
+        }
+        args.push(base_url.clone());
+        args.push(stage.to_string_lossy().into_owned());
+        let out = std::process::Command::new("git")
+            .args(&args)
+            .output()
+            .map_err(|e| crate::Error::Tool(format!("spawn git: {e}")))?;
+        if !out.status.success() {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(crate::Error::Tool(format!(
+                "git clone failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        (locate_agent_md(&stage, subpath.as_deref()), base_url)
+    };
+
+    let md_src = match md_src {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(e);
+        }
+    };
+
+    // Name precedence: override > frontmatter `name:` > file stem.
+    let raw = match std::fs::read_to_string(&md_src) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(crate::Error::Tool(format!(
+                "read {}: {e}",
+                md_src.display()
+            )));
+        }
+    };
+    let (fm, _body) = crate::memory::parse_frontmatter(&raw);
+    let derived = override_name
+        .map(str::to_string)
+        .or_else(|| fm.get("name").cloned())
+        .or_else(|| md_src.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let Some(name) = sanitize_agent_name(&derived) else {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(crate::Error::Tool(format!(
+            "could not derive a valid agent name from '{source_label}' — pass one explicitly: \
+             /subagent install {url} <name>"
+        )));
+    };
+
+    let dest = target_root.join(format!("{name}.md"));
+    if dest.exists() {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(crate::Error::Tool(format!(
+            "'{}' already exists — remove it first or pick a different name",
+            dest.display()
+        )));
+    }
+    if let Err(e) = std::fs::copy(&md_src, &dest) {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(crate::Error::Tool(format!("copy into place: {e}")));
+    }
+    let _ = std::fs::remove_dir_all(&stage);
+    Ok(vec![
+        format!("fetched {source_label} → {}", dest.display()),
+        format!("installed subagent '{name}'"),
+    ])
 }
 
 #[cfg(test)]
@@ -651,5 +970,113 @@ new instructions
             config.get("coder").unwrap().instructions,
             "new instructions"
         );
+    }
+
+    #[test]
+    fn sanitize_agent_name_rejects_traversal() {
+        assert_eq!(
+            sanitize_agent_name("researcher").as_deref(),
+            Some("researcher")
+        );
+        assert_eq!(
+            sanitize_agent_name("  kms-linker ").as_deref(),
+            Some("kms-linker")
+        );
+        assert_eq!(sanitize_agent_name("a_b-c1").as_deref(), Some("a_b-c1"));
+        assert!(sanitize_agent_name("").is_none());
+        assert!(sanitize_agent_name("   ").is_none());
+        assert!(sanitize_agent_name("../etc/passwd").is_none());
+        assert!(sanitize_agent_name("a/b").is_none());
+        assert!(sanitize_agent_name("a.md").is_none());
+    }
+
+    #[test]
+    fn to_markdown_roundtrips_through_parser() {
+        let def = AgentDef {
+            name: "reviewer".into(),
+            description: "Read-only review".into(),
+            instructions: "You are a reviewer.\nFlag issues.".into(),
+            model: Some("claude-haiku-4-5".into()),
+            max_iterations: 20,
+            tools: vec!["Read".into(), "Glob".into(), "Grep".into()],
+            disallowed_tools: vec!["Bash".into()],
+            color: Some("cyan".into()),
+            isolation: None,
+            permission_mode: Some("auto".into()),
+        };
+        let md = def.to_markdown();
+        let parsed = AgentDefsConfig::parse_agent_md_str(&md, "fallback").unwrap();
+        assert_eq!(parsed.name, "reviewer");
+        assert_eq!(parsed.description, "Read-only review");
+        assert_eq!(parsed.model.as_deref(), Some("claude-haiku-4-5"));
+        assert_eq!(parsed.tools, vec!["Read", "Glob", "Grep"]);
+        assert_eq!(parsed.disallowed_tools, vec!["Bash"]);
+        assert_eq!(parsed.max_iterations, 20);
+        assert_eq!(parsed.color.as_deref(), Some("cyan"));
+        assert_eq!(parsed.permission_mode.as_deref(), Some("auto"));
+        assert!(parsed.instructions.contains("Flag issues."));
+    }
+
+    #[test]
+    fn to_markdown_omits_default_max_iterations() {
+        let def = AgentDef {
+            name: "x".into(),
+            instructions: "body".into(),
+            ..Default::default()
+        };
+        let md = def.to_markdown();
+        assert!(
+            !md.contains("maxTurns"),
+            "default maxTurns should be omitted: {md}"
+        );
+    }
+
+    #[test]
+    fn project_agent_path_is_under_thclaws() {
+        let p = AgentDefsConfig::project_agent_path("reviewer");
+        assert_eq!(p, PathBuf::from(".thclaws/agents/reviewer.md"));
+    }
+
+    #[test]
+    fn resolve_subagent_target_passes_through_urls() {
+        // URL-ish args short-circuit (no marketplace lookup).
+        for arg in [
+            "https://x.com/r.git#main:agents/reviewer.md",
+            "git@github.com:o/r.git",
+            "./local/reviewer.md",
+            "https://x.com/pack.zip",
+        ] {
+            let (url, abort) = resolve_subagent_install_target(arg);
+            assert!(abort.is_none(), "{arg} should pass through");
+            assert_eq!(url, arg);
+        }
+    }
+
+    #[test]
+    fn locate_agent_md_picks_single_md_ignoring_readme() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("README.md"), "# repo").unwrap();
+        std::fs::write(
+            dir.path().join("reviewer.md"),
+            "---\nname: reviewer\n---\nbody",
+        )
+        .unwrap();
+        let got = locate_agent_md(dir.path(), None).unwrap();
+        assert_eq!(got.file_name().unwrap(), "reviewer.md");
+    }
+
+    #[test]
+    fn locate_agent_md_subpath_file_and_errors() {
+        let dir = tempdir().unwrap();
+        let agents = dir.path().join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("reviewer.md"), "x").unwrap();
+        // Subpath pointing straight at the file resolves.
+        let got = locate_agent_md(dir.path(), Some("agents/reviewer.md")).unwrap();
+        assert_eq!(got.file_name().unwrap(), "reviewer.md");
+        // Missing subpath errors.
+        assert!(locate_agent_md(dir.path(), Some("nope/x.md")).is_err());
+        // Bare root with no .md errors.
+        assert!(single_md_in_dir(dir.path()).is_err());
     }
 }

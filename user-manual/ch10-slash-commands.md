@@ -59,6 +59,7 @@ tried first.
 
 | Command | What it does |
 |---|---|
+| `/marketplace [--refresh]` | Open the unified marketplace browser (GUI modal: skills · MCP · plugins · subagents). CLI prints a combined summary |
 | `/skills` | List loaded skills |
 | `/skill show NAME` | Full description + path for a skill |
 | `/skill marketplace [--refresh]` | Browse the catalog at thclaws.ai/api/marketplace.json |
@@ -72,6 +73,10 @@ tried first.
 | `/plugin marketplace [--refresh]` | Browse the plugin catalog |
 | `/plugin search QUERY` | Substring-search the plugin marketplace |
 | `/plugin info NAME` | Marketplace detail for one plugin (use `/plugin show NAME` for installed) |
+| `/subagent marketplace [--refresh]` | Browse subagents (agent defs) in the catalog |
+| `/subagent search QUERY` | Substring-search the subagent marketplace |
+| `/subagent info NAME` | Marketplace detail for one subagent |
+| `/subagent install [--user] <name-or-url> [name]` | Install a subagent `.md` — bare slug → marketplace lookup, otherwise git or `.zip` URL |
 | `/<skill-name> [args]` | Invoke an installed skill directly |
 | `/<command-name> [args]` | Invoke a legacy prompt command (template) |
 | `/plugins` | List installed plugins (enabled + disabled) |
@@ -125,6 +130,8 @@ See [Chapter 20](ch20-research.md) for the full pipeline + KMS layout + flag ref
 | `/agent NAME PROMPT` | Spawn a user-driven side-channel subagent (GUI-only, runs concurrently with main) |
 | `/agents` | List active background side-channel agents (id, name, elapsed) |
 | `/agent cancel ID` | Cancel a running side-channel agent |
+| `/agent new NAME` | Open the GUI editor to author a new agent def (`.thclaws/agents/NAME.md`) — GUI-only |
+| `/agent edit NAME` | Open the GUI editor for an existing/built-in agent def — GUI-only |
 | `/dream [FOCUS]` | Dispatch the built-in dream agent to consolidate KMS (GUI-only) — see [Chapter 9](ch09-knowledge-bases-kms.md) |
 | `/team` | Attach to the team tmux session (or show team status) |
 | `/doctor` | Run diagnostic checks |

@@ -59,5 +59,27 @@
       "install_url": "https://github.com/thClaws/marketplace.git#main:plugins/productivity",
       "homepage": "https://github.com/thClaws/marketplace/tree/main/plugins/productivity"
     }
+  ],
+  "subagents": [
+    {
+      "name": "trip-planner",
+      "short_description": "Day-by-day trip itinerary, food, and budget tips",
+      "description": "Plans a trip end-to-end from a destination, dates/length, and budget level: a concrete day-by-day itinerary (morning/afternoon/evening with named places + rainy-day backups), where to eat with price bands, budget tips, and watch-outs. Uses WebSearch to sanity-check hours and prices when available. Spawn via Task(agent: \"trip-planner\") or /agent trip-planner.",
+      "category": "lifestyle",
+      "license": "Apache-2.0",
+      "license_tier": "open",
+      "install_url": "https://github.com/thClaws/marketplace.git#main:agents/trip-planner.md",
+      "homepage": "https://github.com/thClaws/marketplace/tree/main/agents/trip-planner.md"
+    },
+    {
+      "name": "meal-planner",
+      "short_description": "A week of meals + grocery list from your diet & budget",
+      "description": "Builds a 7-day meal plan and an aisle-grouped grocery list from your household size, dietary needs, budget, and cook-time. Reads a pantry/fridge list if you point it at one and plans to use up what you already have first to cut waste. Spawn via Task(agent: \"meal-planner\") or /agent meal-planner.",
+      "category": "lifestyle",
+      "license": "Apache-2.0",
+      "license_tier": "open",
+      "install_url": "https://github.com/thClaws/marketplace.git#main:agents/meal-planner.md",
+      "homepage": "https://github.com/thClaws/marketplace/tree/main/agents/meal-planner.md"
+    }
   ]
 }
