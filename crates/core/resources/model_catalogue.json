@@ -5267,8 +5267,8 @@
           "verified_at": "2026-06-10",
           "free": false,
           "chat": true,
-          "input_per_mtok": -1000000.0,
-          "output_per_mtok": -1000000.0
+          "tier_billed": true,
+          "comment": "Variable-priced router — actual cost depends on the model Fusion routes to; tier_billed so cost reports as unknown rather than a sentinel."
         },
         "openrouter/fusion+": {
           "context": 128000,
@@ -5276,8 +5276,8 @@
           "verified_at": "2026-06-14",
           "free": false,
           "chat": true,
-          "input_per_mtok": -1000000.0,
-          "output_per_mtok": -1000000.0
+          "tier_billed": true,
+          "comment": "Variable-priced router — tier_billed (see openrouter/fusion)."
         },
         "openrouter/owl-alpha": {
           "context": 1048756,

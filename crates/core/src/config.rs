@@ -1487,6 +1487,16 @@ fn mcp_config_path(user: bool) -> Result<PathBuf> {
     }
 }
 
+/// Whether the gateway-routed provider set should be force-refreshed to the
+/// engine's current `GATEWAY_ALL_PROVIDERS`. True inside a gateway pod, and on
+/// desktop once the user has opted into the gateway (a non-empty
+/// `gatewayUseFor`) — so the routed set tracks newly-shipped gateway providers
+/// instead of a stale enable-time snapshot. An empty list (never opted in)
+/// stays empty: pure BYOK.
+fn should_sync_gateway_use_for(in_gateway_pod: bool, current_use_for: &[String]) -> bool {
+    in_gateway_pod || !current_use_for.is_empty()
+}
+
 impl AppConfig {
     /// Load config following the documented precedence.
     /// Load order: env override → user settings.json → Claude Code fallback →
@@ -1635,7 +1645,15 @@ impl AppConfig {
         // pods too.
         let in_gateway_pod = crate::workdir::is_multiuser()
             || std::env::var("THCLAWS_USES_GATEWAY").ok().as_deref() == Some("1");
-        if in_gateway_pod {
+        // Desktop too: once the user has opted into the gateway (a non-empty
+        // `gatewayUseFor`, written by the GUI gateway panel), keep the routed
+        // set in sync with the engine's CURRENT `GATEWAY_ALL_PROVIDERS` rather
+        // than the snapshot saved at enable-time. Otherwise a gateway provider
+        // that shipped AFTER the user enabled the gateway (zai/xai/moonshot/…)
+        // is absent from their stale list and wrongly falls back to BYOK
+        // ("set ZAI_API_KEY") even though the gateway supports it. An EMPTY
+        // list means the user never opted in — leave it empty (pure BYOK).
+        if should_sync_gateway_use_for(in_gateway_pod, &config.gateway_use_for) {
             config.gateway_use_for = crate::shared::GATEWAY_ALL_PROVIDERS
                 .iter()
                 .map(|s| s.to_string())
@@ -1991,6 +2009,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_use_for_sync_decision() {
+        // Gateway pod → always sync (no BYOK there).
+        assert!(should_sync_gateway_use_for(true, &[]));
+        // Desktop, opted into the gateway (non-empty, possibly stale) → sync
+        // to the current full list so new providers route, not BYOK-fall-back.
+        assert!(should_sync_gateway_use_for(
+            false,
+            &["openai".to_string(), "anthropic".to_string()]
+        ));
+        // Desktop, never opted in (empty) → leave empty: pure BYOK.
+        assert!(!should_sync_gateway_use_for(false, &[]));
+    }
     use tempfile::tempdir;
 
     // Env-mutating tests in this module use `crate::kms::test_env_lock`

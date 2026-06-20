@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-06-20
+
+### Fixed
+- **Gateway-proxied providers no longer show "No API Key".** When you route a provider through the LLM gateway (per-provider proxy toggle + CLI token) without entering your own key, the sidebar used to keep showing "no API key" even though calls worked — and the provider could be silently swapped to a local model. The readiness check now recognises a live gateway route, so a proxied provider reads as ready.
+- **MiniMax appears in the API-key settings.** MiniMax had full provider support but was missing from the API-key modal, so there was no way to enter `MINIMAX_API_KEY` from the UI. It now shows up alongside the other providers.
+- **Gateway providers no longer go stale on desktop.** Once you've enabled the gateway, newly-shipped gateway-routable providers (e.g. z.ai, xAI, Moonshot, MiniMax) now route through it automatically instead of falling back to bring-your-own-key ("set ZAI_API_KEY"). Previously the desktop kept the snapshot of routable providers saved when you first enabled the gateway; only cloud workspaces refreshed it. (BYOK-only setups — where you never enabled the gateway — are unaffected.)
+- **Cleaner system prompt when Agent Teams are off.** With `teamEnabled` unset there's now no mention of teams anywhere in the prompt: the base prompt no longer says "coordinating teammates…" (it keeps the unattended/headless awareness), and the Collaboration-primitives section drops the "Agent Teams — disabled (`teamEnabled: false`)" notice, listing only the two primitives that *are* available (Subagent + WorkflowRun). Naming a disabled feature (and the config flag) was inviting models to reason about it and conflate it with the always-available `Task` subagent tool (one model concluded "there's no Task tool because teamEnabled is false", which is nonsense — the `Task` subagent is unrelated to Agent Teams).
+- **`/goal continue` loops can no longer run away.** An auto-continuing goal now has a hard backstop: past an absolute iteration cap (100 firings) or a 1.5× overrun of the token/time budget, the goal is auto-blocked and the loop stops — regardless of whether the model marks it terminal. Previously the only automatic stop was the model itself calling `MarkGoalComplete`/`MarkGoalBlocked` (the budget was a soft prompt nudge), so an unattended loop could burn unbounded cost.
+
+### Added
+- **Parallel tool calls run concurrently.** When the model emits two or more independent, read-only tool calls in one turn — several `Read`/`Grep`/`Glob`/`Ls`, or a fan-out of `Task` subagents — they now run **concurrently** instead of one-at-a-time. Wall-clock drops from the sum of their durations to the slowest single one (a big win for parallel research/audit subagents). Mutating tools (`Write`/`Edit`/`Bash`) still run strictly in order.
+
 ## [0.69.0] - 2026-06-20
 
 ### Added

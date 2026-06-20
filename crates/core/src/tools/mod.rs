@@ -108,6 +108,17 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Whether this tool is safe to run **concurrently** with other
+    /// parallelizable calls in the same turn — read-only, no approval, no
+    /// shared-state mutation. When a turn emits ≥2 tool calls that are ALL
+    /// parallelizable, the agent loop dispatches them in one concurrent
+    /// batch instead of awaiting them one-by-one (a big win for fan-out:
+    /// parallel file reads, parallel `Task` subagents). Default: false —
+    /// mutating tools (Write/Edit/Bash/…) stay strictly sequential.
+    fn parallelizable(&self) -> bool {
+        false
+    }
+
     /// MCP-Apps widget the chat surface should embed inline alongside
     /// this tool's results. Returns `(uri, html, mime)` where `html` is
     /// the resource body to mount in an iframe and `mime` is the

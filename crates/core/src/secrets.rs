@@ -108,6 +108,7 @@ const MANAGED: &[ProviderKind] = &[
     ProviderKind::OpenCodeGo,
     ProviderKind::Moonshot,
     ProviderKind::XAi,
+    ProviderKind::Minimax,
 ];
 
 /// Non-LLM service keys we surface in the same Settings modal as the

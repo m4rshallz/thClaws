@@ -61,6 +61,13 @@ pub trait AgentFactory: Send + Sync {
         agent_def: Option<&AgentDef>,
         child_depth: usize,
     ) -> Result<Agent>;
+
+    /// The factory's base model id — used to attribute a subagent's
+    /// token usage when its `agent_def` doesn't pin its own model.
+    /// Default `"unknown"` keeps test stubs simple.
+    fn base_model(&self) -> &str {
+        "unknown"
+    }
 }
 
 /// M6.33: production agent factory shared by CLI (`run_repl`) and GUI
@@ -113,6 +120,10 @@ pub struct ProductionAgentFactory {
 
 #[async_trait]
 impl AgentFactory for ProductionAgentFactory {
+    fn base_model(&self) -> &str {
+        &self.model
+    }
+
     async fn build(
         &self,
         _prompt: &str,
@@ -286,6 +297,13 @@ impl Tool for SubAgentTool {
         TOOL_NAME
     }
 
+    /// Task subagents are read/research delegations with no approval gate —
+    /// safe to fan out concurrently. (A subagent that internally mutates is
+    /// the model's explicit parallel choice, same as parallel Bash would be.)
+    fn parallelizable(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &'static str {
         "Launch a sub-agent with its own history to handle a bounded subtask. \
          The sub-agent runs independently, may call tools (and spawn further \
@@ -364,6 +382,27 @@ impl Tool for SubAgentTool {
         // unaffected.
         if let Some(u) = outcome.usage.as_ref() {
             crate::workflow::push_worker_usage(u.clone());
+
+            // A subagent's tokens were otherwise DROPPED outside a
+            // workflow — the orchestrator's `cumulative_usage` only
+            // counts the parent's own provider calls, not the work a
+            // Task spawned. Record the subagent's usage to the global
+            // per-model tracker AND the per-workspace ledger so a
+            // task's true cost (orchestrator + every subagent) is
+            // captured. Attribute to the subagent's *effective* model
+            // (its `agent_def` may pin a cheaper one than the parent).
+            let eff_model = agent_def
+                .and_then(|d| d.model.as_deref())
+                .unwrap_or_else(|| self.factory.base_model());
+            let provider = crate::providers::ProviderKind::detect(eff_model)
+                .map(|k| k.name())
+                .unwrap_or("unknown");
+            let role = agent_name.unwrap_or("subagent");
+            crate::usage::UsageTracker::new(crate::usage::UsageTracker::default_path())
+                .record(provider, eff_model, u);
+            if let Ok(cwd) = std::env::current_dir() {
+                crate::usage::append_usage_ledger(&cwd, role, provider, eff_model, u);
+            }
         }
 
         if outcome.text.is_empty() {

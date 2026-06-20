@@ -72,6 +72,10 @@ impl Tool for ReadTool {
         "Read"
     }
 
+    fn parallelizable(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &'static str {
         "Read the contents of a file. Optional `offset` (1-indexed line) and `limit` \
          (max lines) select a slice; omit for the whole file. \

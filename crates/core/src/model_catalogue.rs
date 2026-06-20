@@ -336,8 +336,15 @@ impl Catalogue {
         if entry.free == Some(true) {
             return Some(0.0);
         }
+        // A per-mtok rate is only usable if it's finite and non-negative.
+        // A sentinel/garbage value (e.g. the -1_000_000 placeholder used
+        // for a variable-priced router like `openrouter/fusion`) is
+        // treated as "unpriced" so cost reports as unknown (None) rather
+        // than a nonsensical negative.
+        let usable =
+            |rate: Option<f64>| -> Option<f64> { rate.filter(|r| r.is_finite() && *r >= 0.0) };
         let per_m = |count: u32, rate: Option<f64>| -> f64 {
-            rate.map_or(0.0, |r| (count as f64 / 1_000_000.0) * r)
+            usable(rate).map_or(0.0, |r| (count as f64 / 1_000_000.0) * r)
         };
         // Cache math: prompt_tokens is the total (Anthropic convention).
         // Uncached input = prompt_tokens - cached_input_tokens. Saturating
@@ -360,11 +367,11 @@ impl Catalogue {
         // If nothing was priced (entry exists but every per-mtok field is
         // None), return None rather than $0 — `Some(0.0)` is reserved
         // for explicit `free: true`.
-        if entry.input_per_mtok.is_none()
-            && entry.output_per_mtok.is_none()
-            && entry.cached_input_per_mtok.is_none()
-            && entry.cache_creation_per_mtok.is_none()
-            && entry.reasoning_per_mtok.is_none()
+        if usable(entry.input_per_mtok).is_none()
+            && usable(entry.output_per_mtok).is_none()
+            && usable(entry.cached_input_per_mtok).is_none()
+            && usable(entry.cache_creation_per_mtok).is_none()
+            && usable(entry.reasoning_per_mtok).is_none()
         {
             return None;
         }
@@ -1903,6 +1910,31 @@ mod tests {
             )
             .expect("free entry");
         assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn cost_negative_sentinel_price_is_unpriced_not_negative() {
+        // A -1_000_000 placeholder (e.g. a variable-priced router that
+        // slipped into the catalogue) must read as unpriced (None), never
+        // produce a nonsensical negative cost.
+        let c = Catalogue::from_json_str(
+            r#"{"schema":4,"providers":{"openrouter":{"models":{
+                "openrouter/fusion":{"input_per_mtok":-1000000.0,"output_per_mtok":-1000000.0}
+            }}}}"#,
+        )
+        .expect("parses");
+        let cost = c.compute_cost_usd(
+            "openrouter/fusion",
+            &TokenUsage {
+                prompt_tokens: 500_000,
+                completion_tokens: 10_000,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            cost, None,
+            "negative sentinel must be unpriced, got {cost:?}"
+        );
     }
 
     #[test]

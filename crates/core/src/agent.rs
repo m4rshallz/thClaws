@@ -1370,7 +1370,120 @@ impl Agent {
 
                 // Execute each tool (after approval, if required) and collect results.
                 let mut result_blocks: Vec<ContentBlock> = Vec::new();
+                // ── Concurrent fast-path (dev-plan/46) ──────────────────
+                // When a turn emits ≥2 tool calls that are ALL parallelizable
+                // (read-only / Task subagents — no approval, no mutation), run
+                // them in one concurrent batch instead of awaiting each in
+                // turn: wall-clock collapses from sum-of-N to max-of-N. This
+                // is behaviourally identical to the sequential loop below for
+                // these tools (they clear every guard anyway). Any other mix
+                // (mutating tools, approvals, parse errors) leaves the flag
+                // false and falls through to the sequential loop unchanged.
+                let mut handled_concurrently = false;
+                {
+                    let exec: Vec<(String, String, Value)> = turn_tool_uses
+                        .iter()
+                        .filter_map(|tu| match tu {
+                            ContentBlock::ToolUse { id, name, input, .. } => {
+                                Some((id.clone(), name.clone(), input.clone()))
+                            }
+                            _ => None,
+                        })
+                        .filter(|(id, _, _)| !turn_parse_errors.iter().any(|(eid, _)| eid == id))
+                        .collect();
+                    let all_parallelizable = exec.len() >= 2
+                        && exec.iter().all(|(_, name, _)| {
+                            tools.get(name).map(|t| t.parallelizable()).unwrap_or(false)
+                        });
+                    if all_parallelizable {
+                        let futs = exec.into_iter().map(|(id, name, input)| {
+                            let tool = tools.get(&name).expect("parallelizable ⇒ tool exists");
+                            let hooks = hooks.clone();
+                            async move {
+                                let hook_denied: Option<String> = if let Some(h) = &hooks {
+                                    let input_str = serde_json::to_string(&input)
+                                        .unwrap_or_else(|_| "<unserializable>".to_string());
+                                    match crate::hooks::fire_pre_tool_use_gate(h, &name, &input_str)
+                                        .await
+                                    {
+                                        crate::hooks::PreToolDecision::Deny(r) => Some(r),
+                                        crate::hooks::PreToolDecision::Allow => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                                let tool_result = match hook_denied {
+                                    Some(reason) => Err(crate::error::Error::Tool(format!(
+                                        "blocked by policy: {reason}"
+                                    ))),
+                                    None => tool.call_multimodal(input).await,
+                                };
+                                let ui_resource = if tool_result.is_ok() {
+                                    tool.fetch_ui_resource().await
+                                } else {
+                                    None
+                                };
+                                (id, name, tool_result, ui_resource)
+                            }
+                        });
+                        // join_all preserves input order → result_blocks +
+                        // events stay in the model's tool_use order.
+                        let results = futures::future::join_all(futs).await;
+                        for (id, name, tool_result, ui_resource) in results {
+                            let (content, is_error) = match &tool_result {
+                                Ok(c) => {
+                                    let truncated = match c {
+                                        crate::types::ToolResultContent::Text(s) => {
+                                            crate::types::ToolResultContent::Text(
+                                                maybe_truncate_to_disk(s),
+                                            )
+                                        }
+                                        crate::types::ToolResultContent::Blocks(_) => c.clone(),
+                                    };
+                                    (truncated, false)
+                                }
+                                Err(e) => (
+                                    crate::types::ToolResultContent::Text(format!("error: {e}")),
+                                    true,
+                                ),
+                            };
+                            let content = if content.is_empty() {
+                                crate::types::ToolResultContent::Text("(no output)".to_string())
+                            } else {
+                                content
+                            };
+                            if let Some(h) = &hooks {
+                                let preview = match &content {
+                                    crate::types::ToolResultContent::Text(s) => s.clone(),
+                                    crate::types::ToolResultContent::Blocks(_) => {
+                                        "<multimodal>".to_string()
+                                    }
+                                };
+                                crate::hooks::fire_post_tool_use(h, &name, &preview, is_error);
+                            }
+                            result_blocks.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: content.clone(),
+                                is_error,
+                            });
+                            yield AgentEvent::ToolCallResult {
+                                id,
+                                name,
+                                output: match tool_result {
+                                    Ok(c) => Ok(c.to_text()),
+                                    Err(e) => Err(format!("{e}")),
+                                },
+                                ui_resource,
+                            };
+                        }
+                        handled_concurrently = true;
+                    }
+                }
+
                 for tu in &turn_tool_uses {
+                    if handled_concurrently {
+                        break;
+                    }
                     let ContentBlock::ToolUse { id, name, input, .. } = tu else { continue };
 
                     // L4 (M6.17): if this tool's JSON input failed to
@@ -2771,6 +2884,104 @@ mod tests {
                 usage: None,
             },
         ]
+    }
+
+    /// Two tool_use blocks in a single assistant message.
+    fn two_tool_script(n1: &str, id1: &str, n2: &str, id2: &str) -> Vec<ProviderEvent> {
+        vec![
+            ProviderEvent::MessageStart {
+                model: "test".into(),
+            },
+            ProviderEvent::ToolUseStart {
+                id: id1.into(),
+                name: n1.into(),
+                thought_signature: None,
+            },
+            ProviderEvent::ToolUseDelta {
+                partial_json: "{}".into(),
+            },
+            ProviderEvent::ContentBlockStop,
+            ProviderEvent::ToolUseStart {
+                id: id2.into(),
+                name: n2.into(),
+                thought_signature: None,
+            },
+            ProviderEvent::ToolUseDelta {
+                partial_json: "{}".into(),
+            },
+            ProviderEvent::ContentBlockStop,
+            ProviderEvent::MessageStop {
+                stop_reason: Some("tool_use".into()),
+                usage: None,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn parallelizable_tools_run_concurrently() {
+        use crate::tools::Tool;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        struct SleepyTool;
+        #[async_trait::async_trait]
+        impl Tool for SleepyTool {
+            fn name(&self) -> &'static str {
+                "Sleep"
+            }
+            fn description(&self) -> &'static str {
+                "sleeps"
+            }
+            fn input_schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn parallelizable(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value) -> Result<String> {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok("slept".into())
+            }
+        }
+
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(SleepyTool));
+        let provider = ScriptedProvider::new(vec![
+            two_tool_script("Sleep", "t1", "Sleep", "t2"),
+            text_script(&["done"]),
+        ]);
+        let agent = Agent::new(provider, reg, "test", "");
+
+        let start = Instant::now();
+        let outcome = collect_agent_turn(agent.run_turn("go".into()))
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(
+            outcome.tool_calls,
+            vec!["Sleep".to_string(), "Sleep".to_string()]
+        );
+        // Two 200ms sleeps: concurrent ≈200ms, sequential ≈400ms. The bound
+        // sits well below the sequential floor and above concurrent+overhead.
+        assert!(
+            elapsed < Duration::from_millis(330),
+            "took {elapsed:?} — looks sequential, not concurrent"
+        );
+
+        // Results land in tool_use order regardless of completion order.
+        let history = agent.history_snapshot();
+        let trmsg = &history[2];
+        let ids: Vec<String> = trmsg
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["t1".to_string(), "t2".to_string()]);
     }
 
     #[tokio::test]

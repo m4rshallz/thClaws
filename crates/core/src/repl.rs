@@ -292,6 +292,10 @@ pub enum SlashCommand {
         /// default behavior (manual or /loop-driven continuation)
         /// stays unchanged.
         auto_continue: bool,
+        /// Engine-enforced completion artifacts — files that must exist
+        /// on disk before `MarkGoalComplete` is accepted. From
+        /// `--require <path>` (repeatable). Empty = prompt-level done only.
+        require_paths: Vec<String>,
     },
     /// M6.29: show current goal state + budget consumption.
     GoalStatus,
@@ -2638,15 +2642,18 @@ fn parse_goal_subcommand(args: &str) -> SlashCommand {
     }
 }
 
-/// Parse `/goal start <objective> [--budget-tokens N] [--budget-time T]`.
-/// Objective can be quoted ("...") to include all words; unquoted
-/// strings consume up to the first `--` flag.
+/// Parse `/goal start <objective> [--budget-tokens N] [--budget-time T]
+/// [--auto] [--require <path>]...`. Objective can be quoted ("...") to
+/// include all words; unquoted strings consume up to the first `--` flag.
+/// `--require` (repeatable) names files the engine must find on disk
+/// before `MarkGoalComplete` is accepted.
 fn parse_goal_start_args(rest: &str) -> SlashCommand {
     let tokens = tokenize_quoted(rest);
     let mut objective_parts: Vec<String> = Vec::new();
     let mut budget_tokens: Option<u64> = None;
     let mut budget_time_secs: Option<u64> = None;
     let mut auto_continue = false;
+    let mut require_paths: Vec<String> = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
         let tok = tokens[i].as_str();
@@ -2689,6 +2696,16 @@ fn parse_goal_start_args(rest: &str) -> SlashCommand {
                     }
                 }
             }
+            "--require" | "--require-file" => {
+                i += 1;
+                if i >= tokens.len() {
+                    return SlashCommand::Unknown(
+                        "--require needs a path that must exist before the goal can complete"
+                            .into(),
+                    );
+                }
+                require_paths.push(tokens[i].clone());
+            }
             other if other.starts_with("--") => {
                 return SlashCommand::Unknown(format!("unknown flag: {other}"));
             }
@@ -2699,7 +2716,8 @@ fn parse_goal_start_args(rest: &str) -> SlashCommand {
     let objective = objective_parts.join(" ");
     if objective.trim().is_empty() {
         return SlashCommand::Unknown(
-            "usage: /goal start \"<objective>\" [--budget-tokens N] [--budget-time T]".into(),
+            "usage: /goal start \"<objective>\" [--budget-tokens N] [--budget-time T] [--auto] [--require <path>]"
+                .into(),
         );
     }
     SlashCommand::GoalStart {
@@ -2707,6 +2725,7 @@ fn parse_goal_start_args(rest: &str) -> SlashCommand {
         budget_tokens,
         budget_time_secs,
         auto_continue,
+        require_paths,
     }
 }
 
@@ -5509,10 +5528,18 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         Ok(AgentEvent::Done { usage, .. }) => {
                             // Record teammate usage to project's .thclaws/usage/.
                             // Use team_dir parent to find project root (team_dir is absolute).
-                            let usage_path = team_dir.parent().unwrap_or(&team_dir).join("usage");
+                            let project_root = team_dir.parent().unwrap_or(&team_dir);
                             let provider_name = config.detect_provider().unwrap_or("unknown");
-                            let tracker = crate::usage::UsageTracker::new(usage_path);
+                            let tracker =
+                                crate::usage::UsageTracker::new(project_root.join("usage"));
                             tracker.record(provider_name, &config.model, &usage);
+                            crate::usage::append_usage_ledger(
+                                project_root,
+                                "main",
+                                provider_name,
+                                &config.model,
+                                &usage,
+                            );
                             team_println!(
                                 "\n[tokens: {}in/{}out · {}]",
                                 usage.input_tokens,
@@ -9398,13 +9425,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     budget_tokens,
                     budget_time_secs,
                     auto_continue,
+                    require_paths,
                 } => {
                     let new_goal = crate::goal_state::GoalState::new(
                         objective.clone(),
                         budget_tokens,
                         budget_time_secs,
                         auto_continue,
-                    );
+                    )
+                    .with_require_paths(require_paths);
                     crate::goal_state::set(Some(new_goal));
                     // Phase C1: register the three split goal-lifecycle
                     // tools (RecordGoalProgress / MarkGoalComplete /
@@ -11042,6 +11071,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     let usage_tracker =
                         crate::usage::UsageTracker::new(crate::usage::UsageTracker::default_path());
                     usage_tracker.record(provider_name, &config.model, &usage);
+                    if let Ok(cwd) = std::env::current_dir() {
+                        crate::usage::append_usage_ledger(
+                            &cwd,
+                            "main",
+                            provider_name,
+                            &config.model,
+                            &usage,
+                        );
+                    }
 
                     // Auto-save the session after each completed turn.
                     if let Some(store) = &session_store {
@@ -12538,6 +12576,7 @@ mod tests {
                 budget_tokens: Some(200_000),
                 budget_time_secs: Some(1800),
                 auto_continue: false,
+                require_paths: vec![],
             })
         );
         // Without quotes — objective is words up to first --flag.
@@ -12548,6 +12587,7 @@ mod tests {
                 budget_tokens: Some(50_000),
                 budget_time_secs: None,
                 auto_continue: false,
+                require_paths: vec![],
             })
         );
     }
@@ -12563,6 +12603,7 @@ mod tests {
                 budget_tokens: Some(10_000),
                 budget_time_secs: None,
                 auto_continue: true,
+                require_paths: vec![],
             })
         );
         // --auto-continue alias.
@@ -12573,6 +12614,28 @@ mod tests {
                 budget_tokens: None,
                 budget_time_secs: None,
                 auto_continue: true,
+                require_paths: vec![],
+            })
+        );
+    }
+
+    #[test]
+    fn parse_slash_goal_start_with_require_paths() {
+        // --require (repeatable) collects artifacts the engine will verify
+        // on disk before MarkGoalComplete is accepted.
+        assert_eq!(
+            parse_slash(
+                "/goal start \"build feature\" --auto --require .thclaws/gui-shell/.audit-pass --require dist/index.html"
+            ),
+            Some(SlashCommand::GoalStart {
+                objective: "build feature".into(),
+                budget_tokens: None,
+                budget_time_secs: None,
+                auto_continue: true,
+                require_paths: vec![
+                    ".thclaws/gui-shell/.audit-pass".into(),
+                    "dist/index.html".into(),
+                ],
             })
         );
     }

@@ -211,6 +211,73 @@ pub(crate) fn today_str() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Best-effort per-workspace usage ledger.
+///
+/// Appends one JSON line per *finalized agent turn* — the main loop OR a
+/// Task subagent — to `<cwd>/.thclaws/usage.jsonl`. A reader can sum the
+/// lines to get the true token + USD cost of a whole task **including
+/// subagent work**, which the per-model [`UsageTracker`] aggregates by
+/// day (hard to isolate one run) and the session JSONL omits entirely.
+///
+/// `role` is `"main"` for the orchestrator or the subagent's name. The
+/// cost is computed from the model catalogue (`null` for unknown / tier-
+/// billed models). Never returns an error: usage telemetry must not be
+/// able to break a turn.
+pub fn append_usage_ledger(
+    cwd: &std::path::Path,
+    role: &str,
+    provider: &str,
+    model: &str,
+    usage: &Usage,
+) {
+    if usage.input_tokens == 0 && usage.output_tokens == 0 {
+        return;
+    }
+    let dir = cwd.join(".thclaws");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let cost = crate::model_catalogue::EffectiveCatalogue::load().compute_cost_usd(
+        model,
+        &crate::model_catalogue::TokenUsage {
+            prompt_tokens: usage.input_tokens,
+            completion_tokens: usage.output_tokens,
+            cached_input_tokens: usage.cache_read_input_tokens.unwrap_or(0),
+            cache_creation_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
+            reasoning_tokens: usage.reasoning_output_tokens.unwrap_or(0),
+        },
+    );
+    let line = serde_json::json!({
+        "type": "usage",
+        "ts": epoch_secs(),
+        "role": role,
+        "provider": provider,
+        "model": model,
+        "input": usage.input_tokens,
+        "output": usage.output_tokens,
+        "cache_read": usage.cache_read_input_tokens.unwrap_or(0),
+        "cache_write": usage.cache_creation_input_tokens.unwrap_or(0),
+        "reasoning": usage.reasoning_output_tokens.unwrap_or(0),
+        "cost_usd": cost,
+    })
+    .to_string();
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("usage.jsonl"))
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     // Algorithm from http://howardhinnant.github.io/date_algorithms.html
     let z = days + 719468;
@@ -252,6 +319,59 @@ mod tests {
         assert_eq!(today.cache_write, 100);
         assert_eq!(today.cache_read, 600);
         assert_eq!(today.requests, 2);
+    }
+
+    #[test]
+    fn ledger_appends_parseable_lines_with_roles() {
+        let dir = tempdir().unwrap();
+        let usage = Usage {
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_creation_input_tokens: Some(50),
+            cache_read_input_tokens: Some(300),
+            reasoning_output_tokens: None,
+        };
+        // One main turn + two subagent turns into the same workspace.
+        append_usage_ledger(dir.path(), "main", "anthropic", "claude-sonnet-4-6", &usage);
+        append_usage_ledger(
+            dir.path(),
+            "planner",
+            "anthropic",
+            "claude-sonnet-4-6",
+            &usage,
+        );
+        append_usage_ledger(
+            dir.path(),
+            "verifier",
+            "anthropic",
+            "claude-sonnet-4-6",
+            &usage,
+        );
+
+        let body = std::fs::read_to_string(dir.path().join(".thclaws/usage.jsonl")).unwrap();
+        let lines: Vec<_> = body.lines().collect();
+        assert_eq!(lines.len(), 3, "one ledger line per finalized turn");
+
+        let mut total_in = 0u64;
+        let mut roles = Vec::new();
+        for l in &lines {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            assert_eq!(v["type"], "usage");
+            total_in += v["input"].as_u64().unwrap();
+            roles.push(v["role"].as_str().unwrap().to_string());
+        }
+        // Summing the ledger captures parent + subagent token usage.
+        assert_eq!(total_in, 3000);
+        assert!(roles.contains(&"main".to_string()));
+        assert!(roles.contains(&"planner".to_string()));
+        assert!(roles.contains(&"verifier".to_string()));
+    }
+
+    #[test]
+    fn ledger_skips_zero_usage() {
+        let dir = tempdir().unwrap();
+        append_usage_ledger(dir.path(), "main", "anthropic", "m", &Usage::default());
+        assert!(!dir.path().join(".thclaws/usage.jsonl").exists());
     }
 
     #[test]

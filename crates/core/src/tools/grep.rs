@@ -13,6 +13,10 @@ impl Tool for GrepTool {
         "Grep"
     }
 
+    fn parallelizable(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &'static str {
         "Search file contents for a regex pattern under a directory. Respects \
          .gitignore. Returns matching lines as `path:line:text`, one per line."

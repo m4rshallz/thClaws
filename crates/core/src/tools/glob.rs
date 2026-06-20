@@ -13,6 +13,10 @@ impl Tool for GlobTool {
         "Glob"
     }
 
+    fn parallelizable(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &'static str {
         "Match files against a specific shell glob pattern (e.g. `src/**/*.rs`). \
          Use this only when you already know a pattern you want to match; for \

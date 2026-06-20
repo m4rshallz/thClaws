@@ -980,6 +980,13 @@ impl Usage {
                 (None, Some(b)) => Some(b),
                 (None, None) => None,
             };
+        self.reasoning_output_tokens =
+            match (self.reasoning_output_tokens, other.reasoning_output_tokens) {
+                (Some(a), Some(b)) => Some(a + b),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
     }
 }
 
@@ -1084,7 +1091,15 @@ pub trait Provider: Send + Sync {
 /// M6.36 SERVE9e: lifted out of `gui.rs` to an always-on home so the
 /// WS transport's IPC handlers can use the same readiness check.
 pub fn provider_has_credentials(cfg: &crate::config::AppConfig) -> bool {
-    kind_has_credentials(cfg.detect_provider_kind().ok())
+    let kind = cfg.detect_provider_kind().ok();
+    if kind_has_credentials(kind) {
+        return true;
+    }
+    // A gateway-routed provider is "ready" even without a local key:
+    // the gateway supplies credentials against the user's CLI token.
+    // Without this, ticking the per-provider proxy toggle still leaves
+    // the sidebar showing "no API key". Mirrors preferred_default_model().
+    kind.is_some_and(|k| crate::providers::thclaws_gateway::for_kind(cfg, k).is_some())
 }
 
 /// True when `kind` has credentials available (env var, auth file, or
@@ -1308,6 +1323,53 @@ pub fn preferred_default_model(cfg: &crate::config::AppConfig) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accumulate_sums_all_token_fields_including_reasoning() {
+        let mut acc = Usage::default();
+        acc.accumulate(&Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_creation_input_tokens: Some(5),
+            cache_read_input_tokens: None,
+            reasoning_output_tokens: Some(7),
+        });
+        acc.accumulate(&Usage {
+            input_tokens: 50,
+            output_tokens: 10,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(8),
+            reasoning_output_tokens: Some(3),
+        });
+        assert_eq!(acc.input_tokens, 150);
+        assert_eq!(acc.output_tokens, 30);
+        assert_eq!(acc.cache_creation_input_tokens, Some(5));
+        assert_eq!(acc.cache_read_input_tokens, Some(8));
+        // The bug: reasoning tokens used to be dropped → would stay None.
+        assert_eq!(acc.reasoning_output_tokens, Some(10));
+    }
+
+    /// Regression: a provider routed through the thClaws gateway (the
+    /// per-provider proxy toggle on + a CLI/gateway token present) must
+    /// count as "having credentials" even with no local API key, so the
+    /// sidebar stops showing "no API key" for a working proxied provider.
+    /// Test isolation: serialise the `THCLAWS_GATEWAY_API_KEY` mutation
+    /// so a sibling env-reading test doesn't see ghost state.
+    #[test]
+    fn provider_has_credentials_honors_gateway_route() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = crate::config::AppConfig::default();
+        // Detects as Gemini; segment "google" is the gateway key.
+        cfg.model = "gemini-2.5-flash".to_string();
+        cfg.gateway_use_for = vec!["google".to_string()];
+        std::env::set_var("THCLAWS_GATEWAY_API_KEY", "gw_v1_test");
+        assert!(
+            provider_has_credentials(&cfg),
+            "gateway toggle + token → ready, no local key needed"
+        );
+        std::env::remove_var("THCLAWS_GATEWAY_API_KEY");
+    }
 
     /// `set_stream_chunk_timeout_secs` must be reflected by the
     /// next `stream_chunk_timeout()` call — the providers read this

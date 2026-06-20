@@ -399,28 +399,22 @@ pub(crate) fn services_prompt_section(browser_active: bool) -> String {
 /// The fuller team playbook below this section (rendered by
 /// `team_grounding_prompt` when teams are on) stays unchanged.
 pub(crate) fn collaboration_primitives_section(team_enabled: bool) -> String {
-    let teams_line = if team_enabled {
-        "**Agent Teams** — `TeamCreate` + `SpawnTeammate` start \
-         persistent parallel teammates with optional worktree \
-         isolation; `TeamTaskCreate` / `Claim` / `Complete` for the \
-         shared task queue; `SendMessage` / `CheckInbox` for async \
-         coordination. See the detailed playbook below."
-    } else {
-        "**Agent Teams** — disabled in this workspace \
-         (`teamEnabled: false`). The Team* tools are NOT registered; \
-         do not try to call them. For multi-step parallel work, \
-         reach for Subagent or WorkflowRun above."
-    };
-    format!(
-        "# Collaboration primitives\n\n\
-         Three ways to decompose work — pick by shape, not size:\n\n\
-         1. **Subagent** — the `Task` tool launches one scoped child \
+    // Prompt hygiene: when Agent Teams are OFF, the section must not mention
+    // teams or the `teamEnabled` flag AT ALL — naming a disabled feature (and
+    // a config flag) only invites the model to reason about it and conflate
+    // it with the always-available Subagent (`Task`) tool. So we omit the
+    // Teams item entirely when off, rather than printing a "disabled" notice.
+    let subagent = "**Subagent** — the `Task` tool launches one scoped child \
          agent that returns a transcript when done. Always available. \
          Use for a single side-quest that would clutter history, a \
          read-only sweep, or a well-defined delegation. NOT for \
-         parallel fan-out (one call = one child).\n\n\
-         2. {teams_line}\n\n\
-         3. **WorkflowRun** — `WorkflowRun(prompt: \"…\")` authors a \
+         parallel fan-out (one call = one child).";
+    let teams = "**Agent Teams** — `TeamCreate` + `SpawnTeammate` start \
+         persistent parallel teammates with optional worktree \
+         isolation; `TeamTaskCreate` / `Claim` / `Complete` for the \
+         shared task queue; `SendMessage` / `CheckInbox` for async \
+         coordination. See the detailed playbook below.";
+    let workflow = "**WorkflowRun** — `WorkflowRun(prompt: \"…\")` authors a \
          JavaScript orchestration script and runs it in a Boa \
          sandbox. Use for deterministic fan-out across N items, \
          retry loops, multistep pipelines with budget control, or \
@@ -428,7 +422,25 @@ pub(crate) fn collaboration_primitives_section(team_enabled: bool) -> String {
          Requires user approval per invocation. Nested WorkflowRun \
          calls (from inside a running workflow) are rejected — \
          orchestrate via `thclaws.subagent(...)` / \
-         `thclaws.parallel(...)` inside the script instead.\n"
+         `thclaws.parallel(...)` inside the script instead.";
+
+    let mut items: Vec<&str> = vec![subagent];
+    if team_enabled {
+        items.push(teams);
+    }
+    items.push(workflow);
+
+    let count_word = if items.len() == 3 { "Three" } else { "Two" };
+    let numbered = items
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("{}. {}", i + 1, s))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "# Collaboration primitives\n\n\
+         {count_word} ways to decompose work — pick by shape, not size:\n\n\
+         {numbered}\n"
     )
 }
 
@@ -922,30 +934,44 @@ mod tests {
         eprintln!("  diff /tmp/thclaws-prompt-gui.txt /tmp/thclaws-prompt-headless.txt");
     }
 
-    /// `collaboration_primitives_section` always includes Subagent +
-    /// WorkflowRun (both always-available) and a team line that
-    /// swaps based on `team_enabled`. The swap matters because the
-    /// model otherwise would see Team tool names it can't call.
+    /// `collaboration_primitives_section`: Subagent + WorkflowRun are always
+    /// listed; the Agent Teams item appears ONLY when `team_enabled`. When
+    /// off, the section must not mention teams or the `teamEnabled` flag at
+    /// all — naming a disabled feature lets the model conflate it with the
+    /// always-available Subagent (`Task`) tool (observed: a model decided
+    /// "no Task tool because teamEnabled: false", which is nonsense).
     #[test]
-    fn collaboration_section_lists_all_three_primitives() {
+    fn collaboration_section_lists_primitives_by_team_state() {
         let on = collaboration_primitives_section(true);
         assert!(on.starts_with("# Collaboration primitives"));
+        assert!(on.contains("Three ways"));
         assert!(on.contains("**Subagent**"));
         assert!(on.contains("`Task`"));
         assert!(on.contains("**Agent Teams**"));
         assert!(on.contains("`TeamCreate`"));
         assert!(on.contains("**WorkflowRun**"));
-        assert!(on.contains("`WorkflowRun(prompt"));
 
         let off = collaboration_primitives_section(false);
-        assert!(off.contains("disabled in this workspace"));
-        assert!(
-            !off.contains("`TeamCreate`"),
-            "team-off prompt must not name Team tools"
-        );
-        // Subagent + WorkflowRun appear regardless of team_enabled.
+        assert!(off.contains("Two ways"), "team-off → only 2 primitives");
         assert!(off.contains("**Subagent**"));
         assert!(off.contains("**WorkflowRun**"));
+        // The whole point: ZERO team / flag mentions when off.
+        assert!(
+            !off.contains("Agent Teams"),
+            "team-off must not mention Agent Teams"
+        );
+        assert!(
+            !off.contains("teamEnabled"),
+            "team-off must not mention the teamEnabled flag"
+        );
+        assert!(
+            !off.contains("`TeamCreate`"),
+            "team-off must not name Team tools"
+        );
+        assert!(
+            !off.to_lowercase().contains("team"),
+            "team-off must not say 'team' at all"
+        );
     }
 
     /// The unified builder slots the Collaboration section between

@@ -3701,6 +3701,26 @@ async fn handle_line(
                 return;
             }
             Some(g) => {
+                // Gap 1 — hard backstop. Past the iteration cap or a budget
+                // overrun (1.5× grace beyond the soft GOAL_BUDGET_LIMIT
+                // prompt), force the goal Blocked + abort the loop regardless
+                // of the model, so an unattended /goal continue loop can't
+                // burn unbounded cost.
+                if let Some(reason) = g.hard_limit_reached() {
+                    crate::goal_state::apply(|gg| {
+                        gg.status = crate::goal_state::GoalStatus::Blocked;
+                        gg.last_audit = Some(format!("auto-blocked (hard limit): {reason}"));
+                        true
+                    });
+                    let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+                        "/goal continue — hard limit: {reason}. Auto-blocking goal + stopping loop."
+                    )));
+                    if let Some(loop_state) = state.active_loop.take() {
+                        loop_state.abort.abort();
+                    }
+                    let _ = events_tx.send(ViewEvent::TurnDone);
+                    return;
+                }
                 // Phase B2: anti-loop guard mirroring codex's runtime
                 // continuation suppression. If a /loop is wrapping us
                 // AND the previous turn produced zero tool calls (model
@@ -4400,6 +4420,15 @@ async fn drive_turn_stream_inner(
                         .unwrap_or_else(crate::usage::UsageTracker::default_path),
                 );
                 tracker.record(provider_name, &state.config.model, &usage);
+                if let Ok(cwd) = std::env::current_dir() {
+                    crate::usage::append_usage_ledger(
+                        &cwd,
+                        "main",
+                        provider_name,
+                        &state.config.model,
+                        &usage,
+                    );
+                }
 
                 // Cost accounting (GUI parity with the CLI REPL). Drain
                 // any pending buddy resets first so a mid-turn Backspace
@@ -4803,6 +4832,15 @@ async fn handle_team_messages(
                         .unwrap_or_else(crate::usage::UsageTracker::default_path),
                 );
                 tracker.record(provider_name, &state.config.model, &usage);
+                if let Ok(cwd) = std::env::current_dir() {
+                    crate::usage::append_usage_ledger(
+                        &cwd,
+                        "main",
+                        provider_name,
+                        &state.config.model,
+                        &usage,
+                    );
+                }
                 save_history(&state.agent, &mut state.session, &state.session_store);
                 let _ = events_tx.send(ViewEvent::SessionListRefresh(build_session_list(
                     &state.session_store,

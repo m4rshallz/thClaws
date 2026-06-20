@@ -1181,13 +1181,15 @@ pub async fn dispatch(
             budget_tokens,
             budget_time_secs,
             auto_continue,
+            require_paths,
         } => {
             let new_goal = crate::goal_state::GoalState::new(
                 objective.clone(),
                 budget_tokens,
                 budget_time_secs,
                 auto_continue,
-            );
+            )
+            .with_require_paths(require_paths);
             crate::goal_state::set(Some(new_goal));
             // Live-register the three goal-lifecycle tools (Phase C1):
             //   RecordGoalProgress  — mid-loop audit checkpoint, status stays Active
