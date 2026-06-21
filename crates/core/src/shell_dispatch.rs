@@ -1750,10 +1750,10 @@ pub async fn dispatch(
             .await
             {
                 Ok(report) => {
-                    // Reload the worker's def snapshot so a `/agent <name>`
-                    // side-channel can spawn it right away (matches the
-                    // `AgentDefsChanged` handler). Model-driven Task picks
-                    // up the new def on the next session.
+                    // Reload the worker's def snapshot so a `/subagent
+                    // <name>` side-channel can spawn it right away (matches
+                    // the `AgentDefsChanged` handler). Model-driven Task
+                    // picks up the new def on the next session.
                     let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
                     let mut reloaded =
                         crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
@@ -1761,7 +1761,7 @@ pub async fn dispatch(
                     state.agent_defs = reloaded;
                     let mut out = report.join("\n");
                     out.push_str(
-                        "\n(spawn now via /agent <name>; model-driven Task sees it next session)",
+                        "\n(spawn now via /subagent <name>; model-driven Task sees it next session)",
                     );
                     emit(events_tx, out);
                 }
@@ -3348,7 +3348,7 @@ pub async fn dispatch(
                     events_tx,
                     format!("✓ spawned background agent '{name}' (id: {id})"),
                 ),
-                Err(e) => emit(events_tx, format!("/agent: {e}")),
+                Err(e) => emit(events_tx, format!("/subagent: {e}")),
             }
         }
         SlashCommand::AgentsList => {
@@ -3365,11 +3365,11 @@ pub async fn dispatch(
         }
         SlashCommand::AgentCancel(id) => {
             if crate::side_channel::cancel_side_channel(&id) {
-                emit(events_tx, format!("/agent cancel '{id}': signal sent"));
+                emit(events_tx, format!("/subagent cancel '{id}': signal sent"));
             } else {
                 emit(
                     events_tx,
-                    format!("/agent cancel '{id}': no such active agent (try /agents)"),
+                    format!("/subagent cancel '{id}': no such active agent (try /subagent list)"),
                 );
             }
         }
@@ -3377,14 +3377,14 @@ pub async fn dispatch(
             let Some(name) = crate::agent_defs::sanitize_agent_name(&name) else {
                 emit(
                     events_tx,
-                    "/agent new: name must be non-empty letters, digits, '-' or '_'".into(),
+                    "/subagent new: name must be non-empty letters, digits, '-' or '_'".into(),
                 );
                 return;
             };
             if crate::agent_defs::AgentDefsConfig::find_on_disk(&name).is_some() {
                 emit(
                     events_tx,
-                    format!("/agent new: '{name}' already exists — use /agent edit {name}"),
+                    format!("/subagent new: '{name}' already exists — use /subagent edit {name}"),
                 );
                 return;
             }
@@ -3400,7 +3400,7 @@ pub async fn dispatch(
             let Some(name) = crate::agent_defs::sanitize_agent_name(&name) else {
                 emit(
                     events_tx,
-                    "/agent edit: name must be non-empty letters, digits, '-' or '_'".into(),
+                    "/subagent edit: name must be non-empty letters, digits, '-' or '_'".into(),
                 );
                 return;
             };
@@ -3414,21 +3414,23 @@ pub async fn dispatch(
                     Err(e) => {
                         emit(
                             events_tx,
-                            format!("/agent edit: can't read {}: {e}", path.display()),
+                            format!("/subagent edit: can't read {}: {e}", path.display()),
                         );
                         return;
                     }
                 },
-                None => match state.agent_defs.get(&name) {
-                    Some(def) => def.to_markdown(),
-                    None => {
-                        emit(
+                None => {
+                    match state.agent_defs.get(&name) {
+                        Some(def) => def.to_markdown(),
+                        None => {
+                            emit(
                             events_tx,
-                            format!("/agent edit: no such agent '{name}' (try /agent new {name})"),
+                            format!("/subagent edit: no such agent '{name}' (try /subagent new {name})"),
                         );
-                        return;
+                            return;
+                        }
                     }
-                },
+                }
             };
             let payload = serde_json::json!({
                 "type": "agent_editor_open",

@@ -64,7 +64,34 @@ impl UsageTracker {
 
         let today = today_str();
 
-        // Read existing data.
+        // M3: serialize the whole read→modify→write across threads AND
+        // processes. The per-model file is a read-modify-write: two
+        // concurrent writers would both read the pre-update contents and
+        // last-writer-wins, silently dropping one subagent's tokens
+        // (Task is `parallelizable` and several thClaws instances may
+        // share one `.thclaws/usage/`). An advisory exclusive flock on a
+        // dedicated sidecar `.lock` file closes the lost-update window;
+        // writing via temp-file + atomic rename closes the torn-read
+        // window for the lock-free readers (`all_models`/`total`/`today`).
+        // The lock file inode is stable (never renamed), so all writers
+        // contend on the same inode. Best-effort throughout: a failed
+        // open/lock skips this record rather than panicking — usage
+        // accounting must never take down a turn.
+        use fs2::FileExt;
+        let lock_path = path.with_extension("json.lock");
+        let Ok(lock_file) = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+        else {
+            return;
+        };
+        if lock_file.lock_exclusive().is_err() {
+            return;
+        }
+
+        // Read existing data (under lock).
         let mut data: ModelUsage = if path.exists() {
             std::fs::read_to_string(&path)
                 .ok()
@@ -82,10 +109,19 @@ impl UsageTracker {
         entry.cache_read += usage.cache_read_input_tokens.unwrap_or(0) as u64;
         entry.requests += 1;
 
-        // Write back.
+        // Write back via temp-file + atomic rename so a concurrent reader
+        // never observes a half-written file.
         if let Ok(json) = serde_json::to_string_pretty(&data) {
-            let _ = std::fs::write(&path, json);
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
         }
+
+        // Best-effort unlock; Drop closes the fd which also releases the
+        // flock per POSIX semantics, so a failed unlock can't deadlock
+        // the next writer.
+        let _ = lock_file.unlock();
     }
 
     /// Get total usage across all providers and models.

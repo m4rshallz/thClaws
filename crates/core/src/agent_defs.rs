@@ -45,6 +45,17 @@ pub struct AgentDef {
     /// Tools to exclude.
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
+    /// Skill names this agent may load/list/search. Empty = inherit the
+    /// parent's full skill set. When non-empty, the subagent's
+    /// Skill/SkillList/SkillSearch tools are scoped to exactly these
+    /// names (loading any other skill is refused).
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// MCP server names this agent may use. Empty = inherit all of the
+    /// parent's MCP tools. When non-empty, MCP tools whose server segment
+    /// isn't listed are removed from the subagent's registry.
+    #[serde(default)]
+    pub mcp: Vec<String>,
     /// Agent terminal color.
     #[serde(default)]
     pub color: Option<String>,
@@ -70,6 +81,8 @@ impl Default for AgentDef {
             max_iterations: default_max_iterations(),
             tools: vec![],
             disallowed_tools: vec![],
+            skills: vec![],
+            mcp: vec![],
             color: None,
             isolation: None,
             permission_mode: None,
@@ -296,6 +309,22 @@ impl AgentDefsConfig {
             })
             .unwrap_or_default();
 
+        let split_list = |s: &str| -> Vec<String> {
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        };
+        let skills = frontmatter
+            .get("skills")
+            .map(|s| split_list(s))
+            .unwrap_or_default();
+        let mcp = frontmatter
+            .get("mcp")
+            .or_else(|| frontmatter.get("mcpServers"))
+            .map(|s| split_list(s))
+            .unwrap_or_default();
+
         Some(AgentDef {
             name,
             description,
@@ -304,6 +333,8 @@ impl AgentDefsConfig {
             max_iterations,
             tools,
             disallowed_tools,
+            skills,
+            mcp,
             color,
             isolation,
             permission_mode,
@@ -404,6 +435,12 @@ impl AgentDef {
                 "disallowedTools: {}\n",
                 self.disallowed_tools.join(", ")
             ));
+        }
+        if !self.skills.is_empty() {
+            fm.push_str(&format!("skills: {}\n", self.skills.join(", ")));
+        }
+        if !self.mcp.is_empty() {
+            fm.push_str(&format!("mcp: {}\n", self.mcp.join(", ")));
         }
         if let Some(p) = &self.permission_mode {
             fm.push_str(&format!("permissionMode: {p}\n"));
@@ -1000,6 +1037,8 @@ new instructions
             max_iterations: 20,
             tools: vec!["Read".into(), "Glob".into(), "Grep".into()],
             disallowed_tools: vec!["Bash".into()],
+            skills: vec!["pdf".into(), "xlsx".into()],
+            mcp: vec!["pinn-ai".into()],
             color: Some("cyan".into()),
             isolation: None,
             permission_mode: Some("auto".into()),
@@ -1011,6 +1050,8 @@ new instructions
         assert_eq!(parsed.model.as_deref(), Some("claude-haiku-4-5"));
         assert_eq!(parsed.tools, vec!["Read", "Glob", "Grep"]);
         assert_eq!(parsed.disallowed_tools, vec!["Bash"]);
+        assert_eq!(parsed.skills, vec!["pdf", "xlsx"]);
+        assert_eq!(parsed.mcp, vec!["pinn-ai"]);
         assert_eq!(parsed.max_iterations, 20);
         assert_eq!(parsed.color.as_deref(), Some("cyan"));
         assert_eq!(parsed.permission_mode.as_deref(), Some("auto"));

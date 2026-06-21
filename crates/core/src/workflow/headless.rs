@@ -91,7 +91,11 @@ pub async fn run(
     let provider = crate::repl::build_provider(&config)?;
     let approver: Arc<dyn ApprovalSink> = Arc::new(AutoApprover);
 
-    let agent_defs = crate::agent_defs::AgentDefsConfig::load();
+    // I2: match CLI/GUI — surface plugin-contributed agent defs and apply
+    // settings.json built-in subagent model overrides.
+    let mut agent_defs =
+        crate::agent_defs::AgentDefsConfig::load_with_extra(&crate::plugins::plugin_agent_dirs());
+    agent_defs.apply_builtin_subagent_overrides(&config);
     // Workflow headless is one-shot — no mid-run mutators that would
     // need to refresh this snapshot, so the Arc is owned solely by
     // the factory (no worker writer side).

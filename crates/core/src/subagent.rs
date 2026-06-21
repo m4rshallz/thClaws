@@ -36,7 +36,8 @@ pub const DEFAULT_MAX_DEPTH: usize = 3;
 ///
 /// Now the worker holds an `Arc<RwLock<FactorySnapshot>>` and the
 /// factory holds a clone of that same `Arc`. Worker writes through
-/// `refresh_factory_snapshot` / `update_factory_snapshot`; factory
+/// `repl::refresh_repl_system_prompt` (CLI) /
+/// `WorkerState::sync_factory_snapshot` (GUI + HTTP serve); factory
 /// reads on every `build()`. Child factories inherit the same `Arc`
 /// (via `snapshot.clone()`) so nested subagents also pick up live
 /// state.
@@ -138,7 +139,10 @@ impl AgentFactory for ProductionAgentFactory {
         // both needed and we want them to come from the same instant
         // (so a refresh between the two reads can't tear).
         let (parent_system, base_tools) = {
-            let snap = self.snapshot.read().expect("factory snapshot read lock");
+            // L2: recover from a poisoned lock instead of panicking — the
+            // only writers do trivial field assignments, so the inner
+            // data is always consistent even if a writer panicked.
+            let snap = self.snapshot.read().unwrap_or_else(|e| e.into_inner());
             (snap.system.clone(), snap.tools.clone())
         };
 
@@ -192,10 +196,110 @@ impl AgentFactory for ProductionAgentFactory {
             }
         }
 
+        // Per-subagent MCP scoping (`AgentDef::mcp`). MCP tools are named
+        // `<server>__<tool>` (see `mcp::MCP_NAME_SEPARATOR`). When the def
+        // lists servers, drop every MCP tool whose server segment isn't
+        // allow-listed — the subagent literally cannot call other servers.
+        // Opt-in: empty list = inherit all MCP tools.
+        if let Some(def) = agent_def {
+            if !def.mcp.is_empty() {
+                let allowed: std::collections::HashSet<String> = def
+                    .mcp
+                    .iter()
+                    .map(|s| crate::mcp::sanitize_tool_name_segment(s))
+                    .collect();
+                let sep = crate::mcp::MCP_NAME_SEPARATOR;
+                let drop: Vec<String> = tools
+                    .names()
+                    .iter()
+                    .filter(|n| {
+                        n.split_once(sep)
+                            .map(|(server, _)| !allowed.contains(server))
+                            .unwrap_or(false)
+                    })
+                    .map(|s| s.to_string())
+                    .collect();
+                for n in drop {
+                    tools.remove(&n);
+                }
+            }
+        }
+
+        // Per-subagent skill scoping (`AgentDef::skills`). Skills are
+        // reached only through the Skill/SkillList/SkillSearch tools (a
+        // shared store). Recover the store handle from the inherited
+        // `Skill` tool via `as_any`, then replace all three with
+        // allow-list-scoped copies sharing that same handle. Opt-in:
+        // empty list = inherit the full skill set.
+        if let Some(def) = agent_def {
+            if !def.skills.is_empty() {
+                let handle = tools.get("Skill").and_then(|t| {
+                    t.as_any()
+                        .and_then(|a| a.downcast_ref::<crate::skills::SkillTool>())
+                        .map(|s| s.store_handle())
+                });
+                if let Some(handle) = handle {
+                    let allowed = Arc::new(
+                        def.skills
+                            .iter()
+                            .cloned()
+                            .collect::<std::collections::HashSet<String>>(),
+                    );
+                    tools.register(Arc::new(
+                        crate::skills::SkillTool::new_from_handle(handle.clone())
+                            .with_allowed(allowed.clone()),
+                    ));
+                    if tools.get("SkillList").is_some() {
+                        tools.register(Arc::new(
+                            crate::skills::SkillListTool::new_from_handle(handle.clone())
+                                .with_allowed(allowed.clone()),
+                        ));
+                    }
+                    if tools.get("SkillSearch").is_some() {
+                        tools.register(Arc::new(
+                            crate::skills::SkillSearchTool::new_from_handle(handle)
+                                .with_allowed(allowed),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // H1/M1: `base_tools` is cloned from the shared snapshot, which —
+        // after ANY mid-session refresh (`/mcp add`, `/kms use`,
+        // `/reload-prompt`, or the GUI's `McpReady` fan-out) — re-clones
+        // the live parent registry INCLUDING the root depth-0 `Task`
+        // tool. Strip it unconditionally here, then re-register a
+        // correctly-depthed one below only when allowed. Without the
+        // strip, a leaf agent at `child_depth == max_depth` (where the
+        // registration block is skipped) would inherit the root Task and
+        // could spawn again from depth 0 — resetting the recursion
+        // counter and defeating `max_depth` entirely (runaway nesting).
+        // Stripping here also makes `disallowed_tools: ["Task"]` and an
+        // allow-list that omits `Task` actually disable subagent spawning,
+        // which the pre-strip filter could not do (Task was always added
+        // afterwards).
+        tools.remove(TOOL_NAME);
+
+        // Whether this child may spawn further subagents. Honored by both
+        // the allow-list (when non-empty it must list `Task`) and the
+        // deny-list. Default agents (no `agent_def`) may always recurse.
+        let task_allowed = match agent_def {
+            Some(def) => {
+                let allowed_by_list =
+                    def.tools.is_empty() || def.tools.iter().any(|t| t == TOOL_NAME);
+                let not_denied = !def.disallowed_tools.iter().any(|t| t == TOOL_NAME);
+                allowed_by_list && not_denied
+            }
+            None => true,
+        };
+
         // Add a Task tool at the next depth (multi-level recursion).
-        // child_depth < max_depth → register; otherwise the leaf
-        // subagent has no Task tool and the chain stops.
-        if child_depth < self.max_depth {
+        // child_depth < max_depth AND the agent def permits Task →
+        // register; otherwise the subagent has no Task tool and the chain
+        // stops (either a leaf at the depth ceiling or an agent scoped to
+        // not recurse).
+        if task_allowed && child_depth < self.max_depth {
             let child_factory = Arc::new(ProductionAgentFactory {
                 provider: self.provider.clone(),
                 // Share the SAME snapshot Arc so nested subagents
@@ -338,8 +442,17 @@ impl Tool for SubAgentTool {
         })
     }
 
+    /// Spawning a sub-agent is itself unguarded. The Task call performs
+    /// no mutation directly, and the child inherits the parent's
+    /// `permission_mode` + approver (see `ProductionAgentFactory::build`),
+    /// so any mutating tool the sub-agent calls is gated at the child
+    /// level. Returning `false` keeps behavior consistent regardless of
+    /// how many Task calls the model emits in a turn: pre-fix the
+    /// sequential path honored this `true` and prompted under Ask mode,
+    /// but the concurrent fan-out path (≥2 parallelizable tools) never
+    /// consulted the approver — so one Task asked and two did not.
     fn requires_approval(&self, _input: &Value) -> bool {
-        true
+        false
     }
 
     async fn call(&self, input: Value) -> Result<String> {
@@ -406,7 +519,22 @@ impl Tool for SubAgentTool {
         }
 
         if outcome.text.is_empty() {
-            Err(Error::Agent("sub-agent returned empty response".into()))
+            // L1: distinguish "did nothing" from "acted but produced no
+            // final text". A sub-agent that ran tools (e.g. wrote files)
+            // but hit max_iterations or stopped without a closing message
+            // used to surface a spurious "empty response" error to the
+            // caller even though work happened. Return a synthetic summary
+            // of the tool activity instead; only error when truly nothing
+            // ran.
+            if outcome.tool_calls.is_empty() {
+                Err(Error::Agent("sub-agent returned empty response".into()))
+            } else {
+                Ok(format!(
+                    "(sub-agent finished without a final text message; ran {} tool call(s): {})",
+                    outcome.tool_calls.len(),
+                    outcome.tool_calls.join(", ")
+                ))
+            }
         } else {
             Ok(outcome.text)
         }
@@ -746,5 +874,298 @@ mod tests {
             .unwrap();
         assert_eq!(out, "found it");
         assert!(saw_def.load(Ordering::Relaxed));
+    }
+
+    /// Build a production factory over `base` with max_depth 3 — shared
+    /// by the H1/M1 recursion-scoping tests below.
+    fn factory_with(base: ToolRegistry) -> ProductionAgentFactory {
+        ProductionAgentFactory {
+            provider: Arc::new(StubProvider),
+            snapshot: Arc::new(RwLock::new(FactorySnapshot {
+                system: String::new(),
+                tools: base,
+            })),
+            model: "test".into(),
+            max_iterations: 1,
+            max_depth: 3,
+            max_tokens: 8192,
+            agent_defs: AgentDefsConfig::default(),
+            approver: Arc::new(crate::permissions::DenyApprover),
+            permission_mode: PermissionMode::Auto,
+            cancel: None,
+            hooks: None,
+        }
+    }
+
+    /// H1 regression: the snapshot's base registry can already hold the
+    /// ROOT depth-0 `Task` tool (any mid-session refresh re-clones the
+    /// live parent registry, which includes it). A child built at the
+    /// depth ceiling (`child_depth == max_depth`, where the registration
+    /// block is skipped) must NOT inherit that root Task — otherwise it
+    /// could spawn from depth 0 again and defeat `max_depth` entirely.
+    #[tokio::test]
+    async fn production_factory_strips_inherited_task_at_leaf() {
+        let mut base = ToolRegistry::new();
+        base.register(Arc::new(EchoTool { name: TOOL_NAME })); // root Task baked into snapshot
+        base.register(Arc::new(EchoTool { name: "Read" }));
+
+        let child = factory_with(base).build("go", None, 3).await.unwrap();
+        let names = child.tools.names();
+        assert!(
+            !names.contains(&TOOL_NAME),
+            "leaf at max_depth must not inherit the root Task, got {names:?}"
+        );
+        assert!(
+            names.contains(&"Read"),
+            "non-Task tools must survive the strip, got {names:?}"
+        );
+    }
+
+    /// Below the depth ceiling, a correctly-depthed Task IS registered —
+    /// the strip removes the inherited root Task, then a fresh child Task
+    /// replaces it so recursion continues normally.
+    #[tokio::test]
+    async fn production_factory_registers_task_below_max_depth() {
+        let mut base = ToolRegistry::new();
+        base.register(Arc::new(EchoTool { name: TOOL_NAME }));
+
+        let child = factory_with(base).build("go", None, 1).await.unwrap();
+        assert!(
+            child.tools.names().contains(&TOOL_NAME),
+            "child below max_depth should have a Task tool"
+        );
+    }
+
+    /// M1: `disallowed_tools: ["Task"]` must actually prevent the child
+    /// from spawning further subagents, even below the depth ceiling.
+    /// Pre-fix the deny-list could not remove Task (it was registered
+    /// after the filter ran).
+    #[tokio::test]
+    async fn production_factory_disallowed_task_blocks_recursion() {
+        let mut base = ToolRegistry::new();
+        base.register(Arc::new(EchoTool { name: TOOL_NAME }));
+        base.register(Arc::new(EchoTool { name: "Read" }));
+
+        let def = AgentDef {
+            name: "no-recurse".into(),
+            disallowed_tools: vec![TOOL_NAME.into()],
+            ..Default::default()
+        };
+        let child = factory_with(base).build("go", Some(&def), 1).await.unwrap();
+        let names = child.tools.names();
+        assert!(
+            !names.contains(&TOOL_NAME),
+            "disallowed_tools must remove Task, got {names:?}"
+        );
+        assert!(names.contains(&"Read"), "Read should remain, got {names:?}");
+    }
+
+    /// M1: a non-empty tools allow-list that omits `Task` must also
+    /// disable recursion — the allow-list is exhaustive.
+    #[tokio::test]
+    async fn production_factory_allowlist_omitting_task_blocks_recursion() {
+        let mut base = ToolRegistry::new();
+        base.register(Arc::new(EchoTool { name: TOOL_NAME }));
+        base.register(Arc::new(EchoTool { name: "Read" }));
+
+        let def = AgentDef {
+            name: "reader".into(),
+            tools: vec!["Read".into()],
+            ..Default::default()
+        };
+        let child = factory_with(base).build("go", Some(&def), 1).await.unwrap();
+        let names = child.tools.names();
+        assert!(
+            !names.contains(&TOOL_NAME),
+            "allow-list omitting Task must not grant it, got {names:?}"
+        );
+        assert!(
+            names.contains(&"Read"),
+            "Read should be granted, got {names:?}"
+        );
+    }
+
+    /// M1: an allow-list that explicitly lists `Task` keeps recursion
+    /// (and the registered tool is the real correctly-depthed one).
+    #[tokio::test]
+    async fn production_factory_allowlist_with_task_keeps_recursion() {
+        let mut base = ToolRegistry::new();
+        base.register(Arc::new(EchoTool { name: TOOL_NAME }));
+        base.register(Arc::new(EchoTool { name: "Read" }));
+
+        let def = AgentDef {
+            name: "lead".into(),
+            tools: vec!["Read".into(), TOOL_NAME.into()],
+            ..Default::default()
+        };
+        let child = factory_with(base).build("go", Some(&def), 1).await.unwrap();
+        assert!(
+            child.tools.names().contains(&TOOL_NAME),
+            "allow-list including Task should keep recursion"
+        );
+    }
+
+    /// `AgentDef::mcp` scopes MCP tools (`<server>__<tool>`) by server:
+    /// listed servers' tools survive, others are dropped, non-MCP tools
+    /// are untouched.
+    #[tokio::test]
+    async fn production_factory_scopes_mcp_by_server() {
+        let mut base = ToolRegistry::new();
+        base.register(Arc::new(EchoTool { name: "Read" }));
+        base.register(Arc::new(EchoTool {
+            name: "weather__forecast",
+        }));
+        base.register(Arc::new(EchoTool {
+            name: "pinn-ai__text2image",
+        }));
+
+        let def = AgentDef {
+            name: "img".into(),
+            mcp: vec!["pinn-ai".into()],
+            ..Default::default()
+        };
+        let child = factory_with(base).build("go", Some(&def), 1).await.unwrap();
+        let names = child.tools.names();
+        assert!(
+            names.contains(&"pinn-ai__text2image"),
+            "allowed MCP server kept, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"weather__forecast"),
+            "non-listed MCP server dropped, got {names:?}"
+        );
+        assert!(names.contains(&"Read"), "non-MCP tools kept, got {names:?}");
+    }
+
+    /// `AgentDef::skills` replaces the inherited Skill tool with an
+    /// allow-list-scoped copy (same store handle): listed skills load,
+    /// others are refused.
+    #[tokio::test]
+    async fn production_factory_scopes_skills() {
+        use crate::skills::{SkillDef, SkillStore, SkillTool};
+        let mut store = SkillStore::default();
+        store.skills.insert(
+            "pdf".into(),
+            SkillDef::new_eager(
+                "pdf".into(),
+                "d".into(),
+                "".into(),
+                std::path::PathBuf::from("/tmp"),
+                "PDF BODY".into(),
+            ),
+        );
+        store.skills.insert(
+            "xlsx".into(),
+            SkillDef::new_eager(
+                "xlsx".into(),
+                "d".into(),
+                "".into(),
+                std::path::PathBuf::from("/tmp"),
+                "XLSX BODY".into(),
+            ),
+        );
+        let mut base = ToolRegistry::new();
+        base.register(Arc::new(SkillTool::new(store)));
+
+        let def = AgentDef {
+            name: "pdf-only".into(),
+            skills: vec!["pdf".into()],
+            ..Default::default()
+        };
+        let child = factory_with(base).build("go", Some(&def), 1).await.unwrap();
+        let skill = child.tools.get("Skill").expect("Skill tool present");
+        let err = skill.call(json!({"name": "xlsx"})).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("not available to this agent"),
+            "scoped Skill must refuse non-listed skill, got: {err}"
+        );
+        assert!(skill
+            .call(json!({"name": "pdf"}))
+            .await
+            .unwrap()
+            .contains("PDF BODY"));
+    }
+
+    /// M2: spawning a sub-agent is unguarded so behavior is consistent
+    /// across the sequential (1 call) and concurrent (≥2 calls) paths.
+    #[test]
+    fn subagent_tool_does_not_require_approval() {
+        let tool = SubAgentTool::new(SimpleFactory::new(vec![]));
+        assert!(!tool.requires_approval(&json!({"prompt": "go"})));
+    }
+
+    fn tool_call_script(id: &str, name: &str, args: &str) -> Vec<ProviderEvent> {
+        vec![
+            ProviderEvent::MessageStart {
+                model: "test".into(),
+            },
+            ProviderEvent::ToolUseStart {
+                id: id.into(),
+                name: name.into(),
+                thought_signature: None,
+            },
+            ProviderEvent::ToolUseDelta {
+                partial_json: args.into(),
+            },
+            ProviderEvent::ContentBlockStop,
+            ProviderEvent::MessageStop {
+                stop_reason: Some("tool_use".into()),
+                usage: None,
+            },
+        ]
+    }
+
+    fn empty_end_script() -> Vec<ProviderEvent> {
+        vec![
+            ProviderEvent::MessageStart {
+                model: "test".into(),
+            },
+            ProviderEvent::MessageStop {
+                stop_reason: Some("end_turn".into()),
+                usage: None,
+            },
+        ]
+    }
+
+    /// L1: a sub-agent that runs a tool but emits no final text must
+    /// return a synthetic summary of its tool activity rather than the
+    /// spurious "empty response" error it produced pre-fix.
+    #[tokio::test]
+    async fn empty_text_with_tool_activity_returns_summary() {
+        struct ToolRunFactory;
+        #[async_trait]
+        impl AgentFactory for ToolRunFactory {
+            async fn build(&self, _p: &str, _d: Option<&AgentDef>, _depth: usize) -> Result<Agent> {
+                let mut reg = ToolRegistry::new();
+                reg.register(Arc::new(EchoTool { name: "Echo" }));
+                // Turn 1: call Echo. Turn 2: stop with no text.
+                let provider = ScriptedProvider::new(vec![
+                    tool_call_script("call-1", "Echo", "{}"),
+                    empty_end_script(),
+                ]);
+                Ok(Agent::new(provider, reg, "test", ""))
+            }
+        }
+
+        let tool = SubAgentTool::new(Arc::new(ToolRunFactory));
+        let out = tool.call(json!({"prompt": "go"})).await.unwrap();
+        assert!(
+            out.contains("Echo"),
+            "summary should name the tool that ran, got: {out}"
+        );
+        assert!(
+            out.contains("without a final text"),
+            "should be the synthetic summary, got: {out}"
+        );
+    }
+
+    /// L1: a sub-agent that does literally nothing (no text, no tools)
+    /// still errors — there's nothing to report.
+    #[tokio::test]
+    async fn empty_text_no_tools_still_errors() {
+        let factory = SimpleFactory::new(vec![vec![empty_end_script()]]);
+        let tool = SubAgentTool::new(factory);
+        let err = tool.call(json!({"prompt": "go"})).await.unwrap_err();
+        assert!(format!("{err}").contains("empty response"));
     }
 }

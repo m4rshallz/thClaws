@@ -884,6 +884,14 @@ impl WorkerState {
         if let Some(h) = prev_history {
             self.agent.set_history(h);
         }
+        // L5: `rebuild_agent` mutates `tool_registry` directly (the
+        // image/video tool toggle above). Keep the subagent factory's
+        // snapshot in step so a Task spawned after a settings-driven
+        // rebuild (e.g. `imageToolsEnabled` flip via the settings
+        // watcher) sees the same tool set the parent does. Callers that
+        // also rebuild the prompt sync again — `sync_factory_snapshot`
+        // is idempotent.
+        self.sync_factory_snapshot();
         Ok(())
     }
 
@@ -922,10 +930,11 @@ impl WorkerState {
     /// tools (refcount bumps, no tool work). The RwLock is held for
     /// two field writes and nothing else.
     pub fn sync_factory_snapshot(&self) {
+        // L2: recover from a poisoned lock rather than panicking.
         let mut snap = self
             .factory_snapshot
             .write()
-            .expect("factory snapshot write lock");
+            .unwrap_or_else(|e| e.into_inner());
         snap.system = self.system_prompt.clone();
         snap.tools = self.tool_registry.clone();
     }

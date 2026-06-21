@@ -1751,7 +1751,7 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
                 ))
             }
         }
-        "subagent" => parse_subagent_subcommand(args),
+        "subagent" => parse_agentdef_subcommand(args, "subagent"),
         "marketplace" | "market" => {
             let refresh = args.split_whitespace().any(|p| p == "--refresh");
             SlashCommand::Marketplace { refresh }
@@ -1766,7 +1766,11 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "goal" => parse_goal_subcommand(args),
         "schedule" | "sched" => parse_schedule_subcommand(args),
         "workflow" | "wf" => parse_workflow_subcommand(args),
-        "agent" => parse_agent_subcommand(args),
+        // `/agent` + `/agents` are deprecated aliases of `/subagent` —
+        // kept working (GUI buttons, muscle memory) but not advertised in
+        // the menu, since "agent" collides with thClaws' folder-as-agent
+        // product concept. `/subagent` is canonical.
+        "agent" => parse_agentdef_subcommand(args, "agent"),
         "agents" => SlashCommand::AgentsList,
         "deploy" => parse_deploy_subcommand(args),
         "cloud" => parse_cloud_subcommand(args),
@@ -1918,26 +1922,49 @@ fn strip_word_prefix<'a>(s: &'a str, word: &str) -> Option<&'a str> {
     None
 }
 
-/// Parse `/subagent marketplace|search|info|install` — the subagent
-/// (agent-def) corner of the marketplace. Mirrors the `/skill` parser.
-fn parse_subagent_subcommand(args: &str) -> SlashCommand {
+/// Parse the `/subagent` command family (and its deprecated `/agent`
+/// alias). `label` is the command word used in usage hints
+/// (`"subagent"` or `"agent"`) so each surface shows context-appropriate
+/// messages. `/subagent` is the canonical name — `/agent` is kept as a
+/// hidden alias to avoid clashing with thClaws' folder-as-agent product
+/// concept while not breaking existing usage / GUI buttons.
+///
+/// Subcommands are matched as STANDALONE words (via `strip_word_prefix`)
+/// so an agent named `infosec` or `newsbot` isn't shadowed by the
+/// `info` / `new` keywords now that bare `<name>` falls through to a run:
+///   marketplace [--refresh] · search <q> · info <name>   — marketplace browse
+///   install [--user|--project] <name|url|.md> [name]     — install a def
+///   new <name> · edit <name>                             — GUI editor
+///   cancel <id> · list                                   — manage / list active
+///   <name> <prompt>                                      — run a named agent
+fn parse_agentdef_subcommand(args: &str, label: &str) -> SlashCommand {
     let rest = args.trim();
-    if let Some(after_mp) = rest.strip_prefix("marketplace").map(str::trim_start) {
+    if rest.is_empty() {
+        return SlashCommand::Unknown(format!(
+            "usage: /{label} <name> <prompt>   (subcommands: install · marketplace · search · info · new · edit · cancel · list)"
+        ));
+    }
+
+    // ── marketplace lifecycle (acquire defs) ────────────────────────
+    if let Some(after_mp) = strip_word_prefix(rest, "marketplace") {
         let refresh = after_mp.split_whitespace().any(|p| p == "--refresh");
-        SlashCommand::SubagentMarketplace { refresh }
-    } else if let Some(after_search) = rest.strip_prefix("search").map(str::trim_start) {
-        if after_search.is_empty() {
-            SlashCommand::Unknown("usage: /subagent search <query>".into())
+        return SlashCommand::SubagentMarketplace { refresh };
+    }
+    if let Some(after_search) = strip_word_prefix(rest, "search") {
+        return if after_search.is_empty() {
+            SlashCommand::Unknown(format!("usage: /{label} search <query>"))
         } else {
             SlashCommand::SubagentSearch(after_search.to_string())
-        }
-    } else if let Some(after_info) = rest.strip_prefix("info").map(str::trim_start) {
-        if after_info.is_empty() {
-            SlashCommand::Unknown("usage: /subagent info <name>".into())
+        };
+    }
+    if let Some(after_info) = strip_word_prefix(rest, "info") {
+        return if after_info.is_empty() {
+            SlashCommand::Unknown(format!("usage: /{label} info <name>"))
         } else {
             SlashCommand::SubagentInfo(after_info.to_string())
-        }
-    } else if let Some(after_install) = rest.strip_prefix("install").map(str::trim_start) {
+        };
+    }
+    if let Some(after_install) = strip_word_prefix(rest, "install") {
         let mut project = true;
         let mut parts: Vec<&str> = after_install.split_whitespace().collect();
         if parts.first().copied() == Some("--user") {
@@ -1946,7 +1973,7 @@ fn parse_subagent_subcommand(args: &str) -> SlashCommand {
         } else if parts.first().copied() == Some("--project") {
             parts.remove(0);
         }
-        match parts.as_slice() {
+        return match parts.as_slice() {
             [arg] => SlashCommand::SubagentInstall {
                 arg: arg.to_string(),
                 name: None,
@@ -1957,61 +1984,52 @@ fn parse_subagent_subcommand(args: &str) -> SlashCommand {
                 name: Some(name.to_string()),
                 project,
             },
-            _ => SlashCommand::Unknown(
-                "usage: /subagent install [--user] <name-or-git-url-or-.md> [name]".into(),
-            ),
-        }
-    } else {
-        SlashCommand::Unknown(format!(
-            "unknown subagent subcommand: '{rest}' (try: /subagent install, /subagent marketplace, /subagent search, /subagent info)"
-        ))
+            _ => SlashCommand::Unknown(format!(
+                "usage: /{label} install [--user] <name-or-git-url-or-.md> [name]"
+            )),
+        };
     }
-}
 
-/// Parse `/agent <name> <prompt>`, `/agent cancel <id>`, and the
-/// GUI-only `/agent new <name>` / `/agent edit <name>`. Bare `/agent`
-/// returns Unknown with a usage hint. Empty name (only whitespace
-/// after the slash) → Unknown.
-fn parse_agent_subcommand(args: &str) -> SlashCommand {
-    let args = args.trim();
-    if args.is_empty() {
-        return SlashCommand::Unknown(
-            "usage: /agent <name> <prompt>   (or /agent cancel <id>)".into(),
-        );
+    // ── manage / list ───────────────────────────────────────────────
+    if let Some(after_cancel) = strip_word_prefix(rest, "cancel") {
+        return if after_cancel.is_empty() {
+            SlashCommand::Unknown(format!(
+                "usage: /{label} cancel <id>   (try /{label} list to see active ids)"
+            ))
+        } else {
+            SlashCommand::AgentCancel(after_cancel.to_string())
+        };
     }
-    // Recognize `cancel <id>` first — `cancel` would otherwise be
-    // treated as an agent name.
-    if let Some(rest) = args.strip_prefix("cancel") {
-        let rest = rest.trim();
-        if rest.is_empty() {
-            return SlashCommand::Unknown(
-                "usage: /agent cancel <id>   (try /agents to see active ids)".into(),
-            );
+    if let Some(after_new) = strip_word_prefix(rest, "new") {
+        return if after_new.is_empty() {
+            SlashCommand::Unknown(format!("usage: /{label} new <name>"))
+        } else {
+            SlashCommand::AgentNew(after_new.to_string())
+        };
+    }
+    if let Some(after_edit) = strip_word_prefix(rest, "edit") {
+        return if after_edit.is_empty() {
+            SlashCommand::Unknown(format!("usage: /{label} edit <name>"))
+        } else {
+            SlashCommand::AgentEdit(after_edit.to_string())
+        };
+    }
+    // Bare `list` → active-agent listing. `list <something>` is absurd
+    // as a subcommand, so it falls through to the run path (name="list").
+    if let Some(after_list) = strip_word_prefix(rest, "list") {
+        if after_list.is_empty() {
+            return SlashCommand::AgentsList;
         }
-        return SlashCommand::AgentCancel(rest.to_string());
     }
-    // `new <name>` / `edit <name>` — GUI-only editor subcommands.
-    // Matched before the generic `<name> <prompt>` path; require the
-    // keyword to be a standalone word (`new`, not `newsletter`).
-    if let Some(rest) = strip_word_prefix(args, "new") {
-        if rest.is_empty() {
-            return SlashCommand::Unknown("usage: /agent new <name>".into());
-        }
-        return SlashCommand::AgentNew(rest.to_string());
-    }
-    if let Some(rest) = strip_word_prefix(args, "edit") {
-        if rest.is_empty() {
-            return SlashCommand::Unknown("usage: /agent edit <name>".into());
-        }
-        return SlashCommand::AgentEdit(rest.to_string());
-    }
-    let (name, prompt) = match args.split_once(char::is_whitespace) {
+
+    // ── run a named agent: <name> <prompt> ──────────────────────────
+    let (name, prompt) = match rest.split_once(char::is_whitespace) {
         Some((n, p)) => (n.trim(), p.trim()),
-        None => (args, ""),
+        None => (rest, ""),
     };
     if prompt.is_empty() {
         return SlashCommand::Unknown(format!(
-            "usage: /agent {name} <prompt>   (prompt cannot be empty)"
+            "usage: /{label} {name} <prompt>   (prompt cannot be empty)"
         ));
     }
     SlashCommand::Agent {
@@ -3507,12 +3525,20 @@ pub fn built_in_commands() -> &'static [BuiltInCommand] {
         BuiltInCommand { name: "skills",   description: "List installed skills",                      category: "Extensions", usage: "" },
         BuiltInCommand { name: "skill",    description: "Skill subcommands (install / marketplace / search / info / show)", category: "Extensions", usage: "<sub> [args]" },
         BuiltInCommand { name: "plugins",  description: "List installed plugins",                     category: "Extensions", usage: "" },
-        BuiltInCommand { name: "plugin",   description: "Plugin subcommands (install / marketplace / search / info / show / enable / disable)", category: "Extensions", usage: "<sub> [args]" },
+        BuiltInCommand { name: "plugin",   description: "Plugin subcommands (install / remove / enable / disable / show / gc / marketplace / search / info)", category: "Extensions", usage: "<sub> [args]" },
         BuiltInCommand { name: "mcp",      description: "MCP subcommands (add / remove / install / reauth / marketplace / search / info)", category: "Extensions", usage: "[sub] [args]" },
+        BuiltInCommand { name: "marketplace", description: "Browse the full marketplace (skills, plugins, MCP, subagents)", category: "Extensions", usage: "[--refresh]" },
 
         // Team
+        BuiltInCommand { name: "subagent", description: "Run / manage named agent defs (<name> <prompt> · new · edit · cancel · list · install · marketplace · search · info)", category: "Team", usage: "<sub|name> [args]" },
         BuiltInCommand { name: "team",     description: "Show team agent status",                     category: "Team", usage: "" },
         BuiltInCommand { name: "tasks",    description: "List current tasks/todos",                   category: "Team", usage: "" },
+
+        // Automation
+        BuiltInCommand { name: "workflow", description: "Run multi-agent workflows",                  category: "Automation", usage: "run <goal> | exec <path> | list | inspect <id> | resume <id> | rm <id>" },
+        BuiltInCommand { name: "loop",     description: "Run a repeating / self-paced task loop",     category: "Automation", usage: "<interval> <body>" },
+        BuiltInCommand { name: "goal",     description: "Manage long-running goals",                  category: "Automation", usage: "new <goal> | status | next | done | cancel <id>" },
+        BuiltInCommand { name: "schedule", description: "Manage scheduled (cron) tasks",             category: "Automation", usage: "list | show <id> | run <id> | pause|resume <id> | rm <id>" },
 
         // Research
         BuiltInCommand { name: "research", description: "Background research → KMS",                  category: "Research", usage: "<query> | list | status <id> | show <id> | cancel <id> | wait <id>" },
@@ -3714,6 +3740,13 @@ pub fn render_help() -> &'static str {
      /thinking BUDGET  Set extended-thinking token budget (0 = off)\n  \
      /cwd              Show current working directory\n  \
      /version          Show version\n  \
+     /subagent <name> <prompt>\n  \
+     \x20                 Run a named agent def (.thclaws/agents/<name>.md)\n  \
+     /subagent new|edit <name>   Create / edit an agent def (GUI)\n  \
+     /subagent cancel <id> | list   Cancel / list active agents\n  \
+     /subagent install|marketplace|search|info ...\n  \
+     \x20                 Install/browse agent defs from the marketplace\n  \
+     \x20                 (/agent is a deprecated alias)\n  \
      /team             Attach to team tmux session (or show status)\n  \
      /usage            Show token usage by provider and model\n  \
      /cost             Show accumulated session cost in USD\n  \
@@ -4775,9 +4808,8 @@ fn refresh_repl_system_prompt(
     // shares this Arc<RwLock<FactorySnapshot>> with us, so writing
     // here is the only update needed for both system AND tools.
     {
-        let mut snap = factory_snapshot
-            .write()
-            .expect("factory snapshot write lock");
+        // L2: recover from a poisoned lock rather than panicking.
+        let mut snap = factory_snapshot.write().unwrap_or_else(|e| e.into_inner());
         snap.system = new_system;
         snap.tools = tool_registry.clone();
     }
@@ -5087,6 +5119,14 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     // filtering — Task became a privilege-escalation primitive
     // (model spawns subagent → subagent has tools the parent was
     // forbidden from using).
+    // I1: a CLI-side cancel token so Ctrl-C during a turn reaches a
+    // runaway *subagent*. The parent turn is already cancelled by the
+    // select!/drop in the turn loops below; this token propagates
+    // cooperatively to Task-spawned children via the factory (their
+    // `collect_agent_turn_with_cancel` observes it). Each turn loop
+    // resets it before `run_turn` so a prior Ctrl-C doesn't pre-cancel
+    // the next turn.
+    let repl_cancel = crate::cancel::CancelToken::new();
     let factory_snapshot =
         std::sync::Arc::new(std::sync::RwLock::new(crate::subagent::FactorySnapshot {
             system: system.clone(),
@@ -5107,9 +5147,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
             agent_defs: agent_defs.clone(),
             approver: approver.clone(),
             permission_mode: perm_mode,
-            // CLI doesn't have a CancelToken plumbing today; subagents
-            // run uninterruptibly here. GUI passes Some via build_state.
-            cancel: None,
+            // I1: propagate the CLI cancel token so Ctrl-C reaches a
+            // runaway subagent (the parent turn is already cut by the
+            // loop's select!/drop). GUI passes its worker token the same way.
+            cancel: Some(repl_cancel.clone()),
             hooks: Some(hooks_arc.clone()),
         });
         let subagent_arc: Arc<dyn crate::tools::Tool> = Arc::new(
@@ -5469,6 +5510,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 > = std::collections::HashMap::new();
 
                 // Run the agent turn.
+                repl_cancel.reset();
                 let mut stream = Box::pin(agent.run_turn(prompt));
                 loop {
                     let heartbeat_delay =
@@ -5477,6 +5519,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         ev = stream.next() => ev,
                         _ = tokio::signal::ctrl_c() => {
                             team_println!("\n[cancelled]");
+                            repl_cancel.cancel();
                             drop(stream);
                             break;
                         }
@@ -5740,6 +5783,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 println!("{COLOR_GREEN}");
                 lead_log!("{COLOR_GREEN}");
                 let _ = std::io::stdout().flush();
+                repl_cancel.reset();
                 let mut stream = Box::pin(agent.run_turn(team_prompt));
                 let mut last_was_thinking = false;
                 let mut active_tools: std::collections::HashMap<String, crate::tool_display::ActiveToolDisplay> =
@@ -5751,6 +5795,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         _ = tokio::signal::ctrl_c() => {
                             println!("{COLOR_RESET}\n{COLOR_YELLOW}[cancelled]{COLOR_RESET}");
                             lead_log!("{COLOR_RESET}\n{COLOR_YELLOW}[cancelled]{COLOR_RESET}\n");
+                            repl_cancel.cancel();
                             drop(stream);
                             break;
                         }
@@ -10759,6 +10804,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         print!("{COLOR_GREEN}");
         let _ = std::io::stdout().flush();
         let turn_start = std::time::Instant::now();
+        repl_cancel.reset();
         let mut stream = Box::pin(agent.run_turn(line.to_string()));
         let mut _cancelled = false;
         let mut last_was_thinking = false;
@@ -10782,6 +10828,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     print!("{}", crate::tool_display::clear_thinking_line());
                     _cancelled = true;
                     println!("{COLOR_RESET}\n{COLOR_YELLOW}[cancelled by Ctrl-C]{COLOR_RESET}");
+                    repl_cancel.cancel();
                     drop(stream);
                     break;
                 }
@@ -12891,6 +12938,76 @@ mod tests {
     #[test]
     fn parse_slash_agents_list() {
         assert_eq!(parse_slash("/agents"), Some(SlashCommand::AgentsList));
+    }
+
+    /// `/subagent` is the canonical command: besides the marketplace ops
+    /// it now also runs / manages agent defs (merged from the old
+    /// `/agent`). `/agent` remains a working alias.
+    #[test]
+    fn parse_slash_subagent_runs_and_manages() {
+        // Run a named agent.
+        assert_eq!(
+            parse_slash("/subagent researcher find X"),
+            Some(SlashCommand::Agent {
+                name: "researcher".into(),
+                prompt: "find X".into(),
+            }),
+        );
+        // new / edit / cancel / list.
+        assert_eq!(
+            parse_slash("/subagent new reviewer"),
+            Some(SlashCommand::AgentNew("reviewer".into())),
+        );
+        assert_eq!(
+            parse_slash("/subagent edit translator"),
+            Some(SlashCommand::AgentEdit("translator".into())),
+        );
+        assert_eq!(
+            parse_slash("/subagent cancel side-abc123"),
+            Some(SlashCommand::AgentCancel("side-abc123".into())),
+        );
+        assert_eq!(
+            parse_slash("/subagent list"),
+            Some(SlashCommand::AgentsList),
+        );
+        // Subcommands match as standalone words → an agent named
+        // `infosec` / `newsbot` isn't shadowed by `info` / `new`.
+        assert_eq!(
+            parse_slash("/subagent infosec audit the repo"),
+            Some(SlashCommand::Agent {
+                name: "infosec".into(),
+                prompt: "audit the repo".into(),
+            }),
+        );
+        assert_eq!(
+            parse_slash("/subagent newsbot write the digest"),
+            Some(SlashCommand::Agent {
+                name: "newsbot".into(),
+                prompt: "write the digest".into(),
+            }),
+        );
+        // Usage hints carry the canonical label.
+        match parse_slash("/subagent new") {
+            Some(SlashCommand::Unknown(msg)) => assert!(msg.contains("usage: /subagent new")),
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    /// `/agent` stays a deprecated alias — same dispatch, label in hints.
+    #[test]
+    fn parse_slash_agent_alias_still_works() {
+        assert_eq!(
+            parse_slash("/agent install reviewer"),
+            Some(SlashCommand::SubagentInstall {
+                arg: "reviewer".into(),
+                name: None,
+                project: true,
+            }),
+        );
+        assert_eq!(
+            parse_slash("/agent marketplace"),
+            Some(SlashCommand::SubagentMarketplace { refresh: false }),
+        );
     }
 
     #[test]

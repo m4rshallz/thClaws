@@ -157,6 +157,14 @@ pub trait Tool: Send + Sync {
     fn requires_gate(&self) -> Option<&'static str> {
         None
     }
+
+    /// Downcast hook. Default `None`; concrete tools that need to be
+    /// recovered from an `Arc<dyn Tool>` (e.g. the skill tools, so the
+    /// subagent factory can rebuild allow-list-scoped copies sharing the
+    /// same store handle) override this to return `Some(self)`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// Process-global set of open tool gates. Session-sticky: once a gate is

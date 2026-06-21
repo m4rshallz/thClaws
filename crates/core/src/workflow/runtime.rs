@@ -343,6 +343,17 @@ pub(crate) fn set_usage_sink(enabled: bool) {
 
 /// Called by SubAgentTool after each successful turn — no-op when the
 /// sink is disabled (i.e. outside a workflow run).
+///
+/// I3 INVARIANT: this is a thread-local sink. It works only because a
+/// workflow drives every subagent on the SAME thread that called
+/// `set_usage_sink(true)` — the sandbox runs under `spawn_blocking` and
+/// invokes each subagent via `handle.block_on(tool.call(...))`, and the
+/// model-driven concurrent path uses `join_all` (cooperative, one
+/// thread). If a future refactor moves subagent execution onto a
+/// work-stealing executor (`tokio::spawn`), this sink would silently
+/// read `None` on the worker thread and DROP all workflow usage with no
+/// error. Keep subagents on the owning thread, or switch this to a
+/// `tokio::task_local!` carried across the spawn.
 pub(crate) fn push_worker_usage(usage: crate::providers::Usage) {
     WORKFLOW_USAGE_SINK.with(|cell| {
         if let Some(vec) = cell.borrow_mut().as_mut() {

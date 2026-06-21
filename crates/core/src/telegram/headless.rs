@@ -270,7 +270,12 @@ pub async fn run(config: AppConfig) -> Result<()> {
     // forum-topic-routed `agentId` can spin up (and reuse) a per-AgentDef
     // agent. Clone the inputs the factory needs before they move into the
     // default agent below.
-    let agent_defs = AgentDefsConfig::load();
+    // I2: match CLI/GUI — surface plugin-contributed agent defs and apply
+    // settings.json built-in subagent model overrides. Plain `load()`
+    // left headless surfaces blind to plugin agents and the
+    // `*_subagent_model` overrides.
+    let mut agent_defs = AgentDefsConfig::load_with_extra(&crate::plugins::plugin_agent_dirs());
+    agent_defs.apply_builtin_subagent_overrides(&config);
     // Telegram headless doesn't currently mutate system/tools
     // mid-run — Arc is owned solely by the factory. If we add
     // mid-run mutators later, hoist this clone next to the worker
