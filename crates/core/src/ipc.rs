@@ -1899,6 +1899,8 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
                         "env_set": matches!(s.env_source, crate::secrets::KeySource::Environment),
                         "key_length": s.key_length,
                         "kind": s.kind,
+                        "featured": s.featured,
+                        "default_model": s.default_model,
                     })
                 })
                 .collect();
@@ -2715,23 +2717,15 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             let payload = serde_json::json!({
                 "type": "gateway_settings",
                 "base_url": crate::providers::thclaws_gateway::GATEWAY_BASE_URL,
-                "use_for": cfg.gateway_use_for,
+                "proxy": cfg.gateway_proxy,
+                "has_cli_token": crate::providers::thclaws_gateway::has_access_key(),
             });
             (ctx.dispatch)(payload.to_string());
         }
         "gateway_settings_set" => {
-            let use_for: Vec<String> = msg
-                .get("use_for")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.trim().to_lowercase()))
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let proxy = msg.get("proxy").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut cfg = crate::config::ProjectConfig::load().unwrap_or_default();
-            cfg.set_gateway_use_for(use_for.clone());
+            cfg.set_gateway_proxy(proxy);
             let (ok, error) = match cfg.save() {
                 Ok(()) => (true, String::new()),
                 Err(e) => (false, e.to_string()),
@@ -2739,7 +2733,8 @@ pub fn handle_ipc(msg: Value, ctx: &IpcContext) -> bool {
             let payload = serde_json::json!({
                 "type": "gateway_settings_result",
                 "base_url": crate::providers::thclaws_gateway::GATEWAY_BASE_URL,
-                "use_for": use_for,
+                "proxy": proxy,
+                "has_cli_token": crate::providers::thclaws_gateway::has_access_key(),
                 "ok": ok,
                 "error": error,
             });

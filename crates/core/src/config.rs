@@ -259,6 +259,14 @@ pub struct AppConfig {
     /// — see that module for the staging override env var.
     #[serde(default)]
     pub gateway_use_for: Vec<String>,
+    /// Single source of truth for the desktop proxy toggle: when true (and a
+    /// CLI access token is present), every gateway-routable provider routes
+    /// through the thClaws Gateway; when false, pure BYOK. `gateway_use_for`
+    /// above is DERIVED from this in `load()` — never edited directly by the
+    /// UI. Per-model eligibility (Featured + priced) is enforced at routing
+    /// time, so a non-featured model falls back to BYOK even when this is on.
+    #[serde(default)]
+    pub gateway_proxy: bool,
 
     /// Per-skill model recommendations from settings.json. Overrides the
     /// `model:` field declared in the SKILL.md frontmatter for the named
@@ -544,6 +552,7 @@ impl Default for AppConfig {
             browser_enabled: true,
             browser_headless: None,
             gateway_use_for: Vec::new(),
+            gateway_proxy: false,
             extract_save_skill_models: None,
             translator_subagent_model: None,
             remote_agent_url: None,
@@ -770,6 +779,12 @@ pub struct ProjectConfig {
     /// per-provider opt-in lives in user-visible config.
     #[serde(rename = "gatewayUseFor")]
     pub gateway_use_for: Option<Vec<String>>,
+    /// Desktop proxy toggle (single flag). `true` = route every gateway-routable
+    /// provider through the thClaws Gateway; `false`/absent = BYOK. Supersedes
+    /// the legacy `gatewayUseFor` list (which is migrated to `true` when
+    /// non-empty). Written by the GUI proxy checkbox.
+    #[serde(rename = "gatewayProxy")]
+    pub gateway_proxy: Option<bool>,
     /// Default target for `/deploy`. See
     /// [`AppConfig::remote_agent_url`].
     #[serde(rename = "remoteAgentUrl")]
@@ -876,6 +891,7 @@ impl Default for ProjectConfig {
             auto_learn_reconcile_hours: None,
             openrouter_free_only: None,
             gateway_use_for: None,
+            gateway_proxy: None,
             remote_agent_url: None,
             telegram: None,
             cloud: None,
@@ -1202,12 +1218,16 @@ impl ProjectConfig {
         if let Some(b) = self.browser_headless {
             config.browser_headless = Some(b);
         }
-        if let Some(ref providers) = self.gateway_use_for {
-            config.gateway_use_for = providers
-                .iter()
-                .map(|s| s.trim().to_lowercase())
-                .filter(|s| !s.is_empty())
-                .collect();
+        // Proxy toggle. Explicit `gatewayProxy` wins; otherwise migrate a
+        // legacy non-empty `gatewayUseFor` list to "proxy on". The effective
+        // `gateway_use_for` is DERIVED from this flag in `load()`, so we set
+        // the flag here, not the list.
+        if let Some(proxy) = self.gateway_proxy {
+            config.gateway_proxy = proxy;
+        } else if let Some(ref providers) = self.gateway_use_for {
+            if providers.iter().any(|s| !s.trim().is_empty()) {
+                config.gateway_proxy = true;
+            }
         }
         if let Some(ref url) = self.remote_agent_url {
             let trimmed = url.trim();
@@ -1301,15 +1321,11 @@ impl ProjectConfig {
         self.permissions = Some(PermissionsConfig::Mode(mode.to_string()));
     }
 
-    /// Persist the set of providers routed through the gateway.
-    pub fn set_gateway_use_for(&mut self, providers: Vec<String>) {
-        self.gateway_use_for = Some(
-            providers
-                .into_iter()
-                .map(|s| s.trim().to_lowercase())
-                .filter(|s| !s.is_empty())
-                .collect(),
-        );
+    /// Persist the desktop proxy toggle (single flag). Also clears any legacy
+    /// `gatewayUseFor` list so the two representations can't drift apart.
+    pub fn set_gateway_proxy(&mut self, on: bool) {
+        self.gateway_proxy = Some(on);
+        self.gateway_use_for = None;
     }
 
     /// Load project-level MCP servers. Checks (in order):
@@ -1530,16 +1546,6 @@ fn mcp_config_path(user: bool) -> Result<PathBuf> {
     }
 }
 
-/// Whether the gateway-routed provider set should be force-refreshed to the
-/// engine's current `GATEWAY_ALL_PROVIDERS`. True inside a gateway pod, and on
-/// desktop once the user has opted into the gateway (a non-empty
-/// `gatewayUseFor`) — so the routed set tracks newly-shipped gateway providers
-/// instead of a stale enable-time snapshot. An empty list (never opted in)
-/// stays empty: pure BYOK.
-fn should_sync_gateway_use_for(in_gateway_pod: bool, current_use_for: &[String]) -> bool {
-    in_gateway_pod || !current_use_for.is_empty()
-}
-
 impl AppConfig {
     /// Load config following the documented precedence.
     /// Load order: env override → user settings.json → Claude Code fallback →
@@ -1688,20 +1694,22 @@ impl AppConfig {
         // pods too.
         let in_gateway_pod = crate::workdir::is_multiuser()
             || std::env::var("THCLAWS_USES_GATEWAY").ok().as_deref() == Some("1");
-        // Desktop too: once the user has opted into the gateway (a non-empty
-        // `gatewayUseFor`, written by the GUI gateway panel), keep the routed
-        // set in sync with the engine's CURRENT `GATEWAY_ALL_PROVIDERS` rather
-        // than the snapshot saved at enable-time. Otherwise a gateway provider
-        // that shipped AFTER the user enabled the gateway (zai/xai/moonshot/…)
-        // is absent from their stale list and wrongly falls back to BYOK
-        // ("set ZAI_API_KEY") even though the gateway supports it. An EMPTY
-        // list means the user never opted in — leave it empty (pure BYOK).
-        if should_sync_gateway_use_for(in_gateway_pod, &config.gateway_use_for) {
-            config.gateway_use_for = crate::shared::GATEWAY_ALL_PROVIDERS
+        // DERIVE the routed set from a single source of truth: the `gatewayProxy`
+        // flag (desktop) or being in a gateway pod (cloud). When on, every
+        // gateway-routable provider is in the set; when off, the set is empty
+        // (pure BYOK). Deriving here — rather than persisting a per-provider
+        // list — means the proxy can't get "stuck on" or partially toggle, and
+        // newly-shipped routable providers are covered automatically. Per-model
+        // eligibility (Featured + priced) is enforced at routing time, so a
+        // non-featured model still falls back to BYOK even when the proxy is on.
+        config.gateway_use_for = if in_gateway_pod || config.gateway_proxy {
+            crate::shared::GATEWAY_ALL_PROVIDERS
                 .iter()
                 .map(|s| s.to_string())
-                .collect();
-        }
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         Ok(config)
     }
@@ -2054,17 +2062,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gateway_use_for_sync_decision() {
-        // Gateway pod → always sync (no BYOK there).
-        assert!(should_sync_gateway_use_for(true, &[]));
-        // Desktop, opted into the gateway (non-empty, possibly stale) → sync
-        // to the current full list so new providers route, not BYOK-fall-back.
-        assert!(should_sync_gateway_use_for(
-            false,
-            &["openai".to_string(), "anthropic".to_string()]
-        ));
-        // Desktop, never opted in (empty) → leave empty: pure BYOK.
-        assert!(!should_sync_gateway_use_for(false, &[]));
+    fn legacy_gateway_use_for_migrates_to_proxy_flag() {
+        // A pre-existing non-empty `gatewayUseFor` (the old per-provider list)
+        // migrates to the single proxy flag = on.
+        let mut pc = ProjectConfig::default();
+        pc.gateway_use_for = Some(vec!["openai".to_string()]);
+        let mut cfg = AppConfig::default();
+        pc.apply_to(&mut cfg);
+        assert!(cfg.gateway_proxy, "non-empty legacy list → proxy on");
+
+        // Explicit `gatewayProxy` wins over the legacy list.
+        let mut pc2 = ProjectConfig::default();
+        pc2.gateway_proxy = Some(false);
+        pc2.gateway_use_for = Some(vec!["openai".to_string()]);
+        let mut cfg2 = AppConfig::default();
+        pc2.apply_to(&mut cfg2);
+        assert!(!cfg2.gateway_proxy, "explicit gatewayProxy=false wins");
+
+        // Empty legacy list → stays off (pure BYOK).
+        let mut pc3 = ProjectConfig::default();
+        pc3.gateway_use_for = Some(vec![]);
+        let mut cfg3 = AppConfig::default();
+        pc3.apply_to(&mut cfg3);
+        assert!(!cfg3.gateway_proxy, "empty legacy list → proxy off");
     }
     use tempfile::tempdir;
 

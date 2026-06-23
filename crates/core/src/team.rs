@@ -1303,7 +1303,16 @@ impl Tool for SpawnTeammateTool {
         // turn with a 401, and exit silently — frustrating to debug.
         if let Some(ref m) = runtime_model {
             if let Some(kind) = crate::providers::ProviderKind::detect(m) {
-                if !kind.has_key_available() {
+                // OK if a local key exists OR the gateway proxy can serve this
+                // (featured) model — mirror build_provider so a proxy-only user
+                // can spawn a featured-model teammate without a BYOK key.
+                let gateway_ok = {
+                    let mut cfg = crate::config::AppConfig::load().unwrap_or_default();
+                    cfg.model = m.clone();
+                    crate::providers::thclaws_gateway::gateway_overlay_for_model(&cfg, kind)
+                        .is_some()
+                };
+                if !kind.has_key_available() && !gateway_ok {
                     let env = kind
                         .api_key_env()
                         .map(|e| format!(" (env var: {e})"))

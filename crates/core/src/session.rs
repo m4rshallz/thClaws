@@ -452,6 +452,12 @@ impl Session {
         path: &Path,
         plan: Option<&crate::tools::plan_state::Plan>,
     ) -> Result<()> {
+        // Skip the redundant "still no plan" snapshot: writing `{plan:null}`
+        // on every turn when there was never a plan just bloats the file. A
+        // real transition (a plan appearing, or being cleared) still writes.
+        if plan.is_none() && self.plan.is_none() {
+            return Ok(());
+        }
         append_plan_snapshot(path, plan)?;
         self.plan = plan.cloned();
         self.updated_at = now_secs();
@@ -467,8 +473,26 @@ impl Session {
         path: &Path,
         goal: Option<&crate::goal_state::GoalState>,
     ) -> Result<()> {
+        // Same anti-bloat rule as plan: don't rewrite `{goal:null}` every turn
+        // when there was never a goal. A real set/clear transition still writes.
+        if goal.is_none() && self.goal.is_none() {
+            return Ok(());
+        }
         append_goal_snapshot(path, goal)?;
         self.goal = goal.cloned();
+        self.updated_at = now_secs();
+        Ok(())
+    }
+
+    /// Record a mid-session model switch: append a `model` event (so a restore
+    /// recovers the new provider even with no following chat turn) and update
+    /// the in-memory label. No-op when the model is unchanged.
+    pub fn record_model_to(&mut self, path: &Path, model: &str) -> Result<()> {
+        if self.model == model {
+            return Ok(());
+        }
+        append_model_event(path, model)?;
+        self.model = model.to_string();
         self.updated_at = now_secs();
         Ok(())
     }
@@ -499,6 +523,10 @@ impl Session {
         let mut title: Option<String> = None;
         let mut message_count = 0usize;
         let mut skipped = 0usize;
+        // Newest model wins: the header carries only the creation model, but a
+        // `model` event (mid-session switch) or an assistant line records later
+        // switches. Track the last one seen so restore lands on the right model.
+        let mut latest_model: Option<String> = None;
 
         for line_result in reader.lines() {
             let line = match line_result {
@@ -587,7 +615,16 @@ impl Session {
                             last_timestamp = ts;
                         }
                     }
+                    // Assistant lines carry the model that produced the turn.
+                    if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
+                        latest_model = Some(m.to_string());
+                    }
                     message_count += 1;
+                }
+                "model" => {
+                    if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
+                        latest_model = Some(m.to_string());
+                    }
                 }
                 _ => {
                     skipped += 1;
@@ -632,7 +669,7 @@ impl Session {
             } else {
                 h.created_at
             },
-            model: h.model,
+            model: latest_model.unwrap_or(h.model),
             message_count,
             title,
         })
@@ -665,6 +702,9 @@ impl Session {
         // than `anthropic-agent` today).
         let mut provider_session_id: Option<String> = None;
         let mut skipped: usize = 0;
+        // Newest model wins (see load_meta_from): a `model` event or an
+        // assistant line records mid-session switches after the header.
+        let mut latest_model: Option<String> = None;
 
         for (line_num, line_result) in reader.lines().enumerate() {
             let line = match line_result {
@@ -803,6 +843,11 @@ impl Session {
                     }
                 };
                 provider_session_id = ev.provider_session_id;
+            } else if kind == "model" {
+                // Mid-session model switch marker (newest wins).
+                if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
+                    latest_model = Some(m.to_string());
+                }
             } else if kind == "compaction" {
                 // Replay checkpoint: everything accumulated so far is
                 // archived-on-disk but gets replaced in memory by the
@@ -878,6 +923,11 @@ impl Session {
                     last_timestamp = event.timestamp;
                 }
 
+                // Assistant lines carry the model that produced the turn.
+                if let Some(ref m) = event.model {
+                    latest_model = Some(m.clone());
+                }
+
                 messages.push(Message {
                     role,
                     content: event.content,
@@ -933,7 +983,7 @@ impl Session {
             } else {
                 h.created_at
             },
-            model: h.model,
+            model: latest_model.unwrap_or(h.model),
             cwd: h.cwd,
             messages,
             title,
@@ -1094,6 +1144,22 @@ pub fn append_goal_snapshot(
         timestamp: now_secs(),
     };
     let line = serde_json::to_string(&event)?;
+    append_locked(path, |file| writeln!(file, "{}", line))
+}
+
+/// Append a `model` event recording a mid-session model switch. The header
+/// line carries only the CREATION model (append-only — it's never rewritten),
+/// so without this a switch that isn't followed by a chat turn would be lost on
+/// restore. `load_*` scans these (newest wins) to recover the active model.
+pub fn append_model_event(path: &Path, model: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let line = serde_json::to_string(&serde_json::json!({
+        "type": "model",
+        "model": model,
+        "timestamp": now_secs(),
+    }))?;
     append_locked(path, |file| writeln!(file, "{}", line))
 }
 
@@ -1459,6 +1525,57 @@ mod tests {
         assert_eq!(event["type"], "user");
         assert!(event["content"].is_array());
         assert!(event["timestamp"].is_number());
+    }
+
+    #[test]
+    fn model_switch_persists_and_restores_latest_model() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let mut session = Session::new("openai/gpt-4.1", "/tmp");
+        store.save(&mut session).unwrap();
+        let path = store.path_for(&session.id);
+
+        // Switch model with NO chat turn following.
+        session
+            .record_model_to(&path, "anthropic/claude-sonnet-4-6")
+            .unwrap();
+
+        // Both load paths recover the switched-to model, not the header's.
+        let loaded = Session::load_from(&path).unwrap();
+        assert_eq!(loaded.model, "anthropic/claude-sonnet-4-6");
+        let meta = Session::load_meta_from(&path).unwrap();
+        assert_eq!(meta.model, "anthropic/claude-sonnet-4-6");
+
+        // No-op when unchanged — doesn't append a duplicate event.
+        let before = std::fs::read_to_string(&path).unwrap();
+        session
+            .record_model_to(&path, "anthropic/claude-sonnet-4-6")
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn redundant_null_plan_goal_snapshots_are_not_written() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let mut session = Session::new("m", "/tmp");
+        store.save(&mut session).unwrap();
+        let path = store.path_for(&session.id);
+
+        // No plan/goal ever set → repeated null snapshots must not be written.
+        for _ in 0..5 {
+            session.append_plan_snapshot_to(&path, None).unwrap();
+            session.append_goal_snapshot_to(&path, None).unwrap();
+        }
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("plan_snapshot"),
+            "null plan snapshots should be skipped"
+        );
+        assert!(
+            !content.contains("goal_snapshot"),
+            "null goal snapshots should be skipped"
+        );
     }
 
     #[test]

@@ -514,6 +514,24 @@ impl EffectiveCatalogue {
         self.baseline.compute_cost_usd(model, usage)
     }
 
+    /// True when `model` has a priced catalogue entry (both input AND output
+    /// per-mtok present) — i.e. the thClaws Gateway can meter it. This is the
+    /// "featured / gateway-servable" test used to decide gateway-vs-BYOK
+    /// routing. Checks the user cache first, then the embedded baseline.
+    pub fn is_priced(&self, model: &str) -> bool {
+        let priced = |c: &Catalogue| {
+            c.find_entry(model)
+                .map(|e| e.input_per_mtok.is_some() && e.output_per_mtok.is_some())
+                .unwrap_or(false)
+        };
+        if let Some(c) = &self.cache {
+            if priced(c) {
+                return true;
+            }
+        }
+        priced(&self.baseline)
+    }
+
     /// Look up an override for `model`, applying the same alias and
     /// prefix-strip rules the catalogue uses. Override keys may be
     /// `provider/model` (preferred) or bare `model` — both forms are

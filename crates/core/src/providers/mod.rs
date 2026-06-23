@@ -1142,10 +1142,6 @@ pub async fn build_all_models_payload() -> String {
     let cat = crate::model_catalogue::EffectiveCatalogue::load();
     let app_cfg = crate::config::AppConfig::load().unwrap_or_default();
     let free_only_or = app_cfg.openrouter_free_only;
-    // Gateway mode (hosted cloud, metered): only Featured providers have a
-    // gateway route, so the picker hides Additional ones. BYOK sessions
-    // (desktop / own keys) see the full catalogue.
-    let gateway_mode = crate::providers::thclaws_gateway::is_active(&app_cfg);
     let ollama_live: Vec<String> = {
         let base = std::env::var("OLLAMA_BASE_URL")
             .unwrap_or_else(|_| crate::providers::ollama::DEFAULT_BASE_URL.to_string());
@@ -1186,15 +1182,20 @@ pub async fn build_all_models_payload() -> String {
     let mut groups: Vec<(u32, serde_json::Value)> = Vec::new();
     for (all_idx, kind) in ProviderKind::ALL.iter().enumerate() {
         let name = kind.name();
-        // In gateway mode, Additional providers aren't routable — skip them.
-        if gateway_mode && kind.tier() != ProviderTier::Featured {
+        // Hosted multiuser pods have NO BYOK — a non-routable provider or an
+        // unpriced model can't be served there, so hide them. On desktop we
+        // show EVERYTHING (BYOK works for any model) and tag each row with
+        // `featured` so the UI can decide where the proxy switch applies.
+        let pod = crate::workdir::is_multiuser();
+        if pod && kind.tier() != ProviderTier::Featured {
             continue;
         }
-        let mut model_ids: std::collections::BTreeMap<String, Option<u32>> =
+        let provider_featured = kind.tier() == ProviderTier::Featured;
+        // (id) -> (context, featured). `featured` = gateway-servable: a
+        // Featured-tier provider with a priced catalogue entry.
+        let mut model_ids: std::collections::BTreeMap<String, (Option<u32>, bool)> =
             std::collections::BTreeMap::new();
         let is_openrouter = matches!(kind, ProviderKind::OpenRouter);
-        let hide_unpriced =
-            crate::providers::thclaws_gateway::hides_unpriced_models(&app_cfg, name);
         for (id, entry) in cat.list_models_for_provider(name) {
             if entry.chat == Some(false) {
                 continue;
@@ -1202,22 +1203,22 @@ pub async fn build_all_models_payload() -> String {
             if is_openrouter && free_only_or && entry.free != Some(true) {
                 continue;
             }
-            // Strictly metered via gateway → unpriced rows 400, hide them.
-            if hide_unpriced && (entry.input_per_mtok.is_none() || entry.output_per_mtok.is_none())
-            {
+            let priced = entry.input_per_mtok.is_some() && entry.output_per_mtok.is_some();
+            // In a pod, unpriced rows would 400 (strictly metered) — hide them.
+            if pod && !priced {
                 continue;
             }
             let canonical = crate::model_catalogue::canonical_model_id(name, &id);
-            model_ids.insert(canonical, entry.context);
+            model_ids.insert(canonical, (entry.context, provider_featured && priced));
         }
         if matches!(kind, ProviderKind::Ollama) {
             for id in &ollama_live {
-                model_ids.entry(id.clone()).or_insert(None);
+                model_ids.entry(id.clone()).or_insert((None, false));
             }
         }
         if matches!(kind, ProviderKind::OpenCodeGo) {
             for id in &opencodego_live {
-                model_ids.entry(id.clone()).or_insert(None);
+                model_ids.entry(id.clone()).or_insert((None, false));
             }
         }
         if model_ids.is_empty() {
@@ -1225,7 +1226,9 @@ pub async fn build_all_models_payload() -> String {
         }
         let model_rows: Vec<serde_json::Value> = model_ids
             .into_iter()
-            .map(|(id, ctx)| serde_json::json!({ "id": id, "context": ctx }))
+            .map(|(id, (ctx, featured))| {
+                serde_json::json!({ "id": id, "context": ctx, "featured": featured })
+            })
             .collect();
         let tier = kind.tier();
         let rank = match tier {

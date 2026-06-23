@@ -3720,7 +3720,16 @@ async fn switch_model(
         emit(events_tx, format!("rebuild failed: {e}"));
         return;
     }
-    state.session.model = state.config.model.clone();
+    // Append a `model` event so the switch persists to the JSONL immediately
+    // (not only when the next chat turn writes an assistant line) and a restore
+    // recovers it. Updates the in-memory label too.
+    if let Some(store) = state.session_store.as_ref() {
+        let path = store.path_for(&state.session.id);
+        let model = state.config.model.clone();
+        let _ = state.session.record_model_to(&path, &model);
+    } else {
+        state.session.model = state.config.model.clone();
+    }
 
     // Persist the model choice to project settings so a restart lands
     // on the same provider/model.

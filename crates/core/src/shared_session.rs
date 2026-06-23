@@ -1751,7 +1751,16 @@ async fn run_worker(
                 let Some(kind) = crate::providers::ProviderKind::detect(candidate) else {
                     continue;
                 };
-                if !kind.has_key_available() {
+                // Usable if a local key exists OR the gateway proxy can serve
+                // this (featured) candidate — so a proxy-only user gets the
+                // skill's recommended model instead of falling through.
+                let gateway_ok = {
+                    let mut cfg = crate::config::AppConfig::load().unwrap_or_default();
+                    cfg.model = candidate.clone();
+                    crate::providers::thclaws_gateway::gateway_overlay_for_model(&cfg, kind)
+                        .is_some()
+                };
+                if !kind.has_key_available() && !gateway_ok {
                     continue;
                 }
                 if let Ok(mut g) = override_handle.lock() {
@@ -2045,7 +2054,20 @@ async fn run_worker(
                     let Some(target_kind) = loaded_kind else {
                         continue;
                     };
-                    if !kind_has_credentials(target_kind) {
+                    // Credentials are OK if the provider has a local key OR the
+                    // gateway proxy can serve the session's (featured) model —
+                    // mirror build_provider so a proxy-only user can load a
+                    // session recorded against a featured model with no BYOK key.
+                    let gateway_ok = {
+                        let mut probe = state.config.clone();
+                        probe.model = loaded.model.clone();
+                        crate::providers::thclaws_gateway::gateway_overlay_for_model(
+                            &probe,
+                            target_kind,
+                        )
+                        .is_some()
+                    };
+                    if !kind_has_credentials(target_kind) && !gateway_ok {
                         let provider_name = target_kind.name();
                         let env_hint = target_kind
                             .api_key_env()
@@ -3090,11 +3112,17 @@ async fn run_worker(
                     Ok(()) => {
                         state.rebuild_system_prompt();
                         if model_changed {
-                            // Keep the same session id + JSONL file; just
-                            // update the `model` label so the header
-                            // reflects the active provider on the next
-                            // header write.
-                            state.session.model = state.config.model.clone();
+                            // Keep the same session id + JSONL file; append a
+                            // `model` event so the switch persists immediately
+                            // (not only on the next assistant line) and a
+                            // restore recovers it. Updates the label too.
+                            if let Some(store) = state.session_store.as_ref() {
+                                let path = store.path_for(&state.session.id);
+                                let model = state.config.model.clone();
+                                let _ = state.session.record_model_to(&path, &model);
+                            } else {
+                                state.session.model = state.config.model.clone();
+                            }
                         }
                         // Record the fingerprint so the watcher's
                         // follow-up dispatch is recognised as a dup.

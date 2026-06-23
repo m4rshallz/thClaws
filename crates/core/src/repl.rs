@@ -3845,7 +3845,7 @@ fn compat_endpoint(
     default_base: &str,
     api_key: String,
 ) -> (String, String) {
-    if let Some(o) = crate::providers::thclaws_gateway::for_kind(config, kind) {
+    if let Some(o) = crate::providers::thclaws_gateway::gateway_overlay_for_model(config, kind) {
         return (o.access_key, format!("{}/chat/completions", o.base_url));
     }
     let base = std::env::var(base_env).unwrap_or_else(|_| default_base.to_string());
@@ -3991,7 +3991,9 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
         // (pre-v0.45.8) carry no per-provider placeholders at all —
         // without this carve-out every compat provider on them dies
         // here with "no API key" before the overlay is consulted.
-        None if crate::providers::thclaws_gateway::for_kind(config, kind).is_some() => {
+        None if crate::providers::thclaws_gateway::gateway_overlay_for_model(config, kind)
+            .is_some() =>
+        {
             String::from("gateway-placeholder")
         }
         None => {
@@ -4007,7 +4009,8 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
             // OpenAI-compatible; models use openrouter/<vendor>/<model> form
             // (e.g. openrouter/anthropic/claude-sonnet-4-6). Strip the
             // "openrouter/" prefix before forwarding to the upstream API.
-            let overlay = crate::providers::thclaws_gateway::for_kind(config, kind);
+            let overlay =
+                crate::providers::thclaws_gateway::gateway_overlay_for_model(config, kind);
             let (key, base) = match overlay {
                 Some(o) => (
                     o.access_key,
@@ -4055,7 +4058,8 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
             ))
         }
         ProviderKind::Anthropic => {
-            let overlay = crate::providers::thclaws_gateway::for_kind(config, kind);
+            let overlay =
+                crate::providers::thclaws_gateway::gateway_overlay_for_model(config, kind);
             let provider = match overlay {
                 // Gateway preserves Anthropic's `/v1/messages` path; the
                 // gateway injects the real x-api-key + anthropic-version
@@ -4069,7 +4073,8 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
             Ok(Arc::new(provider))
         }
         ProviderKind::OpenAI => {
-            let overlay = crate::providers::thclaws_gateway::for_kind(config, kind);
+            let overlay =
+                crate::providers::thclaws_gateway::gateway_overlay_for_model(config, kind);
             let provider = match overlay {
                 Some(o) => OpenAIProvider::new(o.access_key)
                     .with_base_url(format!("{}/v1/chat/completions", o.base_url)),
@@ -4081,7 +4086,8 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
             crate::providers::openai_responses::OpenAIResponsesProvider::new(api_key),
         )),
         ProviderKind::Gemini => {
-            let overlay = crate::providers::thclaws_gateway::for_kind(config, kind);
+            let overlay =
+                crate::providers::thclaws_gateway::gateway_overlay_for_model(config, kind);
             let provider = match overlay {
                 Some(o) => GeminiProvider::new(o.access_key).with_base_url(o.base_url),
                 None => GeminiProvider::new(api_key),
@@ -4322,7 +4328,8 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
             // be overridden via OPENCODE_GO_BASE_URL for self-hosted proxies.
             // Gateway overlay swaps base + key; the provider appends its
             // own per-protocol path, which the gateway forwards verbatim.
-            let overlay = crate::providers::thclaws_gateway::for_kind(config, kind);
+            let overlay =
+                crate::providers::thclaws_gateway::gateway_overlay_for_model(config, kind);
             let (key, base) = match overlay {
                 Some(o) => (o.access_key, o.base_url),
                 None => (
@@ -4342,7 +4349,8 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
             unreachable!("handled above")
         }
         ProviderKind::OllamaCloud => {
-            let overlay = crate::providers::thclaws_gateway::for_kind(config, kind);
+            let overlay =
+                crate::providers::thclaws_gateway::gateway_overlay_for_model(config, kind);
             let provider = match overlay {
                 Some(o) => OllamaCloudProvider::new(o.access_key).with_base_url(o.base_url),
                 None => OllamaCloudProvider::new(api_key),

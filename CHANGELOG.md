@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-06-24
+
+### Changed
+- **Gateway proxy is now a single toggle.** The desktop "use the thClaws Gateway" control is one flag (`gatewayProxy`) instead of a per-provider list. On: every gateway-routable provider routes through the gateway for **featured** (priced) models; off: pure BYOK. This fixes the per-provider list bugs — the proxy could get stuck on, re-enable itself on `/reload`, or keep routing after being switched off (the old code re-expanded a partial list to all providers on every load). The Settings checkbox sits on the **Featured (gateway-routable)** section header and is enabled only when a CLI access token is present.
+- **Settings API-key modal groups providers like `/providers`** — "Featured (gateway-routable)" vs "Additional (bring your own key)", each provider showing its representative model — so it's obvious which providers the proxy covers.
+
+### Fixed
+- **Every credential check now honors the proxy.** A proxy-only user (CLI token, no BYOK key) hit "no API key" in several places even on a featured model the gateway can serve: provider routing, the sidebar ready-badge, **loading a session** recorded against a featured model, **spawning a teammate**, and the **skill-recommended-model** resolver. All now treat a gateway-servable model as ready, falling back to BYOK only when the gateway can't serve it (non-featured model → no gateway 400).
+- **Session model switches persist + restore correctly.** Switching model mid-session is written to the session log immediately (a `model` event) instead of only when the next chat turn lands, and a restore reads the **latest** model from the log rather than the creation model in the header — so a switched session reopens on the right provider.
+- **Stopped session-log bloat from null snapshots.** `plan`/`goal` snapshots are no longer rewritten as `null` on every turn when none was ever set; only real set/clear transitions are recorded.
+
 ## [0.73.0] - 2026-06-23
 
 ### Added

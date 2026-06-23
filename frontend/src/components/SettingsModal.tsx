@@ -15,6 +15,11 @@ type KeyStatus = {
   env_set: boolean;
   key_length: number;
   kind?: "provider" | "service";
+  // Featured-tier (gateway-routable) provider — drives the modal's
+  // "Featured" vs "Additional" grouping. Representative default model shown
+  // as a hint, mirroring `/providers`.
+  featured?: boolean;
+  default_model?: string;
 };
 
 type EndpointStatus = {
@@ -187,6 +192,11 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const llmEntries = Array.from(providers.entries()).filter(
     ([, row]) => (row.key?.kind ?? "provider") !== "service",
   );
+  // Group LLM providers like `/providers`: Featured (gateway-routable) first,
+  // then Additional (BYOK). Backend already returns them in display order, so
+  // each filter preserves it. Endpoint-only providers (no key row) are BYOK.
+  const featuredEntries = llmEntries.filter(([, row]) => row.key?.featured === true);
+  const additionalEntries = llmEntries.filter(([, row]) => row.key?.featured !== true);
   const serviceEntries = Array.from(providers.entries()).filter(
     ([, row]) => row.key?.kind === "service",
   );
@@ -297,7 +307,43 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           <AgentIdentitySection />
           <AutoLearnSection />
 
-          {llmEntries.map(([provider, row]) =>
+          {featuredEntries.length > 0 && (
+            <div className="flex items-center justify-between mt-2 gap-3">
+              <div
+                className="text-[10px] uppercase tracking-wider"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                Featured (gateway-routable)
+              </div>
+              <GatewayProxyToggle />
+            </div>
+          )}
+          {featuredEntries.map(([provider, row]) =>
+            renderProviderCard(
+              provider,
+              row,
+              keyDrafts,
+              setKeyDrafts,
+              urlDrafts,
+              setUrlDrafts,
+              handleSaveKey,
+              handleClearKey,
+              handleSaveUrl,
+              handleClearUrl,
+              busy,
+              flash,
+            ),
+          )}
+
+          {additionalEntries.length > 0 && (
+            <div
+              className="text-[10px] uppercase tracking-wider mt-2"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              Additional (bring your own key)
+            </div>
+          )}
+          {additionalEntries.map(([provider, row]) =>
             renderProviderCard(
               provider,
               row,
@@ -368,8 +414,19 @@ function renderProviderCard(
       style={{ background: "var(--bg-tertiary)", border: "1px solid var(--border)" }}
     >
       <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
-          {label}
+        <div className="flex items-baseline gap-2">
+          <div className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+            {label}
+          </div>
+          {row.key?.default_model && (
+            <span
+              className="text-[10px] font-mono truncate"
+              style={{ color: "var(--text-secondary)", opacity: 0.7 }}
+              title={`Default model: ${row.key.default_model}`}
+            >
+              → {row.key.default_model}
+            </span>
+          )}
         </div>
       </div>
 
@@ -404,27 +461,9 @@ function renderProviderCard(
       )}
 
       {provider === "openrouter" && <OpenRouterFreeOnlyToggle />}
-      {GATEWAY_PROVIDERS.has(provider) && <GatewayPerProviderToggle provider={provider} />}
     </div>
   );
 }
-
-/// Provider names that have an upstream route on the thClaws Gateway.
-/// Must match `crate::providers::thclaws_gateway::provider_segment`.
-const GATEWAY_PROVIDERS = new Set([
-  "openai",
-  "anthropic",
-  "gemini",
-  "openrouter",
-  "dashscope",
-  "qwen-cloud",
-  "zai",
-  "deepseek",
-  "minimax",
-  "thaillm",
-  "xai",
-  "moonshot",
-]);
 
 /// OpenRouter-only inline toggle. When on, both the model picker
 /// and the `/models` slash command hide non-free rows. Persisted
@@ -454,27 +493,14 @@ function OpenRouterFreeOnlyToggle() {
   );
 }
 
-/// Frontend provider id → gateway path segment. Must mirror
-/// `crate::providers::thclaws_gateway::provider_segment`.
-const PROVIDER_TO_GATEWAY_SEGMENT: Record<string, string> = {
-  openai: "openai",
-  anthropic: "anthropic",
-  gemini: "google",
-  openrouter: "openrouter",
-  // Compat providers: frontend id == gateway segment.
-  dashscope: "dashscope",
-  "qwen-cloud": "qwen-cloud",
-  zai: "zai",
-  deepseek: "deepseek",
-  minimax: "minimax",
-  thaillm: "thaillm",
-  xai: "xai",
-  moonshot: "moonshot",
-};
 
 type GatewaySettings = {
   base_url: string;
-  use_for: string[];
+  // Single proxy flag (was a per-provider list). When on + a CLI token exists,
+  // every gateway-routable provider routes through the thClaws Gateway.
+  proxy: boolean;
+  // Whether a CLI access token is present — the toggle is enabled only then.
+  has_cli_token: boolean;
 };
 
 let cachedGatewaySettings: GatewaySettings | null = null;
@@ -490,11 +516,11 @@ function ensureGatewaySubscription() {
   (ensureGatewaySubscription as { inited?: boolean }).inited = true;
   subscribe((msg) => {
     if (msg.type === "gateway_settings" || msg.type === "gateway_settings_result") {
-      const settings = {
+      applyGatewaySettings({
         base_url: String((msg as { base_url?: string }).base_url ?? ""),
-        use_for: ((msg as { use_for?: string[] }).use_for ?? []).map((s) => String(s)),
-      };
-      applyGatewaySettings(settings);
+        proxy: Boolean((msg as { proxy?: boolean }).proxy),
+        has_cli_token: Boolean((msg as { has_cli_token?: boolean }).has_cli_token),
+      });
     }
   });
   send({ type: "gateway_settings_get" });
@@ -502,7 +528,7 @@ function ensureGatewaySubscription() {
 
 function useGatewaySettings(): GatewaySettings {
   const [state, setState] = useState<GatewaySettings>(
-    () => cachedGatewaySettings ?? { base_url: "", use_for: [] },
+    () => cachedGatewaySettings ?? { base_url: "", proxy: false, has_cli_token: false },
   );
   useEffect(() => {
     ensureGatewaySubscription();
@@ -515,43 +541,43 @@ function useGatewaySettings(): GatewaySettings {
   return state;
 }
 
-function persistGatewaySettings(use_for: string[]) {
-  // Base URL is fixed on the backend; the IPC echoes it back in
-  // gateway_settings_result so we always render the current value.
-  const current = cachedGatewaySettings?.base_url ?? "";
-  applyGatewaySettings({ base_url: current, use_for });
-  send({ type: "gateway_settings_set", use_for });
+function persistGatewaySettings(proxy: boolean) {
+  applyGatewaySettings({
+    base_url: cachedGatewaySettings?.base_url ?? "",
+    proxy,
+    has_cli_token: cachedGatewaySettings?.has_cli_token ?? false,
+  });
+  send({ type: "gateway_settings_set", proxy });
 }
 
-/// Per-provider "Use thClaws Gateway" checkbox in the provider card.
-/// Always enabled — gateway routing kicks in once the user has also
-/// pasted the access key (overlay returns None and falls back to the
-/// upstream when the key is missing, so toggling without a key is a
-/// no-op rather than an error).
-function GatewayPerProviderToggle({ provider }: { provider: string }) {
+/// Single global "Use thClaws Gateway proxy" switch. Enabled only when a CLI
+/// access token is present (no token, no proxy). When on, every gateway-routable
+/// provider routes through the gateway for featured (priced) models; everything
+/// else stays BYOK. Replaces the old per-provider checkboxes.
+function GatewayProxyToggle() {
   const settings = useGatewaySettings();
-  const segment = PROVIDER_TO_GATEWAY_SEGMENT[provider];
-  const on = !!segment && settings.use_for.includes(segment);
-  const onChange = (checked: boolean) => {
-    if (!segment) return;
-    const next = new Set(settings.use_for);
-    if (checked) next.add(segment);
-    else next.delete(segment);
-    persistGatewaySettings(Array.from(next));
-  };
+  const disabled = !settings.has_cli_token;
   return (
     <label
-      className="flex items-center gap-2 mt-2 text-xs select-none cursor-pointer"
-      style={{ color: "var(--text-secondary)" }}
-      title={`Route ${provider} traffic through the thClaws Gateway.`}
+      className="flex items-center gap-2 text-xs select-none"
+      style={{
+        color: "var(--text-secondary)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.5 : 1,
+      }}
+      title={
+        disabled
+          ? "Sign in to thClaws Cloud (CLI token) to use the gateway proxy."
+          : "Route featured models through the thClaws Gateway (billed to your cloud account). Other models stay BYOK."
+      }
     >
       <input
         type="checkbox"
-        checked={on}
-        disabled={!segment}
-        onChange={(e) => onChange(e.target.checked)}
+        checked={settings.proxy && !disabled}
+        disabled={disabled}
+        onChange={(e) => persistGatewaySettings(e.target.checked)}
       />
-      <span>Use thClaws Gateway</span>
+      <span>Use Gateway Proxy{disabled ? " (needs CLI token)" : ""}</span>
     </label>
   );
 }

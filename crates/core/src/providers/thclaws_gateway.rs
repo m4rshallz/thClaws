@@ -99,6 +99,13 @@ pub fn is_active(config: &AppConfig) -> bool {
     !config.gateway_use_for.is_empty() && resolve_access_key().is_some()
 }
 
+/// True when a gateway access key is available (a gateway key OR the cloud CLI
+/// token). The GUI enables the proxy checkbox only when this holds — no token,
+/// no proxy.
+pub fn has_access_key() -> bool {
+    resolve_access_key().is_some()
+}
+
 /// Map a catalogue/picker provider NAME (not kind) to its gateway
 /// segment. Only the catalogue's `gemini` diverges from its segment
 /// (`google`); the other gateway-routable providers match 1:1.
@@ -157,6 +164,33 @@ pub fn for_kind(config: &AppConfig, kind: ProviderKind) -> Option<GatewayOverlay
         base_url,
         access_key,
     })
+}
+
+/// The gateway overlay for ROUTING the active model — `for_kind` plus a
+/// per-model eligibility gate. The gateway only serves **featured** models
+/// (a Featured-tier provider with a priced catalogue entry); a non-featured
+/// model returns `None` so `build_provider` falls back to BYOK rather than
+/// sending a request the gateway would reject with 400. Unlike `for_kind`
+/// (which answers the model-agnostic "does this provider have a route?",
+/// used by `preferred_default_model`), this is the call routing sites use.
+///
+/// The catalogue is only consulted AFTER `for_kind` confirms the proxy is on
+/// for this provider + an access key exists, so BYOK sessions never pay the
+/// lookup cost.
+pub fn gateway_overlay_for_model(config: &AppConfig, kind: ProviderKind) -> Option<GatewayOverlay> {
+    let overlay = for_kind(config, kind)?;
+    if !model_is_gateway_servable(&config.model) {
+        return None;
+    }
+    Some(overlay)
+}
+
+/// True when `model` is gateway-servable: it has a priced catalogue entry
+/// (both input + output per-mtok), which is what makes the gateway able to
+/// meter it. Provider-level routability is already established by `for_kind`'s
+/// caller, so this only checks pricing.
+pub fn model_is_gateway_servable(model: &str) -> bool {
+    crate::model_catalogue::EffectiveCatalogue::load().is_priced(model)
 }
 
 /// Resolve the gateway base URL. Honors `THCLAWS_GATEWAY_BASE_URL`
