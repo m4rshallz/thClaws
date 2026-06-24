@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-06-25
+
+### Added
+- **Files tab file management.** Drag files from your computer onto the tree to upload them into the project, and right-click any file or folder to **Rename** or **Delete**. All sandbox-checked — upload and rename refuse to clobber an existing name, delete is recursive for folders — and the context menus now show a clear hover highlight on every theme.
+- **Per-turn token/cost footer in the GUI.** The Chat and Terminal tabs show the `[tokens: …in/…out · …s · $… session]` line after each completed turn, matching the CLI REPL.
+
+### Changed
+- **Desktop launches into a clean session.** A fresh app launch no longer silently inherits the previous conversation's history. The "land back in your last work" auto-resume now applies only to the `--serve`/web surface (reopening a browser tab) and to reconnecting to an actively-busy agent.
+- **Deleting the active session activates the most recent remaining session** instead of minting a blank one; a fresh session is minted only when nothing is left.
+- **Settings:** removed the retired "Deploy target" section.
+
+### Fixed
+- **PDF previews render inline again.** The desktop file-asset handler was serving PDFs as `application/octet-stream`, blanking the in-app viewer; it now sends the correct `application/pdf` (and `application/epub+zip`).
+- **Thai text extracted from PDFs.** `PdfRead` re-attaches Thai vowel/tone marks that `pdftotext -layout` orphaned behind spurious spaces (script-level rules, no word lists), and routes a badly-garbled Thai text layer to the vision-OCR path so the model transcribes the rendered glyphs instead of a broken font's wrong characters.
+- **media-job log compaction** (thanks @modtanoii). The append-only `media-jobs.jsonl` is compacted to one entry per job when the job reaches a terminal state, via an atomic tmp-rename write.
+
 ## [0.74.0] - 2026-06-24
 
 ### Changed
