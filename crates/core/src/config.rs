@@ -1088,9 +1088,10 @@ impl ProjectConfig {
         // compiled-in default; null on an Option field has the same
         // effect. Keep this list in sync with `ProjectConfig` whenever
         // a field is added.
-        let body = r#"{
+        let template = r#"{
   "_doc": "thClaws project settings. Every available field is listed below at its default value — change a value to override, or delete a field (or set it to null on Option fields) to inherit the global default. windowWidth/windowHeight default to a monitor-resolution-aware size picked at GUI startup (1760x962 on >=1920x1080 displays, 1200x800 otherwise) when left null. See user-manual ch10 for the field reference.",
-  "model": "gpt-4.1",
+  "_doc_model": "null = pick automatically from the first provider you have credentials for (DeepSeek → DashScope → OpenAI → Anthropic). Set an explicit id (e.g. \"claude-sonnet-4-6\") to pin one.",
+  "model": null,
   "permissions": "auto",
   "maxTokens": 32000,
   "maxIterations": 50,
@@ -1114,12 +1115,34 @@ impl ProjectConfig {
   "kms": { "active": [] }
 }
 "#;
+        // First-run on a fresh folder + a usable gateway credential (cloud
+        // login or a pasted gateway key) → default the proxy ON, so a
+        // logged-in user gets a working session immediately instead of a
+        // "no API key found for provider …" wall. Only ever written here at
+        // first-run bootstrap, never onto an existing config, so it can't
+        // flip a project the user deliberately set to BYOK; they can still
+        // turn it off in Settings → thClaws.cloud. `has_access_key` is the
+        // same gate the GUI uses to enable the proxy checkbox (cloud token /
+        // gateway key — not network-validated here). Skipped under tests
+        // (keychain/env-dependent → would be nondeterministic).
+        let body = if !cfg!(test) && crate::providers::thclaws_gateway::has_access_key() {
+            Self::inject_default_gateway_proxy(template)
+        } else {
+            template.to_string()
+        };
         if let Some(parent) = path.parent() {
             if std::fs::create_dir_all(parent).is_err() {
                 return false;
             }
         }
         std::fs::write(&path, body).is_ok()
+    }
+
+    /// Insert `"gatewayProxy": true` into the first-run settings template.
+    /// Anchored on the opening brace (not the model line) so it keeps
+    /// working if the default model ever changes.
+    fn inject_default_gateway_proxy(template: &str) -> String {
+        template.replacen("{\n", "{\n  \"gatewayProxy\": true,\n", 1)
     }
 
     /// Replace the active-KMS list in `.thclaws/settings.json` and
@@ -2539,7 +2562,9 @@ mod tests {
             );
         }
         let parsed: ProjectConfig = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed.model.as_deref(), Some("gpt-4.1"));
+        // model is intentionally null in the bootstrap so the credential-aware
+        // default (preferred_default_model) drives the choice on first run.
+        assert!(parsed.model.is_none(), "bootstrap leaves model unpinned");
 
         // Idempotent: a user edit survives a second bootstrap call.
         std::fs::write(&path, r#"{"model":"custom-model"}"#).unwrap();
@@ -2548,6 +2573,25 @@ mod tests {
         assert!(after.contains("custom-model"));
 
         std::env::remove_var("THCLAWS_PROJECT_ROOT");
+    }
+
+    #[test]
+    fn default_gateway_proxy_injection_parses_and_sets_flag() {
+        // The real bootstrap gates the injection behind a live gateway
+        // credential AND `!cfg!(test)`, so exercise the injection itself:
+        // it must turn a clean template into valid JSON with gatewayProxy on
+        // without disturbing the other fields.
+        let template = r#"{
+  "_doc": "...",
+  "model": "gpt-4.1",
+  "kms": { "active": [] }
+}
+"#;
+        let body = ProjectConfig::inject_default_gateway_proxy(template);
+        assert_ne!(body, template, "injection must change the template");
+        let pc: ProjectConfig = serde_json::from_str(&body).unwrap();
+        assert_eq!(pc.gateway_proxy, Some(true), "proxy defaulted on");
+        assert_eq!(pc.model.as_deref(), Some("gpt-4.1"), "model untouched");
     }
 
     #[test]

@@ -19,6 +19,12 @@ pub const STRIP_PREFIXES: &[&str] = &[
     // workspace PVC so logins survive pod restarts (docs/browser).
     // Cookies/tokens must NEVER ride along into a published agent.
     ".thclaws/browser-profile/",
+    // Runtime/telemetry state from a live workspace — never part of the agent
+    // itself. Parity with thclaws-agents/publish.py so publishing from a
+    // working dir doesn't leak the publisher's usage stats or team-coordination
+    // files into the distributed tarball.
+    ".thclaws/usage/",
+    ".thclaws/team/",
     ".git/",
     "node_modules/",
     "target/",
@@ -31,9 +37,17 @@ pub const STRIP_PREFIXES: &[&str] = &[
 
 pub const STRIP_SUFFIXES: &[&str] = &[".env", ".key", ".pyc", ".log"];
 
+/// Exact relative paths to drop — runtime artifacts not covered by a prefix or
+/// suffix. Parity with publish.py's STRIP_EXACT, plus `usage.jsonl` (the
+/// telemetry log that sits beside, not inside, `.thclaws/usage/`).
+pub const STRIP_EXACT: &[&str] = &[".thclaws/audit-findings.json", ".thclaws/usage.jsonl"];
+
 pub fn is_strippable(rel: &Path) -> bool {
     let s = rel.to_string_lossy();
     let s = s.trim_start_matches("./");
+    if STRIP_EXACT.contains(&s) {
+        return true;
+    }
     if STRIP_PREFIXES.iter().any(|p| s.starts_with(p)) {
         return true;
     }
@@ -307,4 +321,37 @@ fn ensure_read<R: Read>(r: R) -> R {
 #[allow(dead_code)]
 fn ensure_write<W: Write>(w: W) -> W {
     w
+}
+
+#[cfg(test)]
+mod strip_tests {
+    use super::is_strippable;
+    use std::path::Path;
+
+    #[test]
+    fn strips_runtime_artifacts_that_leaked_into_a_user_publish() {
+        // Regression: publishing from a live workspace must not ship the
+        // publisher's runtime telemetry / coordination state.
+        for p in [
+            ".thclaws/usage/deepseek/deepseek-v4-pro.json",
+            ".thclaws/usage.jsonl",
+            ".thclaws/team/agents/lead/status.json",
+            ".thclaws/audit-findings.json",
+            ".thclaws/sessions/x.jsonl",
+            "secrets_secret.txt",
+            "a/.env",
+        ] {
+            assert!(is_strippable(Path::new(p)), "should strip {p}");
+        }
+        // Agent content stays.
+        for p in [
+            "AGENTS.md",
+            "manifest.json",
+            ".thclaws/workflows/image-batch.js",
+            ".thclaws/agents/image-smith.md",
+            "images/batch/red-panda.png",
+        ] {
+            assert!(!is_strippable(Path::new(p)), "should keep {p}");
+        }
+    }
 }

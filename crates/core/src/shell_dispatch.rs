@@ -2219,6 +2219,10 @@ pub async fn dispatch(
             file,
             alias,
             force,
+            // `--vision` is intercepted as an agent turn-rewrite in
+            // shared_session::handle_line before dispatch, so this arm only
+            // ever runs the deterministic text-extraction path.
+            vision: _,
         } => {
             // M6.25 BUG #8: PDF ingest via pdftotext.
             let Some(k) = crate::kms::resolve(&name) else {

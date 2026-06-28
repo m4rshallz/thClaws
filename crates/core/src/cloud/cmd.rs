@@ -484,6 +484,15 @@ async fn get_lines(
         }
     }
 
+    // Snapshot installer-owned settings before the overwrite. `unpack`
+    // (force=true) replaces the agent's `.thclaws/settings.json` wholesale,
+    // which would wipe local session/account config the agent has no
+    // business carrying — notably `gatewayProxy`. Losing it drops the user
+    // off the gateway, and the next agent rebuild then fails with a
+    // misleading "no API key found for provider 'anthropic'". These keys
+    // are carried forward after extraction (see `restore_installer_settings`).
+    let prior_settings = std::fs::read(target.join(".thclaws").join("settings.json")).ok();
+
     lines.push(format!("Extracting to {} …", target.display()));
     // After the UUID match (or empty target, or --force) we always
     // allow overwrite — pack::unpack's per-file refusal is bypassed
@@ -508,7 +517,65 @@ async fn get_lines(
             lines.push(line);
         }
     }
+
+    // Carry installer-owned keys (gatewayProxy, …) back over the extracted
+    // settings.json so the install doesn't knock the user off the gateway.
+    if let Some(prior) = prior_settings {
+        if let Err(e) = restore_installer_settings(&target, &prior) {
+            lines.push(format!(
+                "  warning: couldn't preserve local settings ({e}) — \
+                 re-enable the gateway in Settings → thClaws.cloud if needed"
+            ));
+        }
+    }
     lines
+}
+
+/// Keys in `.thclaws/settings.json` that belong to the installing user's
+/// session/account, not to the agent being installed. `/cloud get`
+/// overwrites the whole file from the tarball, so these are snapshotted
+/// before extraction and carried forward after — without this, an install
+/// silently wipes the user's gateway routing (`gatewayProxy`) and cloud URL,
+/// which surfaces as a misleading "no API key found for provider 'anthropic'"
+/// on the next agent rebuild.
+const INSTALLER_OWNED_SETTINGS_KEYS: &[&str] = &["gatewayProxy", "gateway_use_for", "cloudUrl"];
+
+/// Restore installer-owned keys from `prior_raw` onto the freshly-extracted
+/// `.thclaws/settings.json`. Only fills keys the agent's bundle did NOT set,
+/// so a publisher that legitimately ships one of these still wins.
+fn restore_installer_settings(target: &Path, prior_raw: &[u8]) -> Result<(), String> {
+    let prior: serde_json::Value =
+        serde_json::from_slice(prior_raw).map_err(|e| format!("parse prior settings.json: {e}"))?;
+    let Some(prior_obj) = prior.as_object() else {
+        return Ok(());
+    };
+
+    let settings_path = target.join(".thclaws").join("settings.json");
+    let mut cur: serde_json::Value = match std::fs::read(&settings_path) {
+        Ok(raw) => serde_json::from_slice(&raw).unwrap_or_else(|_| serde_json::json!({})),
+        Err(_) => serde_json::json!({}),
+    };
+    let Some(cur_obj) = cur.as_object_mut() else {
+        return Ok(());
+    };
+
+    let mut restored = false;
+    for k in INSTALLER_OWNED_SETTINGS_KEYS {
+        if !cur_obj.contains_key(*k) {
+            if let Some(v) = prior_obj.get(*k) {
+                cur_obj.insert((*k).to_string(), v.clone());
+                restored = true;
+            }
+        }
+    }
+    if !restored {
+        return Ok(());
+    }
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&cur).map_err(|e| format!("serialize settings.json: {e}"))?,
+    )
+    .map_err(|e| format!("write settings.json: {e}"))
 }
 
 /// Read just `<target>/.thclaws/settings.json::agent.uuid` without
@@ -653,4 +720,68 @@ fn post_install_hint_lines(m: &crate::cloud::manifest::Manifest, target: &Path) 
     lines.push(String::new());
     lines.push("Next: `thclaws` (CLI) or `thclaws --gui` (desktop).".to_string());
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_settings(dir: &Path, json: &str) {
+        let p = dir.join(".thclaws");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("settings.json"), json).unwrap();
+    }
+
+    fn read_settings(dir: &Path) -> serde_json::Value {
+        let raw = std::fs::read(dir.join(".thclaws").join("settings.json")).unwrap();
+        serde_json::from_slice(&raw).unwrap()
+    }
+
+    #[test]
+    fn restore_carries_gateway_proxy_over_an_agent_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        // The user's pre-install settings: on the gateway.
+        let prior = br#"{"gatewayProxy": true, "model": "claude-x", "cloudUrl": "https://c"}"#;
+        // What the agent's tarball extracted (no gateway/model keys).
+        write_settings(
+            dir.path(),
+            r#"{"agent": {"id": "image-generator"}, "imageToolsEnabled": true}"#,
+        );
+
+        restore_installer_settings(dir.path(), prior).unwrap();
+
+        let s = read_settings(dir.path());
+        assert_eq!(
+            s["gatewayProxy"],
+            serde_json::json!(true),
+            "gateway preserved"
+        );
+        assert_eq!(
+            s["cloudUrl"],
+            serde_json::json!("https://c"),
+            "cloud url preserved"
+        );
+        // Agent-owned keys survive untouched.
+        assert_eq!(s["imageToolsEnabled"], serde_json::json!(true));
+        assert_eq!(s["agent"]["id"], serde_json::json!("image-generator"));
+        // `model` is publisher-shippable, so it is NOT in the installer-owned
+        // set — the agent's omission stands rather than being force-restored.
+        assert!(s.get("model").is_none(), "model is not force-carried");
+    }
+
+    #[test]
+    fn restore_does_not_clobber_a_key_the_agent_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let prior = br#"{"gatewayProxy": true}"#;
+        // Unusual, but if the agent bundle explicitly ships gatewayProxy=false,
+        // that wins — we only fill keys the agent left unset.
+        write_settings(dir.path(), r#"{"gatewayProxy": false}"#);
+
+        restore_installer_settings(dir.path(), prior).unwrap();
+
+        assert_eq!(
+            read_settings(dir.path())["gatewayProxy"],
+            serde_json::json!(false)
+        );
+    }
 }

@@ -104,7 +104,8 @@ impl Tool for PdfReadTool {
             "type": "object",
             "properties": {
                 "path":  {"type": "string", "description": "PDF file path."},
-                "pages": {"type": "string", "description": "Page range: \"all\", \"N\", or \"M-N\". Default: all."}
+                "pages": {"type": "string", "description": "Page range: \"all\", \"N\", or \"M-N\". Default: all."},
+                "vision": {"type": "boolean", "description": "Force the vision-OCR path (render pages to images for the model to read) instead of text extraction. Use when the text layer is garbled — e.g. a PDF whose font has a broken Thai ToUnicode map that swaps า/ำ. Default false."}
             },
             "required": ["path"]
         })
@@ -129,6 +130,18 @@ impl Tool for PdfReadTool {
         let validated = crate::sandbox::Sandbox::check(req_str(&input, "path")?)?;
         let pages_spec = input.get("pages").and_then(|v| v.as_str()).unwrap_or("all");
         let (first, last) = parse_page_range(pages_spec)?;
+
+        // Caller forced vision (text layer known-garbled, e.g. broken Thai
+        // ToUnicode): skip extraction entirely and read the rendered glyphs.
+        if input
+            .get("vision")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return render_pages_as_image_blocks(&validated, first, last)
+                .await
+                .map(ToolResultContent::Blocks);
+        }
 
         let raw = extract_text_raw(&validated, first, last).await?;
 
@@ -194,7 +207,7 @@ fn is_thai(c: char) -> bool {
 /// script-level rule, not a vocabulary list, so it generalizes to any Thai
 /// document; non-Thai text is untouched (the pattern needs Thai on the
 /// left and a Thai mark on the right).
-fn normalize_thai_spacing(text: &str) -> String {
+pub(crate) fn normalize_thai_spacing(text: &str) -> String {
     use regex::Regex;
     let drop_before_mark =
         Regex::new(r"([\u{0E01}-\u{0E4E}]) +([\u{0E30}-\u{0E3A}\u{0E47}-\u{0E4E}])").unwrap();
@@ -203,6 +216,55 @@ fn normalize_thai_spacing(text: &str) -> String {
     // left-to-right replace_all can't fully collapse.
     for _ in 0..2 {
         s = drop_before_mark.replace_all(&s, "$1$2").into_owned();
+    }
+    repair_broken_saraam(&s)
+}
+
+/// Repair a known broken-`ToUnicode` corruption: some PDF fonts map sara-am
+/// (ำ, U+0E33) to bare sara-aa (า, U+0E32), turning e.g. "ทำงาน" into the
+/// non-word "ทางาน". Unlike the spacing rule this is a guess (า is a real,
+/// extremely common letter), so the table is deliberately limited to whole
+/// forms that are NOT valid Thai in their า spelling — real า words (ด้าน,
+/// หน้า, ภาพ, เป้า, ทางการ, ประจาน) are never listed, so the substring replace
+/// can't damage them. Substring-based, not token-based, because Thai writes
+/// without inter-word spaces (the corrupted form appears glued inside a run,
+/// e.g. "การทางานของ"). Only covers the high-frequency words; broken-cmap PDFs
+/// outside this set still need the vision-OCR path for perfect ำ.
+const SARAAM_REPAIRS: &[(&str, &str)] = &[
+    ("ทางาน", "ทำงาน"),
+    ("ทาความ", "ทำความ"),
+    ("จากัด", "จำกัด"),
+    ("จานวน", "จำนวน"),
+    ("จาเป็น", "จำเป็น"),
+    ("จาพวก", "จำพวก"),
+    ("กาหนด", "กำหนด"),
+    ("กาลัง", "กำลัง"),
+    ("กาไร", "กำไร"),
+    ("กากับ", "กำกับ"),
+    ("สาคัญ", "สำคัญ"),
+    ("สาเร็จ", "สำเร็จ"),
+    ("สาหรับ", "สำหรับ"),
+    ("สานัก", "สำนัก"),
+    ("สารวจ", "สำรวจ"),
+    ("สาเนา", "สำเนา"),
+    ("ดาเนิน", "ดำเนิน"),
+    ("ดารง", "ดำรง"),
+    ("คานวณ", "คำนวณ"),
+    ("คาสั่ง", "คำสั่ง"),
+    ("ชาระ", "ชำระ"),
+    ("นาเสนอ", "นำเสนอ"),
+    ("ลาดับ", "ลำดับ"),
+    ("ตาแหน่ง", "ตำแหน่ง"),
+    ("อานวย", "อำนวย"),
+    ("บารุง", "บำรุง"),
+];
+
+fn repair_broken_saraam(text: &str) -> String {
+    let mut s = text.to_string();
+    for (bad, good) in SARAAM_REPAIRS {
+        if s.contains(bad) {
+            s = s.replace(bad, good);
+        }
     }
     s
 }
@@ -688,6 +750,26 @@ mod tests {
         // wrongly merge.
         assert_eq!(normalize_thai_spacing("เวลา ทำงาน"), "เวลา ทำงาน");
         assert_eq!(normalize_thai_spacing("คน รถ"), "คน รถ");
+    }
+
+    #[test]
+    fn repairs_known_saraam_cmap_corruption() {
+        // ำ→า corruption in non-word forms is repaired, even glued mid-run
+        // (substring) and after the space-join collapses a fragment.
+        assert_eq!(normalize_thai_spacing("การทางานของบริษัท"), "การทำงานของบริษัท");
+        assert_eq!(normalize_thai_spacing("กาหนดเวลา"), "กำหนดเวลา");
+        assert_eq!(normalize_thai_spacing("จานวนวันลา"), "จำนวนวันลา");
+        assert_eq!(normalize_thai_spacing("ก าหนด"), "กำหนด"); // space-join then repair
+                                                               // Real า words must NEVER be touched (never in the table), incl. ones
+                                                               // that share a prefix with a corrupted form (ประจาน vs ประจำ).
+        for w in ["ด้าน", "หน้าที่", "ภาพ", "เป้าหมาย", "ทางการ", "ประจาน", "ราคา"]
+        {
+            assert_eq!(
+                normalize_thai_spacing(w),
+                w,
+                "must not corrupt real word {w}"
+            );
+        }
     }
 
     #[test]

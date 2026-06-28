@@ -827,6 +827,12 @@ pub async fn ingest_pdf(
     .await
     .map_err(|e| Error::Tool(format!("pdftotext join: {e}")))??;
 
+    // Apply the SAME Thai repair PdfReadTool uses — `pdftotext -layout`
+    // orphans Thai vowel/tone marks behind spaces, and without this the
+    // ingested page keeps that fragmentation. (Pre-fix this path copied the
+    // pdftotext call but not the normalization step.)
+    let extracted = crate::tools::pdf_read::normalize_thai_spacing(&extracted);
+
     let tmp_dir = std::env::temp_dir();
     let tmp_path = tmp_dir.join(format!("kms-pdf-{alias_clean}.md"));
     let banner = format!(

@@ -232,6 +232,30 @@ pub struct ProductionAgentFactory {
     pub hooks: Option<Arc<crate::hooks::HooksConfig>>,
 }
 
+/// Pick the model a subagent runs under. Subagents reuse the parent's
+/// provider (built for `session_model`'s provider), and the model id is sent
+/// verbatim to that provider — it is NOT re-resolved to a fresh provider. So
+/// a pinned `model:` from a *different* provider would misroute (e.g. a
+/// subagent pinned to `claude-haiku-4-5` on a deepseek session lands on the
+/// deepseek endpoint → "model not found in catalog"). Honor the pin only when
+/// it resolves to the same provider kind as the session model; otherwise fall
+/// back to the user's current model, which is guaranteed to match the provider.
+fn subagent_model<'a>(pinned: Option<&'a str>, session_model: &'a str) -> &'a str {
+    match pinned {
+        Some(p) => {
+            let pinned_kind = crate::providers::ProviderKind::detect(p);
+            if pinned_kind.is_some()
+                && pinned_kind == crate::providers::ProviderKind::detect(session_model)
+            {
+                p
+            } else {
+                session_model
+            }
+        }
+        None => session_model,
+    }
+}
+
 #[async_trait]
 impl AgentFactory for ProductionAgentFactory {
     fn base_model(&self) -> &str {
@@ -244,9 +268,7 @@ impl AgentFactory for ProductionAgentFactory {
         agent_def: Option<&AgentDef>,
         child_depth: usize,
     ) -> Result<Agent> {
-        let model = agent_def
-            .and_then(|d| d.model.as_deref())
-            .unwrap_or(&self.model);
+        let model = subagent_model(agent_def.and_then(|d| d.model.as_deref()), &self.model);
 
         // Snapshot the live parent state ONCE — system + tools are
         // both needed and we want them to come from the same instant
@@ -648,10 +670,13 @@ impl Tool for SubAgentTool {
             // per-model tracker AND the per-workspace ledger so a
             // task's true cost (orchestrator + every subagent) is
             // captured. Attribute to the subagent's *effective* model
-            // (its `agent_def` may pin a cheaper one than the parent).
-            let eff_model = agent_def
-                .and_then(|d| d.model.as_deref())
-                .unwrap_or_else(|| self.factory.base_model());
+            // (its `agent_def` may pin a cheaper one than the parent) —
+            // same selection as the build path, so a cross-provider pin that
+            // fell back to the session model is billed to what actually ran.
+            let eff_model = subagent_model(
+                agent_def.and_then(|d| d.model.as_deref()),
+                self.factory.base_model(),
+            );
             let provider = crate::providers::ProviderKind::detect(eff_model)
                 .map(|k| k.name())
                 .unwrap_or("unknown");
@@ -697,6 +722,29 @@ mod tests {
     use futures::stream;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    #[test]
+    fn subagent_model_falls_back_when_pin_is_a_different_provider() {
+        // Session on deepseek; subagent pins an Anthropic model. The shared
+        // provider is deepseek's, so honoring the pin would misroute — fall
+        // back to the session model instead.
+        assert_eq!(
+            subagent_model(Some("claude-haiku-4-5"), "deepseek-v4-pro"),
+            "deepseek-v4-pro"
+        );
+        // Same provider as the session → the pin is honored.
+        assert_eq!(
+            subagent_model(Some("claude-haiku-4-5"), "claude-sonnet-4-6"),
+            "claude-haiku-4-5"
+        );
+        // No pin → session model.
+        assert_eq!(subagent_model(None, "deepseek-v4-pro"), "deepseek-v4-pro");
+        // Unrecognized pin → session model (can't confirm it routes).
+        assert_eq!(
+            subagent_model(Some("totally-unknown-model"), "gpt-5.5"),
+            "gpt-5.5"
+        );
+    }
 
     struct ScriptedProvider {
         scripts: Arc<Mutex<VecDeque<Vec<ProviderEvent>>>>,

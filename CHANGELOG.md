@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.80.0] — 2026-06-29
+
+Strengthens PDF and KMS ingest for Thai documents, advances agent publishing via source-level visibility and batch tooling, and brings tutorial documentation current with capstone and GUI coverage.
+
+### Added
+- **Vision-based PDF ingestion in /kms.** `/kms ingest <name> <file.pdf> --vision` enables robust extraction of content from scanned and image-heavy PDFs.
+- **Agent publishing batch/changelog flow.** `publish.py --changed` updates only modified agents, streamlining batch publishes with tighter log output.
+- **Built-in image tool integration for agent image-generator.** Agents can now leverage native image tools for generation tasks.
+
+### Changed
+- **Private-by-default visibility and owner re-publish in cloud API.** Published sources default to private status; owners can explicitly re-publish.
+- **Credential-aware default model selection + always-on gateway.** The engine picks a sensible default model based on credentials and enables the gateway by default.
+- **Source-level platform publish identity in cloud API.** The publishing flow now uses source-level identity for audit trails and clarity.
+
+### Fixed
+- **Thai PDF ingest quality and normalization.** Improves text extraction fidelity for Thai PDFs, repairing sara-am clusters and normalizing text reuse; vision param properly switches to OCR when needed.
+- **GUI shell and capstone documentation.** Updates tutorial slides with screenshots for chapter 20 (capstone), ch17 (LINE/Telegram), ch18 (GUI shells), and the Folder instructions editor.
+- **Agent listing robustness.** Batch slugging and contact-sheet handling for agents now safely accommodate Thai and non-Latin characters.
+- **Artifact cleanup on cloud publish.** Ensures runtime artifacts are stripped during cloud publish, matching Rust and Python code paths.
+- **Installer settings preservation.** Maintains local installer settings when calling `/cloud get`.
+- **Subagent pin fallback.** Ensures fallback to the session model when cross-provider pins are unavailable.
+
 ## [0.79.0] - 2026-06-28
 
 Rounds out guest gating for the cloud, hardens the approval box UI with multi-line support and path redaction, and closes the capture-to-retrieve loop in the knowledge base for a self-maintaining /kms.

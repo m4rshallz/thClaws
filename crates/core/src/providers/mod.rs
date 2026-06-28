@@ -1308,16 +1308,23 @@ pub fn auto_fallback_model(cfg: &crate::config::AppConfig) -> Option<String> {
 /// keyless; this picks the preferred *paid* default when nothing is
 /// configured yet.
 pub fn preferred_default_model(cfg: &crate::config::AppConfig) -> Option<String> {
-    const ORDER: &[ProviderKind] = &[
-        ProviderKind::DashScope,
-        ProviderKind::OpenAI,
-        ProviderKind::Anthropic,
+    // Ordered (provider, model) preference: the first provider the user can
+    // reach — own key OR a gateway route — picks the session default. Models
+    // are pinned explicitly (not `kind.default_model()`) so the credential-
+    // aware default can prefer a specific tier per provider independent of
+    // each provider's standalone default. All four are priced in the
+    // catalogue, so they're gateway-servable for proxied sessions.
+    const ORDER: &[(ProviderKind, &str)] = &[
+        (ProviderKind::DeepSeek, "deepseek-v4-pro"),
+        (ProviderKind::DashScope, "dashscope/qwen3.7-max"),
+        (ProviderKind::OpenAI, "gpt-5.5"),
+        (ProviderKind::Anthropic, "claude-sonnet-4-6"),
     ];
-    for kind in ORDER {
+    for (kind, model) in ORDER {
         let has_key = kind_has_credentials(Some(*kind));
         let via_gateway = crate::providers::thclaws_gateway::for_kind(cfg, *kind).is_some();
         if has_key || via_gateway {
-            return Some(kind.default_model().to_string());
+            return Some((*model).to_string());
         }
     }
     None
@@ -1360,8 +1367,10 @@ mod tests {
     /// so a sibling env-reading test doesn't see ghost state.
     #[test]
     fn provider_has_credentials_honors_gateway_route() {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Share the one lock with the other tests that mutate
+        // THCLAWS_GATEWAY_API_KEY / provider-key env vars — distinct mutexes
+        // would let them race and intermittently clear each other's state.
+        let _guard = PREF_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = crate::config::AppConfig::default();
         // Detects as Gemini; segment "google" is the gateway key.
         cfg.model = "gemini-2.5-flash".to_string();
@@ -1728,20 +1737,25 @@ mod tests {
     }
 
     #[test]
-    fn preferred_default_model_follows_dashscope_openai_anthropic_order() {
+    fn preferred_default_model_follows_deepseek_dashscope_openai_anthropic_order() {
         let _guard = PREF_ENV_LOCK.lock().unwrap();
         // Isolate from any real provider keys in the host env so only the
         // gateway route under test decides the pick.
-        for v in ["DASHSCOPE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] {
+        for v in [
+            "DEEPSEEK_API_KEY",
+            "DASHSCOPE_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ] {
             std::env::remove_var(v);
         }
         std::env::set_var("THCLAWS_GATEWAY_API_KEY", "gw_v1_test");
 
         let mut cfg = crate::config::AppConfig::default();
 
-        // Only OpenAI gateway-routed → OpenAI's default model.
+        // Only OpenAI gateway-routed → the pinned OpenAI default.
         cfg.gateway_use_for = vec!["openai".into()];
-        assert_eq!(preferred_default_model(&cfg).as_deref(), Some("gpt-4.1"));
+        assert_eq!(preferred_default_model(&cfg).as_deref(), Some("gpt-5.5"));
 
         // DashScope outranks OpenAI when both are available.
         cfg.gateway_use_for = vec!["openai".into(), "dashscope".into()];
@@ -1750,8 +1764,15 @@ mod tests {
             Some("dashscope/qwen3.7-max")
         );
 
-        // None of the three configured (no gateway route, host keys
-        // cleared) → None so the caller keeps the compiled-in default.
+        // DeepSeek outranks everything when in the routed set.
+        cfg.gateway_use_for = vec!["openai".into(), "dashscope".into(), "deepseek".into()];
+        assert_eq!(
+            preferred_default_model(&cfg).as_deref(),
+            Some("deepseek-v4-pro")
+        );
+
+        // None configured (no gateway route, host keys cleared) → None so
+        // the caller keeps the compiled-in default.
         cfg.gateway_use_for = vec![];
         let out = preferred_default_model(&cfg);
         std::env::remove_var("THCLAWS_GATEWAY_API_KEY");

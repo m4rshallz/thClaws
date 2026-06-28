@@ -3951,6 +3951,72 @@ async fn handle_line(
         return;
     }
 
+    // `/kms ingest <name> <file.pdf> --vision` intercept — the text layer is
+    // garbled (e.g. a broken Thai ToUnicode font that swaps า/ำ), which no
+    // text post-processing can repair. Route through the agent: PdfRead with
+    // `vision` renders the glyphs, the model transcribes, KmsWrite stores it.
+    if let Some(crate::repl::SlashCommand::KmsIngestPdf {
+        name,
+        file,
+        alias,
+        vision,
+        ..
+    }) = crate::repl::parse_slash(trimmed)
+    {
+        if vision {
+            if crate::kms::resolve(&name).is_none() {
+                let _ = events_tx.send(ViewEvent::SlashOutput(format!("no KMS named '{name}'")));
+                let _ = events_tx.send(ViewEvent::TurnDone);
+                return;
+            }
+            // KmsWrite registers only when a KMS is attached (kms_active).
+            if state.config.kms_active.is_empty() {
+                let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+                    "/kms ingest {name} --vision: no KMS attached to this session. Run `/kms use {name}` first."
+                )));
+                let _ = events_tx.send(ViewEvent::TurnDone);
+                return;
+            }
+            let page = alias.unwrap_or_else(|| {
+                std::path::Path::new(&file)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("pdf-page")
+                    .to_string()
+            });
+            let abs = {
+                let p = std::path::PathBuf::from(&file);
+                if p.is_absolute() {
+                    p
+                } else {
+                    state.cwd.join(&p)
+                }
+            };
+            let rewritten = crate::repl::build_kms_ingest_pdf_vision_prompt(
+                &name,
+                &page,
+                &abs.to_string_lossy(),
+            );
+            let _ = events_tx.send(ViewEvent::SlashOutput(format!(
+                "(/kms ingest {name} {file} --vision → page `{page}` — render + transcribe via PdfRead vision)"
+            )));
+            let stream = Box::pin(state.agent.run_turn(rewritten));
+            let lead_mb = crate::team::Mailbox::new(crate::team::Mailbox::default_dir());
+            let _ = lead_mb.write_status("lead", "working", None);
+            drive_turn_stream(
+                stream,
+                state,
+                events_tx,
+                cancel,
+                &lead_mb,
+                input_tx,
+                Some(state.session.id.clone()),
+            )
+            .await;
+            return;
+        }
+    }
+
     // `/kms dump <name> <text>` intercept — rewrite into a routing
     // prompt and run as a normal agent turn so KmsWrite/KmsAppend tools
     // execute against the live registry.

@@ -547,6 +547,9 @@ pub enum SlashCommand {
         file: String,
         alias: Option<String>,
         force: bool,
+        /// Force the vision-OCR path (render pages, model transcribes) instead
+        /// of text extraction — for PDFs with a garbled text layer.
+        vision: bool,
     },
     /// M6.28: ingest the current chat session as a KMS page. Triggers an
     /// agent turn that summarizes history and calls `KmsWrite`.
@@ -2374,6 +2377,32 @@ pub fn build_kms_ingest_session_prompt(
     )
 }
 
+/// Compose the agent-facing prompt for `/kms ingest <name> <file.pdf> --vision`.
+/// The PDF's text layer is garbled (e.g. a broken Thai ToUnicode font), so the
+/// agent must read the rendered glyphs via `PdfRead`'s vision path and store
+/// the transcription with `KmsWrite`. Used by the GUI rewrite handler.
+pub fn build_kms_ingest_pdf_vision_prompt(kms_name: &str, page: &str, file: &str) -> String {
+    format!(
+        "The user ran `/kms ingest {kms_name} --vision` to file a PDF whose text layer is \
+         garbled (a broken font cmap text extraction can't fix), so use the VISION path.\n\
+         \n\
+         Steps:\n\
+         1. Call `PdfRead(path: \"{file}\", vision: true)` to render the pages as images and \
+         read the actual glyphs. The vision path renders at most 20 pages per call, so for a \
+         longer PDF call it again with `pages: \"21-40\"`, `\"41-60\"`, … until you've covered \
+         every page.\n\
+         2. Transcribe ALL the text you see, verbatim and in reading order. Preserve Thai \
+         exactly as rendered — do NOT 'fix' or paraphrase it.\n\
+         3. Call `KmsWrite(kms: \"{kms_name}\", page: \"{page}\", content: \"...\")` with the \
+         full transcription, frontmatter:\n   ---\n   category: pdf\n   sources: {file}\n   \
+         description: <one-line hook>\n   ---\n   <transcription>\n   For a multi-call PDF, \
+         write page 1's batch first, then `KmsAppend` the rest so nothing is dropped.\n\
+         \n\
+         Page name: `{page}`. After the write succeeds, confirm the resolved page path and how \
+         many PDF pages you transcribed."
+    )
+}
+
 /// Render the post-merge "next steps" workflow hint that both the
 /// CLI REPL and the GUI shell-dispatch emit after a successful
 /// `/kms merge`. Centralised here so both surfaces stay in sync.
@@ -2819,6 +2848,11 @@ fn parse_kms_subcommand(args: &str) -> SlashCommand {
                 force = true;
                 parts.remove(i);
             }
+            let mut vision = false;
+            if let Some(i) = parts.iter().position(|p| *p == "--vision") {
+                vision = true;
+                parts.remove(i);
+            }
             let mut alias: Option<String> = None;
             if let Some(i) = parts.iter().position(|p| *p == "as") {
                 if i + 1 < parts.len() {
@@ -2855,6 +2889,7 @@ fn parse_kms_subcommand(args: &str) -> SlashCommand {
                             file: t.to_string(),
                             alias,
                             force,
+                            vision,
                         }
                     } else {
                         SlashCommand::KmsIngest {
@@ -9381,7 +9416,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     file,
                     alias,
                     force,
+                    vision,
                 } => {
+                    if vision {
+                        println!(
+                            "{COLOR_YELLOW}--vision ingest needs the agent loop (render + transcribe) — \
+                             run it in the desktop GUI. The CLI does text-only ingest.{COLOR_RESET}"
+                        );
+                        continue;
+                    }
                     let Some(k) = crate::kms::resolve(&name) else {
                         println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}");
                         continue;
